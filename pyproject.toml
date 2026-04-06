@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "nostromo"
 version = "0.1.0"
-description = "Simple file sharing service with WebDAV support, designed for use with LDAPGate"
+description = "Self-contained file sharing server with WebDAV support; optional LDAP/AD auth via LDAPGate"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}

@@ -4,7 +4,7 @@
 
 <h1 align="center">Nostromo</h1>
 
-<p align="center">A simple, self-contained file sharing server with WebDAV support, designed for use behind a reverse proxy with LDAPGate.</p>
+<p align="center">A self-contained file sharing server with WebDAV support. Works out of the box or integrates with LDAPGate for corporate LDAP/AD authentication.</p>
 
 ## Features
 
@@ -13,7 +13,7 @@
 - **Browser-based file browser** — drag-and-drop upload, directory creation, zip download, file delete
 - **In-browser text editor** — CodeMirror-powered editor for text files (configurable via `_EDITABLE_EXTS`); files over 2 MB are not editable
 - **WebDAV COPY / MOVE** — server-side file and directory copy/move via `Destination` header
-- **LDAP / AD authentication** — optional, via [ldapgate](https://github.com/anudeepd/ldapgate)
+- **Optional LDAP / AD authentication** — via [LDAPGate](https://github.com/anudeepd/ldapgate)
 - **Single self-contained wheel** — no external CDN dependencies; fonts embedded as base64 WOFF2
 
 ## Install
@@ -47,7 +47,7 @@ Options:
 --require-auth       Require X-Forwarded-User header (403 if missing).
 --user-header TEXT   Header to read username from. [default: X-Forwarded-User]
 --reload             Auto-reload on code changes (dev only).
---ldap-config PATH   Path to ldapgate YAML config to enable LDAP authentication.
+--ldap-config PATH   Path to LDAPGate YAML config to enable LDAP authentication.
 ```
 
 ### WebDAV Mount Examples
@@ -86,16 +86,29 @@ curl -X PUT http://localhost:8989/_upload/<session_id>/<chunk_index> \
 curl -X POST http://localhost:8989/_upload/<session_id>/complete
 ```
 
-## LDAP Authentication
+## LDAP / Active Directory Authentication
 
-Nostromo can require login via LDAP/AD before accessing files. This uses [ldapgate](https://github.com/anudeepd/ldapgate) as FastAPI middleware — no separate proxy process needed.
+Nostromo supports two modes for LDAP/AD auth:
+
+**Mode 1 — Standalone proxy:** Run LDAPGate as a reverse proxy in front of nostromo. Authenticated requests get an `X-Forwarded-User` header that nostromo reads.
+
+```
+Browser → LDAPGate → nostromo
+```
+
+```bash
+ldapgate serve --config ldapgate.yaml
+nostromo serve --root /data --require-auth
+```
+
+**Mode 2 — Built-in middleware:** Inject LDAPGate directly into nostromo as FastAPI middleware:
 
 ```bash
 pip install 'nostromo[ldap]'
 nostromo serve --root /data --ldap-config /path/to/ldapgate.yaml
 ```
 
-See the [ldapgate README](https://github.com/anudeepd/ldapgate) for config file documentation.
+See the [LDAPGate README](https://github.com/anudeepd/ldapgate) for config file documentation.
 
 ## Development
 
