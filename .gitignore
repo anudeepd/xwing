@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+
+# Editor bundle build tooling (node_modules kept local, bundle committed)
+scripts/node_modules/
+scripts/package-lock.json
+
+# Runtime
+.fileshare-tmp/
+*.log
+
+# Claude agent / Open Code Review artifacts
+.claude/
+.ocr/
+.opencode/
+CLAUDE.md
+AGENTS.md
+PLAN.md

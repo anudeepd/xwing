@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Nostromo — {{ current_path }}</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg"/>
+  <link rel="stylesheet" href="/static/style.css"/>
+</head>
+<body>
+<div class="shell">
+  <header>
+    <div class="header-left">
+      <svg class="logo-icon" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+        <rect x="6" y="6" width="188" height="188" rx="36" fill="#f5f3ff"/>
+        <polygon points="71,78 23,48 15,100 23,152 71,122"
+                 fill="none" stroke="#7c3aed" stroke-width="3" stroke-linejoin="round"/>
+        <polyline points="71,78 30,100 71,122"
+                  fill="none" stroke="#8b5cf6" stroke-width="1.5"
+                  stroke-linecap="round" stroke-linejoin="round"/>
+        <polygon points="129,78 177,48 185,100 177,152 129,122"
+                 fill="none" stroke="#7c3aed" stroke-width="3" stroke-linejoin="round"/>
+        <polyline points="129,78 170,100 129,122"
+                  fill="none" stroke="#8b5cf6" stroke-width="1.5"
+                  stroke-linecap="round" stroke-linejoin="round"/>
+        <line x1="71" y1="78"  x2="86" y2="86"  stroke="#7c3aed" stroke-width="2.5" stroke-linecap="round"/>
+        <line x1="71" y1="122" x2="86" y2="114" stroke="#7c3aed" stroke-width="2.5" stroke-linecap="round"/>
+        <line x1="129" y1="78"  x2="114" y2="86"  stroke="#7c3aed" stroke-width="2.5" stroke-linecap="round"/>
+        <line x1="129" y1="122" x2="114" y2="114" stroke="#7c3aed" stroke-width="2.5" stroke-linecap="round"/>
+        <circle cx="100" cy="100" r="20" fill="none" stroke="#7c3aed" stroke-width="3.5"/>
+        <circle cx="100" cy="100" r="13" fill="none" stroke="#8b5cf6" stroke-width="2.5"/>
+        <circle cx="100" cy="100" r="4.5" fill="#a78bfa"/>
+      </svg>
+      <span class="app-name">Nostromo</span>
+    </div>
+    <div class="header-right">
+      <span class="user-badge">{{ user }}</span>
+      {% if user != "anonymous" %}
+      <a class="logout-btn" href="/_auth/logout">logout</a>
+      {% endif %}
+    </div>
+  </header>
+
+  <nav class="breadcrumb">
+    {% for crumb in breadcrumbs %}
+      {% if not loop.last %}
+        <a href="{{ crumb.path }}">{{ crumb.name }}</a>
+        <span class="sep">/</span>
+      {% else %}
+        <span class="current">{{ crumb.name }}</span>
+      {% endif %}
+    {% endfor %}
+  </nav>
+
+  <div id="drop-zone" class="drop-zone">
+    <main>
+      <div class="toolbar">
+        <button class="btn btn-primary" id="upload-btn">Upload files</button>
+        <button class="btn" id="upload-folder-btn">Upload folder</button>
+        <button class="btn" id="mkdir-btn">New folder</button>
+        <input type="file" id="file-input" multiple hidden/>
+        <input type="file" id="folder-input" webkitdirectory multiple hidden/>
+        <div class="toolbar-sep"></div>
+        <div class="concurrency-wrap">
+          <span>parallel:</span>
+          <select id="concurrency-select">
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="4" selected>4</option>
+            <option value="8">8</option>
+          </select>
+        </div>
+      </div>
+
+      <table class="file-table">
+        <thead>
+          <tr>
+            <th class="col-icon"></th>
+            <th class="col-name">Name</th>
+            <th class="col-size">Size</th>
+            <th class="col-date">Modified</th>
+            <th class="col-action"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% if current_path != "/" %}
+          <tr class="entry entry-dir">
+            <td class="col-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7h18v14H3z"/><path d="M3 7l3-4h6l3 4"/></svg></td>
+            <td class="col-name"><a href="../">../</a></td>
+            <td></td><td></td><td></td>
+          </tr>
+          {% endif %}
+          {% for e in entries %}
+          <tr class="entry {% if e.is_dir %}entry-dir{% else %}entry-file{% endif %}">
+            <td class="col-icon">
+              {% if e.is_dir %}
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7h18v14H3z"/><path d="M3 7l3-4h6l3 4"/></svg>
+              {% else %}
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+              {% endif %}
+            </td>
+            <td class="col-name">
+              {% if e.is_dir %}
+              <a href="{{ current_path }}{{ e.name }}/">{{ e.name }}/</a>
+              {% elif e.editable %}
+              <a href="{{ current_path }}{{ e.name }}?edit">{{ e.name }}</a>
+              {% else %}
+              <a href="{{ current_path }}{{ e.name }}" download>{{ e.name }}</a>
+              {% endif %}
+            </td>
+            <td class="col-size">{{ e.size_human }}</td>
+            <td class="col-date" data-mtime="{{ e.mtime }}"></td>
+            <td class="col-action"><div class="col-action-inner">
+              {% if e.is_dir %}
+              <a class="btn-zip" href="{{ current_path }}{{ e.name }}/?zip" title="Download as zip">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              </a>
+              {% else %}
+              <a class="btn-zip" href="{{ current_path }}{{ e.name }}" download title="Download">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              </a>
+              {% endif %}
+              <button class="btn-delete" data-path="{{ current_path }}{{ e.name }}{% if e.is_dir %}/{% endif %}" title="Delete">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
+              </button>
+            </div></td>
+          </tr>
+          {% else %}
+          {% if current_path == "/" %}
+          <tr><td colspan="5" class="empty">No files yet. Upload something!</td></tr>
+          {% endif %}
+          {% endfor %}
+        </tbody>
+      </table>
+    </main>
+
+    <div class="drop-overlay">Drop files or folders to upload</div>
+  </div>
+
+  <!-- Upload progress panel -->
+  <div id="upload-panel" class="upload-panel hidden">
+    <div class="upload-panel-header">
+      <span>Uploads</span>
+      <button id="close-panel">&times;</button>
+    </div>
+    <div id="upload-list"></div>
+  </div>
+
+</div>
+
+<script>
+  const CURRENT_PATH = {{ current_path | tojson }};
+</script>
+<script src="/static/app.js"></script>
+</body>
+</html>

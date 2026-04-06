@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nostromo"
+version = "0.1.0"
+description = "Simple file sharing service with WebDAV support, designed for use with LDAPGate"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Anudeep D", email = "anudeep@example.com"}]
+
+dependencies = [
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.29.0",
+    "anyio>=4.0",
+    "click>=8.1.0",
+    "jinja2>=3.1.0",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+ldap = ["ldapgate"]
+
+[project.scripts]
+nostromo = "nostromo.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["nostromo"]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "httpx>=0.28.1",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

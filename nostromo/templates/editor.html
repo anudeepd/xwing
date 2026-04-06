@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>{{ filename }} — Nostromo</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg"/>
+  <link rel="stylesheet" href="/static/style.css"/>
+  <style>
+    .editor-shell {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+    .editor-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 20px;
+      border-bottom: 1px solid var(--border2);
+      background: var(--surface);
+      flex-shrink: 0;
+    }
+    .editor-toolbar .filename {
+      font-weight: 700;
+      font-size: 0.88rem;
+      color: var(--text);
+      margin-right: auto;
+    }
+    .editor-toolbar .filepath {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+    .save-status {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      min-width: 80px;
+      text-align: right;
+    }
+    .save-status.saved  { color: #22c55e; }
+    .save-status.error  { color: var(--danger); }
+    .save-status.saving { color: var(--accent); }
+    .editor-wrap {
+      flex: 1;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    /* CodeMirror fills the editor-wrap */
+    .cm-editor {
+      height: 100%;
+      font-size: 13px;
+    }
+    .cm-scroller { overflow: auto; }
+  </style>
+</head>
+<body>
+<div class="editor-shell">
+  <div class="editor-toolbar">
+    <a class="btn" href="{{ dir_path }}">← back</a>
+    <span class="filename">{{ filename }}</span>
+    <span class="filepath">{{ file_path }}</span>
+    <span class="save-status" id="save-status"></span>
+    <a class="btn" href="{{ file_path }}" download title="Download raw file">download</a>
+    <button class="btn btn-primary" id="save-btn">Save</button>
+  </div>
+  <div class="editor-wrap" id="editor-wrap"></div>
+</div>
+
+<script>
+  const FILE_PATH = {{ file_path | tojson }};
+  const FILE_EXT  = {{ ext | tojson }};
+  const CONTENT   = {{ content | tojson }};
+</script>
+<script src="/static/codemirror-bundle.js"></script>
+<script src="/static/editor.js"></script>
+</body>
+</html>

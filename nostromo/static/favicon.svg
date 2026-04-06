@@ -1,0 +1,35 @@
+<svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
+  <!-- Rounded square background -->
+  <rect x="6" y="6" width="188" height="188" rx="36" fill="#f5f3ff"/>
+
+  <!-- Left swept wing panel (TIE Advanced bent pentagon, pulled ~10% in from edges) -->
+  <polygon points="71,78 23,48 15,100 23,152 71,122"
+           fill="none" stroke="#7c3aed" stroke-width="3" stroke-linejoin="round"/>
+  <!-- Left wing panel crease (V-chevron — bent solar panel structure) -->
+  <polyline points="71,78 30,100 71,122"
+            fill="none" stroke="#8b5cf6" stroke-width="1.5"
+            stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Right swept wing panel -->
+  <polygon points="129,78 177,48 185,100 177,152 129,122"
+           fill="none" stroke="#7c3aed" stroke-width="3" stroke-linejoin="round"/>
+  <!-- Right wing panel crease -->
+  <polyline points="129,78 170,100 129,122"
+            fill="none" stroke="#8b5cf6" stroke-width="1.5"
+            stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Left pylons -->
+  <line x1="71" y1="78"  x2="86" y2="86"  stroke="#7c3aed" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="71" y1="122" x2="86" y2="114" stroke="#7c3aed" stroke-width="2.5" stroke-linecap="round"/>
+
+  <!-- Right pylons -->
+  <line x1="129" y1="78"  x2="114" y2="86"  stroke="#7c3aed" stroke-width="2.5" stroke-linecap="round"/>
+  <line x1="129" y1="122" x2="114" y2="114" stroke="#7c3aed" stroke-width="2.5" stroke-linecap="round"/>
+
+  <!-- Cockpit hull -->
+  <circle cx="100" cy="100" r="20" fill="none" stroke="#7c3aed" stroke-width="3.5"/>
+  <!-- Cockpit viewport ring -->
+  <circle cx="100" cy="100" r="13" fill="none" stroke="#8b5cf6" stroke-width="2.5"/>
+  <!-- Cockpit center -->
+  <circle cx="100" cy="100" r="4.5" fill="#a78bfa"/>
+</svg>
