@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "nostromo"
-version = "0.1.1"
+version = "0.1.2"
 description = "File sharing server with WebDAV support"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -46,8 +46,12 @@ Issues = "https://github.com/anudeepd/nostromo/issues"
 [project.scripts]
 nostromo = "nostromo.cli:main"
 
-[tool.hatch.build.targets.wheel]
-packages = ["nostromo"]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["nostromo*"]
+
+[tool.setuptools.package-data]
+nostromo = ["static/**/*", "static/*", "templates/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
