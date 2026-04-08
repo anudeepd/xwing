@@ -1,4 +1,5 @@
 import asyncio
+import json
 import shutil
 import time
 import uuid
@@ -8,28 +9,60 @@ import anyio
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
+from .auth import get_user
 from .config import Settings
 from .files import safe_path
 
-# session_id → {dest_dir, filename, total_chunks, received, created_at}
-_sessions: dict[str, dict] = {}
-_SESSION_TTL = 3600  # seconds
-_MAX_CHUNKS = 10_000
+_SESSION_FILE = "session.json"
+
+
+def _session_path(tmp_dir: Path, session_id: str) -> Path:  # type: ignore[union-attr]
+    return tmp_dir / session_id / _SESSION_FILE
+
+
+def _session_path_sync(tmp_dir: Path, session_id: str) -> Path:  # type: ignore[union-attr]
+    """Synchronous version for tests."""
+    return tmp_dir / session_id / _SESSION_FILE
+
+
+async def _load_session(tmp_dir: Path, session_id: str) -> dict | None:  # type: ignore[union-attr]
+    """Load session from disk, returns None if not found or expired."""
+    session_file = _session_path(tmp_dir, session_id)
+    try:
+        async with await anyio.open_file(session_file, "r") as f:
+            content = await f.read()
+            return json.loads(content)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+async def _save_session(tmp_dir: Path, session: dict) -> None:  # type: ignore[union-attr]
+    """Save session to disk."""
+    session_id = session["session_id"]
+    session_file = _session_path(tmp_dir, session_id)
+    session_file.parent.mkdir(parents=True, exist_ok=True)
+    async with await anyio.open_file(session_file, "w") as f:
+        await f.write(json.dumps(session))
+
+
+async def _delete_session(tmp_dir: Path, session_id: str) -> None:  # type: ignore[union-attr]
+    """Delete session from disk."""
+    session_dir = tmp_dir / session_id
+    shutil.rmtree(session_dir, ignore_errors=True)
 
 
 def create_upload_router(settings: Settings) -> APIRouter:
     router = APIRouter(prefix="/_upload")
 
-    def _require_auth(request: Request) -> str | None:
-        """Authenticate request; return user header value or raise 403 if required."""
-        user = request.headers.get(settings.user_header)
-        if user is None and settings.require_auth:
-            raise HTTPException(status_code=403, detail="Authentication required")
-        return user
+    def _check_write_permission(user: str) -> None:
+        if not settings.permission.can_write(user):
+            raise HTTPException(status_code=403, detail="Write permission denied")
 
     @router.post("/init")
     async def upload_init(request: Request):
-        user = _require_auth(request)
+        user = get_user(request, settings)
+        _check_write_permission(user)
+
         body = await request.json()
 
         # Strip all path components — only the bare filename is allowed
@@ -45,9 +78,9 @@ def create_upload_router(settings: Settings) -> APIRouter:
             )
 
         total_chunks: int = int(body.get("total_chunks", 1))
-        if total_chunks < 1 or total_chunks > _MAX_CHUNKS:
+        if total_chunks < 1 or total_chunks > settings.max_chunks:
             raise HTTPException(
-                status_code=400, detail=f"total_chunks must be 1–{_MAX_CHUNKS}"
+                status_code=400, detail=f"total_chunks must be 1–{settings.max_chunks}"
             )
 
         rel_dir: str = body.get("dir", "")
@@ -61,58 +94,79 @@ def create_upload_router(settings: Settings) -> APIRouter:
         session_tmp = settings.tmp_dir / session_id  # type: ignore[operator]
         session_tmp.mkdir(parents=True, exist_ok=True)
 
-        _sessions[session_id] = {
+        session = {
+            "session_id": session_id,
             "dest_dir": str(dest_dir),
             "filename": filename,
             "total_chunks": total_chunks,
-            "received": set(),
+            "received": [],  # Stored as list for JSON serialization
             "created_at": time.monotonic(),
             "user": user,
         }
+        await _save_session(settings.tmp_dir, session)  # type: ignore[union-attr]
         return JSONResponse({"session_id": session_id})
 
     @router.put("/{session_id}/{chunk_index}")
     async def upload_chunk(session_id: str, chunk_index: int, request: Request):
-        user = _require_auth(request)
-        session = _sessions.get(session_id)
+        user = get_user(request, settings)
+        session = await _load_session(settings.tmp_dir, session_id)  # type: ignore[union-attr]
         if session is None:
             raise HTTPException(status_code=404, detail="Session not found")
-        if session.get("user") is not None and session.get("user") != user:
+        session_user = session.get("user")
+        if session_user and session_user.lower() != user.lower():
             raise HTTPException(status_code=403, detail="Not session owner")
 
         if chunk_index < 0 or chunk_index >= session["total_chunks"]:
             raise HTTPException(status_code=400, detail="Invalid chunk index")
 
-        chunk_path = settings.tmp_dir / session_id / f"{chunk_index}.part"  # type: ignore[operator]
+        chunk_path = settings.tmp_dir / session_id / f"{chunk_index}.part"  # type: ignore[union-attr]
         received_bytes = 0
-        async with await anyio.open_file(chunk_path, "wb") as f:
-            async for chunk in request.stream():
-                received_bytes += len(chunk)
-                if received_bytes > settings.max_upload_bytes:
-                    raise HTTPException(status_code=413, detail="Chunk too large")
-                await f.write(chunk)
+        try:
+            async with await anyio.open_file(chunk_path, "wb") as f:
+                async for chunk in request.stream():
+                    received_bytes += len(chunk)
+                    if received_bytes > settings.max_chunk_bytes:
+                        raise HTTPException(
+                            status_code=413, detail="Chunk exceeds 100MB limit"
+                        )
+                    if received_bytes > settings.max_upload_bytes:
+                        raise HTTPException(
+                            status_code=413, detail="Chunk exceeds total upload limit"
+                        )
+                    await f.write(chunk)
+        except HTTPException:
+            try:
+                chunk_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            raise
 
-        session["received"].add(chunk_index)
+        # Update received chunks in session and refresh TTL on activity
+        session["received"].append(chunk_index)
+        session["created_at"] = time.monotonic()
+        await _save_session(settings.tmp_dir, session)  # type: ignore[union-attr]
         return Response(status_code=204)
 
     @router.post("/{session_id}/complete")
     async def upload_complete(session_id: str, request: Request):
-        user = _require_auth(request)
-        session = _sessions.get(session_id)
+        user = get_user(request, settings)
+        _check_write_permission(user)
+        session = await _load_session(settings.tmp_dir, session_id)  # type: ignore[union-attr]
         if session is None:
             raise HTTPException(status_code=404, detail="Session not found")
-        if session.get("user") is not None and session.get("user") != user:
+        session_user = session.get("user")
+        if session_user and session_user.lower() != user.lower():
             raise HTTPException(status_code=403, detail="Not session owner")
 
         total = session["total_chunks"]
-        received = session["received"]
+        received = set(session["received"])
         if len(received) != total or set(range(total)) != received:
             missing = sorted(set(range(total)) - received)
             raise HTTPException(status_code=400, detail=f"Missing chunks: {missing}")
 
         dest_dir = Path(session["dest_dir"])
         dest_file = dest_dir / session["filename"]
-        tmp_dir = settings.tmp_dir / session_id  # type: ignore[operator]
+        tmp_dir = settings.tmp_dir / session_id  # type: ignore[union-attr]
 
         try:
             async with await anyio.open_file(dest_file, "wb") as out:
@@ -120,13 +174,20 @@ def create_upload_router(settings: Settings) -> APIRouter:
                     chunk_path = tmp_dir / f"{i}.part"
                     async with await anyio.open_file(chunk_path, "rb") as inp:
                         while True:
-                            data = await inp.read(256 * 1024)
+                            data = await inp.read(settings.chunk_read_size)
                             if not data:
                                 break
                             await out.write(data)
+        except OSError as e:
+            # Disk full or I/O error during write
+            try:
+                dest_file.unlink(missing_ok=True)
+            except Exception:
+                pass
+            raise HTTPException(status_code=500, detail=f"Write failed: {e}")
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
-            _sessions.pop(session_id, None)
+            await _delete_session(settings.tmp_dir, session_id)  # type: ignore[union-attr]
 
         return JSONResponse({"path": str(dest_file.relative_to(settings.root_dir))})
 
@@ -134,20 +195,34 @@ def create_upload_router(settings: Settings) -> APIRouter:
 
 
 async def cleanup_stale_sessions(settings: Settings) -> None:
-    """Background task: remove sessions older than SESSION_TTL."""
+    """Background task: remove sessions older than session_ttl_seconds."""
     while True:
         await asyncio.sleep(300)
-        _cleanup_once(settings)
+        await _cleanup_stale_async(settings)  # type: ignore[union-attr]
 
 
-def _cleanup_once(settings: Settings) -> None:
-    """Remove stale upload sessions. Extracted for testability."""
+async def _cleanup_stale_async(settings: Settings) -> None:  # type: ignore[union-attr]
+    """Remove stale upload sessions by scanning filesystem."""
     now = time.monotonic()
-    stale = [
-        sid
-        for sid, s in list(_sessions.items())
-        if now - s["created_at"] > _SESSION_TTL
-    ]
-    for sid in stale:
-        shutil.rmtree(settings.tmp_dir / sid, ignore_errors=True)  # type: ignore[operator]
-        _sessions.pop(sid, None)  # type: ignore[reportUnboundVariable]
+    if not settings.tmp_dir or not settings.tmp_dir.exists():
+        return
+
+    ttl = settings.session_ttl_seconds
+
+    for session_dir in settings.tmp_dir.iterdir():
+        if not session_dir.is_dir():
+            continue
+        session_file = session_dir / _SESSION_FILE
+        if not session_file.exists():
+            continue
+        try:
+            async with await anyio.open_file(session_file, "r") as f:
+                session = json.loads(await f.read())
+            if now - session.get("created_at", 0) > ttl:
+                shutil.rmtree(session_dir, ignore_errors=True)
+        except (json.JSONDecodeError, OSError):
+            continue
+
+
+# Backward compatibility alias for tests
+_cleanup_once = _cleanup_stale_async

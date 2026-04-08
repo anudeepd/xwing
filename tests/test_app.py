@@ -90,7 +90,9 @@ class TestPut:
         assert r.status_code == 409
 
     def test_put_exceeds_max_upload_bytes_returns_413(self, root, tmp_dir):
-        s = Settings(root_dir=root, tmp_dir=tmp_dir, max_upload_bytes=10)
+        s = Settings(
+            root_dir=root, tmp_dir=tmp_dir, max_upload_bytes=10, write_users={"*"}
+        )
         with TestClient(create_app(s)) as c:
             r = c.put("/large.txt", content=b"x" * 100)
         assert r.status_code == 413

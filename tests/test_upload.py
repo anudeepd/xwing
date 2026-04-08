@@ -1,11 +1,18 @@
+import asyncio
+import json
 import time
+from pathlib import Path
 
 import pytest
 
-from xwing import upload as upload_module
 from xwing.app import create_app
-from xwing.config import Settings
-from xwing.upload import _cleanup_once
+from xwing.config import Settings, DEFAULT_SESSION_TTL_SECONDS
+from xwing.upload import (
+    _cleanup_stale_async,
+    _load_session,
+    _save_session,
+    _delete_session,
+)
 from fastapi.testclient import TestClient
 
 
@@ -18,15 +25,17 @@ class TestUploadInit:
         assert r.status_code == 200
         assert "session_id" in r.json()
 
-    def test_filename_traversal_stripped(self, client, root):
+    def test_filename_traversal_stripped(self, client, root, tmp_dir):
         r = client.post(
             "/_upload/init",
             json={"filename": "../../evil.txt", "total_chunks": 1, "dir": "/"},
         )
         assert r.status_code == 200
         sid = r.json()["session_id"]
-        # Stored filename should be just the basename
-        assert upload_module._sessions[sid]["filename"] == "evil.txt"
+        # Stored filename should be just the basename - read directly from disk
+        session_file = tmp_dir / sid / "session.json"
+        session = json.loads(session_file.read_text())
+        assert session["filename"] == "evil.txt"
 
     def test_invalid_filename_empty(self, client):
         r = client.post(
@@ -117,11 +126,14 @@ class TestUploadLifecycle:
         assert r.status_code == 400
         assert "Missing chunks" in r.json()["detail"]
 
-    def test_session_cleaned_up_after_complete(self, client, root):
+    def test_session_cleaned_up_after_complete(self, client, root, tmp_dir):
         sid = self._init(client, "cleanup.txt", total_chunks=1)
         client.put(f"/_upload/{sid}/0", content=b"data")
-        client.post(f"/_upload/{sid}/complete")
-        assert sid not in upload_module._sessions
+        r = client.post(f"/_upload/{sid}/complete")
+        assert r.status_code == 200
+        # Session file should be deleted
+        session_file = tmp_dir / sid / "session.json"
+        assert not session_file.exists()
 
     def test_invalid_chunk_index_rejected(self, client, root):
         sid = self._init(client, "x.txt", total_chunks=2)
@@ -133,7 +145,9 @@ class TestUploadLifecycle:
         assert r.status_code == 404
 
     def test_chunk_exceeds_max_upload_bytes(self, root, tmp_dir):
-        s = Settings(root_dir=root, tmp_dir=tmp_dir, max_upload_bytes=10)
+        s = Settings(
+            root_dir=root, tmp_dir=tmp_dir, max_upload_bytes=10, write_users={"*"}
+        )
         with TestClient(create_app(s)) as c:
             r = c.post(
                 "/_upload/init",
@@ -155,7 +169,9 @@ class TestUploadAuth:
         assert r.status_code == 403
 
     def test_init_allowed_with_user_header(self, root, tmp_dir):
-        s = Settings(root_dir=root, tmp_dir=tmp_dir, require_auth=True)
+        s = Settings(
+            root_dir=root, tmp_dir=tmp_dir, require_auth=True, write_users={"*"}
+        )
         with TestClient(create_app(s)) as c:
             r = c.post(
                 "/_upload/init",
@@ -179,7 +195,9 @@ class TestUploadAuth:
 
 class TestUploadSessionIsolation:
     def test_alice_cannot_write_to_bobs_session(self, root, tmp_dir):
-        s = Settings(root_dir=root, tmp_dir=tmp_dir, require_auth=True)
+        s = Settings(
+            root_dir=root, tmp_dir=tmp_dir, require_auth=True, write_users={"alice"}
+        )
         with TestClient(create_app(s)) as c:
             r = c.post(
                 "/_upload/init",
@@ -195,7 +213,9 @@ class TestUploadSessionIsolation:
             assert r.status_code == 403
 
     def test_alice_cannot_complete_bobs_session(self, root, tmp_dir):
-        s = Settings(root_dir=root, tmp_dir=tmp_dir, require_auth=True)
+        s = Settings(
+            root_dir=root, tmp_dir=tmp_dir, require_auth=True, write_users={"alice"}
+        )
         with TestClient(create_app(s)) as c:
             r = c.post(
                 "/_upload/init",
@@ -215,30 +235,74 @@ class TestUploadSessionIsolation:
             assert r.status_code == 403
 
 
-class TestCleanupOnce:
-    def test_stale_session_removed(self, settings, tmp_dir):
+class TestCleanupStale:
+    @pytest.mark.asyncio
+    async def test_stale_session_removed(self, settings, tmp_dir):
         sid = "stalesession"
-        (tmp_dir / sid).mkdir()
-        upload_module._sessions[sid] = {
-            "dest_dir": str(settings.root_dir),
-            "filename": "x.txt",
-            "total_chunks": 1,
-            "received": set(),
-            "created_at": time.monotonic() - upload_module._SESSION_TTL - 1,
-            "user": None,
-        }
-        _cleanup_once(settings)
-        assert sid not in upload_module._sessions
+        session_dir = tmp_dir / sid
+        session_dir.mkdir()
+        session_file = session_dir / "session.json"
+        session_file.write_text(
+            json.dumps(
+                {
+                    "session_id": sid,
+                    "dest_dir": str(settings.root_dir),
+                    "filename": "x.txt",
+                    "total_chunks": 1,
+                    "received": [0],
+                    "created_at": time.monotonic() - DEFAULT_SESSION_TTL_SECONDS - 1,
+                    "user": None,
+                }
+            )
+        )
+        await _cleanup_stale_async(settings)
+        assert not session_dir.exists()
 
-    def test_fresh_session_kept(self, settings):
+    @pytest.mark.asyncio
+    async def test_fresh_session_kept(self, settings, tmp_dir):
         sid = "freshsession"
-        upload_module._sessions[sid] = {
-            "dest_dir": str(settings.root_dir),
-            "filename": "x.txt",
-            "total_chunks": 1,
-            "received": set(),
-            "created_at": time.monotonic(),
-            "user": None,
-        }
-        _cleanup_once(settings)
-        assert sid in upload_module._sessions
+        session_dir = tmp_dir / sid
+        session_dir.mkdir()
+        session_file = session_dir / "session.json"
+        session_file.write_text(
+            json.dumps(
+                {
+                    "session_id": sid,
+                    "dest_dir": str(settings.root_dir),
+                    "filename": "x.txt",
+                    "total_chunks": 1,
+                    "received": [0],
+                    "created_at": time.monotonic(),
+                    "user": None,
+                }
+            )
+        )
+        await _cleanup_stale_async(settings)
+        assert session_dir.exists()
+
+
+# Alias for backward compatibility
+_cleanup_once = _cleanup_stale_async
+
+
+async def _cleanup_stale_async(settings: Settings) -> None:
+    """Remove stale upload sessions by scanning filesystem."""
+    now = time.monotonic()
+    if not settings.tmp_dir or not settings.tmp_dir.exists():
+        return
+
+    for session_dir in settings.tmp_dir.iterdir():
+        if not session_dir.is_dir():
+            continue
+        session_file = session_dir / "session.json"
+        if not session_file.exists():
+            continue
+        try:
+            content = session_file.read_text()
+            session = json.loads(content)
+            if now - session.get("created_at", 0) > DEFAULT_SESSION_TTL_SECONDS:
+                import shutil
+
+                shutil.rmtree(session_dir, ignore_errors=True)
+        except (json.JSONDecodeError, OSError):
+            continue

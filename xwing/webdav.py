@@ -47,10 +47,14 @@ def _prop_response(href: str, path: Path) -> ET.Element:
 
 
 def propfind_response(request: Request, path: Path, root: Path) -> Response:
-    depth = request.headers.get("depth", "1")
+    depth_header = request.headers.get("depth", "1")
+
+    # Sanitize depth header - only accept "0", "1", or "infinity"
+    if depth_header not in ("0", "1", "infinity"):
+        depth_header = "1"
 
     # Reject Depth: infinity — not supported, per RFC 4918 §9.1
-    if depth == "infinity":
+    if depth_header == "infinity":
         return Response(status_code=403, content="Depth: infinity not supported")
 
     rel = "/" + str(path.relative_to(root)).replace("\\", "/")
@@ -60,7 +64,7 @@ def propfind_response(request: Request, path: Path, root: Path) -> Response:
     multistatus = ET.Element(_dav("multistatus"))
     multistatus.append(_prop_response(rel, path))
 
-    if depth != "0" and path.is_dir():
+    if depth_header != "0" and path.is_dir():
         for child in sorted(path.iterdir()):
             child_rel = rel + child.name
             if child.is_dir():
@@ -104,25 +108,51 @@ def _clear_destination(dest: Path, overwrite: bool) -> Response | None:
 async def copy_response(src: Path, dest: Path, overwrite: bool) -> Response:
     if not src.exists():
         return Response(status_code=404)
-    if (
-        err := await anyio.to_thread.run_sync(_clear_destination, dest, overwrite)  # type: ignore[reportAttributeAccessIssue]
-    ) is not None:
-        return err
-    if src.is_dir():
-        await anyio.to_thread.run_sync(lambda: shutil.copytree(src, dest))  # type: ignore[reportAttributeAccessIssue]
-    else:
-        await anyio.to_thread.run_sync(lambda: shutil.copy2(src, dest))  # type: ignore[reportAttributeAccessIssue]
+    if dest.exists():
+        if not overwrite:
+            return Response(status_code=412, content="Destination exists")
+        if dest.is_dir():
+            await anyio.to_thread.run_sync(shutil.rmtree, dest)  # type: ignore[reportAttributeAccessIssue]
+        else:
+            await anyio.to_thread.run_sync(dest.unlink)  # type: ignore[reportAttributeAccessIssue]
+
+    # Copy to temp file first, then rename (atomic)
+    temp_dest = dest.with_suffix(dest.suffix + ".tmp")
+    try:
+        if src.is_dir():
+            await anyio.to_thread.run_sync(lambda: shutil.copytree(src, temp_dest))  # type: ignore[reportAttributeAccessIssue]
+        else:
+            await anyio.to_thread.run_sync(lambda: shutil.copy2(src, temp_dest))  # type: ignore[reportAttributeAccessIssue]
+        temp_dest.replace(dest)
+    except OSError:
+        try:
+            temp_dest.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return Response(status_code=500, content="Copy failed")
     return Response(status_code=201)
 
 
 async def move_response(src: Path, dest: Path, overwrite: bool) -> Response:
     if not src.exists():
         return Response(status_code=404)
-    if (
-        err := await anyio.to_thread.run_sync(_clear_destination, dest, overwrite)  # type: ignore[reportAttributeAccessIssue]
-    ) is not None:
-        return err
-    await anyio.to_thread.run_sync(lambda: shutil.move(str(src), dest))  # type: ignore[reportAttributeAccessIssue]
+    if dest.exists():
+        if not overwrite:
+            return Response(status_code=412, content="Destination exists")
+        if dest.is_dir():
+            await anyio.to_thread.run_sync(shutil.rmtree, dest)  # type: ignore[reportAttributeAccessIssue]
+        else:
+            await anyio.to_thread.run_sync(dest.unlink)  # type: ignore[reportAttributeAccessIssue]
+
+    # Use rename (atomic) - works across filesystems
+    try:
+        await anyio.to_thread.run_sync(lambda: src.replace(dest))  # type: ignore[reportAttributeAccessIssue]
+    except OSError:
+        # Fallback to move if rename fails (cross-filesystem)
+        try:
+            await anyio.to_thread.run_sync(lambda: shutil.move(str(src), dest))  # type: ignore[reportAttributeAccessIssue]
+        except Exception:
+            return Response(status_code=500, content="Move failed")
     return Response(status_code=201)
 
 

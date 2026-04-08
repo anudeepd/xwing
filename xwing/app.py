@@ -9,10 +9,11 @@ from urllib.parse import quote, unquote, urlparse
 
 import anyio
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from .auth import get_user
 from .config import Settings
 from .files import human_size, is_editable, list_dir, safe_path
 from .upload import cleanup_stale_sessions, create_upload_router
@@ -31,8 +32,6 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 def create_app_reload() -> FastAPI:
     """Factory for uvicorn reload mode — reads settings from environment variables."""
-    from .config import Settings
-
     root = os.environ.get("XWING_ROOT")
     if not root:
         raise RuntimeError(
@@ -48,8 +47,28 @@ def create_app_reload() -> FastAPI:
         kwargs["max_upload_bytes"] = int(
             float(os.environ["XWING_MAX_UPLOAD_GB"]) * 1024**3
         )
+    if os.environ.get("XWING_MAX_CHUNK_MB"):
+        kwargs["max_chunk_bytes"] = int(os.environ["XWING_MAX_CHUNK_MB"]) * 1024**2
+    if os.environ.get("XWING_MAX_CHUNKS"):
+        kwargs["max_chunks"] = int(os.environ["XWING_MAX_CHUNKS"])
+    if os.environ.get("XWING_SESSION_TTL_MINUTES"):
+        kwargs["session_ttl_seconds"] = (
+            int(os.environ["XWING_SESSION_TTL_MINUTES"]) * 60
+        )
     if os.environ.get("XWING_USER_HEADER"):
         kwargs["user_header"] = os.environ["XWING_USER_HEADER"]
+    if os.environ.get("XWING_READ_USERS"):
+        kwargs["read_users"] = set(
+            u.strip() for u in os.environ["XWING_READ_USERS"].split(",") if u.strip()
+        )
+    if os.environ.get("XWING_WRITE_USERS"):
+        kwargs["write_users"] = set(
+            u.strip() for u in os.environ["XWING_WRITE_USERS"].split(",") if u.strip()
+        )
+    if os.environ.get("XWING_ADMIN_USERS"):
+        kwargs["admin_users"] = set(
+            u.strip() for u in os.environ["XWING_ADMIN_USERS"].split(",") if u.strip()
+        )
     settings = Settings(**kwargs)
     return create_app(settings)
 
@@ -91,14 +110,6 @@ def create_app(settings: Settings) -> FastAPI:
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def get_user(request: Request) -> str:
-        user = request.headers.get(settings.user_header)
-        if user is None:
-            if settings.require_auth:
-                raise HTTPException(status_code=403, detail="Authentication required")
-            return "anonymous"
-        return user
-
     def resolve(request: Request) -> Path:
         rel = request.path_params.get("path", "")
         try:
@@ -130,11 +141,37 @@ def create_app(settings: Settings) -> FastAPI:
             return "/"
         return "/" + rel.as_posix()
 
+    def _check_read_permission(user: str) -> None:
+        if not settings.permission.can_read(user):
+            raise HTTPException(status_code=403, detail="Read permission denied")
+
+    def _check_write_permission(user: str) -> None:
+        if not settings.permission.can_write(user):
+            raise HTTPException(status_code=403, detail="Write permission denied")
+
+    def _check_admin_permission(user: str) -> None:
+        if not settings.permission.can_admin(user):
+            raise HTTPException(status_code=403, detail="Admin permission denied")
+
     # ── Method handlers ───────────────────────────────────────────────────────
 
-    async def _handle_put(fspath: Path, request: Request) -> Response:
+    async def _handle_put(fspath: Path, request: Request, user: str) -> Response:
+        _check_write_permission(user)
+
         if fspath.is_dir():
             raise HTTPException(status_code=409, detail="Is a directory")
+
+        # Check Content-Length early if provided
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                if int(content_length) > settings.max_upload_bytes:
+                    raise HTTPException(
+                        status_code=413, detail="Upload exceeds size limit"
+                    )
+            except ValueError:
+                pass  # Invalid header, fall through to stream-based check
+
         fspath.parent.mkdir(parents=True, exist_ok=True)
         temp_file = fspath.with_suffix(fspath.suffix + ".tmp")
         received_bytes = 0
@@ -152,9 +189,18 @@ def create_app(settings: Settings) -> FastAPI:
             except FileNotFoundError:
                 pass
             raise
+        except OSError as e:
+            # Disk full or I/O error
+            try:
+                await anyio.to_thread.run_sync(temp_file.unlink)  # type: ignore[reportAttributeAccessIssue]
+            except Exception:
+                pass
+            raise HTTPException(status_code=500, detail=f"Write failed: {e}")
         return Response(status_code=204)
 
-    async def _handle_delete(fspath: Path) -> Response:
+    async def _handle_delete(fspath: Path, user: str) -> Response:
+        _check_admin_permission(user)
+
         if not fspath.exists():
             raise HTTPException(status_code=404)
         if fspath.is_dir():
@@ -188,7 +234,10 @@ def create_app(settings: Settings) -> FastAPI:
         if request.method == "GET" and "text/html" not in accept:
             return propfind_response(request, fspath, settings.root_dir)
 
-        entries = list_dir(fspath)
+        try:
+            entries = list_dir(fspath)
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="Permission denied")
 
         parts = [p for p in rel_path.strip("/").split("/") if p]
         breadcrumbs = [{"name": "Home", "path": "/"}]
@@ -267,8 +316,12 @@ def create_app(settings: Settings) -> FastAPI:
     )
     async def catch_all(request: Request, path: str = ""):
         method = request.method.upper()
-        user = get_user(request)
+        user = get_user(request, settings)
         fspath = resolve(request)
+
+        # Check read permission for all operations (except OPTIONS)
+        if method != "OPTIONS":
+            _check_read_permission(user)
 
         if method == "OPTIONS":
             return Response(
@@ -286,14 +339,17 @@ def create_app(settings: Settings) -> FastAPI:
             return propfind_response(request, fspath, settings.root_dir)
 
         if method == "MKCOL":
+            _check_write_permission(user)
             return mkcol_response(fspath)
 
         if method == "COPY":
+            _check_write_permission(user)
             dest = dest_from_header(request, settings.root_dir)
             overwrite = request.headers.get("overwrite", "T").upper() != "F"
             return await copy_response(fspath, dest, overwrite)
 
         if method == "MOVE":
+            _check_admin_permission(user)
             dest = dest_from_header(request, settings.root_dir)
             overwrite = request.headers.get("overwrite", "T").upper() != "F"
             return await move_response(fspath, dest, overwrite)
@@ -305,10 +361,10 @@ def create_app(settings: Settings) -> FastAPI:
             return unlock_response()
 
         if method == "PUT":
-            return await _handle_put(fspath, request)
+            return await _handle_put(fspath, request, user)
 
         if method == "DELETE":
-            return await _handle_delete(fspath)
+            return await _handle_delete(fspath, user)
 
         # GET / HEAD
         return await _handle_get(fspath, request, user)

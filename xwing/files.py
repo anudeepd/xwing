@@ -14,24 +14,47 @@ def safe_path(root: Path, rel: str) -> Path:
 
 
 def list_dir(path: Path) -> list[dict]:
-    """Return sorted directory entries as dicts suitable for templates."""
-    entries = []
-    for child in sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())):
-        stat = child.stat()
-        is_dir = child.is_dir()
-        entries.append(
-            {
-                "name": child.name,
-                "is_dir": is_dir,
-                "size": stat.st_size,
-                "size_human": "" if is_dir else human_size(stat.st_size),
-                "mtime": stat.st_mtime,
-                "editable": (not is_dir)
-                and stat.st_size <= _EDITABLE_MAX
-                and is_editable(child),
-            }
-        )
-    return entries
+    """Return sorted directory entries as dicts suitable for templates.
+
+    Raises:
+        PermissionError: If directory cannot be accessed
+        FileNotFoundError: If directory doesn't exist
+    """
+    try:
+        entries = []
+        for child in sorted(
+            path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())
+        ):
+            try:
+                stat = child.stat()
+                is_dir = child.is_dir()
+                entries.append(
+                    {
+                        "name": child.name,
+                        "is_dir": is_dir,
+                        "size": stat.st_size,
+                        "size_human": "" if is_dir else human_size(stat.st_size),
+                        "mtime": stat.st_mtime,
+                        "editable": (not is_dir)
+                        and stat.st_size <= _EDITABLE_MAX
+                        and is_editable(child),
+                    }
+                )
+            except PermissionError:
+                # Skip files we can't access - still include directory itself
+                entries.append(
+                    {
+                        "name": child.name,
+                        "is_dir": child.is_dir() if child.exists() else False,
+                        "size": 0,
+                        "size_human": "",
+                        "mtime": 0,
+                        "editable": False,
+                    }
+                )
+        return entries
+    except PermissionError:
+        raise
 
 
 _EDITABLE_EXTS = {

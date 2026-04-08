@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/anudeepd/xwing/main/assets/logo.svg" alt="Xwing" width="120"/>
+  <img src="https://raw.githubusercontent.com/anudeepd/xwing/main/assets/logo.svg" alt="X-wing" width="120"/>
 </p>
 
-<h1 align="center">Xwing</h1>
+<h1 align="center">X-wing</h1>
 
 <p align="center">A self-contained file sharing server with WebDAV support. Works out of the box or integrates with LDAPGate for corporate LDAP/AD authentication.</p>
 
@@ -88,7 +88,7 @@ curl -X POST http://localhost:8989/_upload/<session_id>/complete
 
 ## LDAP / Active Directory Authentication
 
-Xwing supports two modes for LDAP/AD auth:
+X-wing supports two modes for LDAP/AD auth:
 
 **Mode 1 — Standalone proxy:** Run LDAPGate as a reverse proxy in front of xwing. Authenticated requests get an `X-Forwarded-User` header that xwing reads.
 
