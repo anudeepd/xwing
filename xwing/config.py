@@ -1,5 +1,5 @@
 import hashlib
-import secrets
+import os
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -85,7 +85,7 @@ class Settings(BaseModel):
     @model_validator(mode="after")
     def set_tmp_dir(self) -> "Settings":
         if self.tmp_dir is None:
-            salt = secrets.token_hex(4)
+            salt = os.urandom(4).hex()
             root_str = str(self.root_dir.resolve())
             root_hash = hashlib.sha256((salt + root_str).encode()).hexdigest()[:12]
             self.tmp_dir = (

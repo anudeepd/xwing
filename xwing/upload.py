@@ -71,7 +71,7 @@ def create_upload_router(settings: Settings) -> APIRouter:
         if not filename or filename in (".", ".."):
             raise HTTPException(status_code=400, detail="Invalid filename")
 
-        # .env files and variants contain secrets — reject before accepting any data
+        # .env files and variants contain sensitive data — reject before accepting any data
         if filename == ".env" or filename.startswith(".env."):
             raise HTTPException(
                 status_code=400, detail="Uploading .env files is not allowed"

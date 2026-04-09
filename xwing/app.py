@@ -214,7 +214,7 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(status_code=404)
 
         if fspath.name == ".env" or fspath.name.startswith(".env."):
-            raise HTTPException(status_code=403, detail="Forbidden: secrets file")
+            raise HTTPException(status_code=403, detail="Forbidden: sensitive file")
 
         if fspath.is_dir():
             return await _handle_get_dir(fspath, request, user)
