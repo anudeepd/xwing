@@ -67,7 +67,7 @@ def main():
     default=None,
     type=click.Path(exists=True, dir_okay=False, resolve_path=True),
     help="Path to YAML file with per-user read/write/delete permissions. "
-         "Unlisted users and '*' fallback default to read-only.",
+         "Unlisted users are denied unless '*' is configured.",
 )
 # Deprecated in 0.2.2 — replaced by --users-config
 @click.option("--read-users", default=None, hidden=True)
@@ -77,6 +77,13 @@ def main():
     "--user-header",
     default=None,
     help="Header to read username from [default: X-Forwarded-User].",
+)
+@click.option(
+    "--trusted-auth-proxy",
+    "trusted_auth_proxies",
+    multiple=True,
+    help="Trusted proxy IP/CIDR allowed to supply --user-header. "
+         "Repeat for multiple proxies. Required for standalone LDAPGate proxy mode.",
 )
 @click.option(
     "--reload", is_flag=True, default=False, help="Auto-reload on code changes (dev)."
@@ -103,6 +110,7 @@ def serve(
     write_users,
     admin_users,
     user_header,
+    trusted_auth_proxies,
     reload,
     ldap_config,
 ):
@@ -163,8 +171,12 @@ def serve(
         kwargs["session_ttl_seconds"] = session_ttl_minutes * 60
     if user_header:
         kwargs["user_header"] = user_header
+    if trusted_auth_proxies:
+        kwargs["trusted_auth_proxies"] = list(trusted_auth_proxies)
     if users_config is not None:
         kwargs["users_config"] = users_config
+    if ldap_config is not None:
+        kwargs["ldap_config"] = ldap_config
 
     if reload:
         os.environ["XWING_ROOT"] = root
@@ -183,6 +195,10 @@ def serve(
             os.environ["XWING_USERS_CONFIG"] = users_config
         if user_header:
             os.environ["XWING_USER_HEADER"] = user_header
+        if trusted_auth_proxies:
+            os.environ["XWING_TRUSTED_AUTH_PROXIES"] = ",".join(trusted_auth_proxies)
+        if ldap_config is not None:
+            os.environ["XWING_LDAP_CONFIG"] = ldap_config
 
         uvicorn.run(
             "xwing.app:create_app_reload",

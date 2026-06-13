@@ -1,0 +1,14 @@
+ldap:
+    url: ldaps://ldap.example.com:636
+    bind_dn: cn=svc,dc=example,dc=com
+    bind_password: "replace-with-bind-password"
+    base_dn: dc=example,dc=com
+    user_filter: "(uid={username})"
+    allowed_users:
+        - alice
+        - bob
+proxy:
+    backend_url: http://localhost:8989
+    secret_key: replace-with-at-least-32-random-characters
+    app_name: X-wing
+    secure_cookies: true

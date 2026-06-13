@@ -3,12 +3,11 @@ import io
 import logging
 import os
 import shutil
+import tempfile
 import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
-
-logger = logging.getLogger(__name__)
 
 import anyio
 from fastapi import FastAPI, HTTPException, Request, Response
@@ -18,7 +17,7 @@ from fastapi.templating import Jinja2Templates
 
 from .auth import get_user, require_perm
 from .config import Settings
-from .files import human_size, is_editable, list_dir, safe_path
+from .files import human_size, is_editable, is_within_root, list_dir, safe_path
 from .upload import cleanup_stale_sessions, create_upload_router
 from .webdav import (
     copy_response,
@@ -28,6 +27,8 @@ from .webdav import (
     propfind_response,
     unlock_response,
 )
+
+logger = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
@@ -60,8 +61,16 @@ def create_app_reload() -> FastAPI:
         )
     if os.environ.get("XWING_USER_HEADER"):
         kwargs["user_header"] = os.environ["XWING_USER_HEADER"]
+    if os.environ.get("XWING_TRUSTED_AUTH_PROXIES"):
+        kwargs["trusted_auth_proxies"] = [
+            p.strip()
+            for p in os.environ["XWING_TRUSTED_AUTH_PROXIES"].split(",")
+            if p.strip()
+        ]
     if os.environ.get("XWING_USERS_CONFIG"):
         kwargs["users_config"] = Path(os.environ["XWING_USERS_CONFIG"])
+    if os.environ.get("XWING_LDAP_CONFIG"):
+        kwargs["ldap_config"] = Path(os.environ["XWING_LDAP_CONFIG"])
     settings = Settings(**kwargs)
     return create_app(settings)
 
@@ -85,8 +94,11 @@ def create_app(settings: Settings) -> FastAPI:
             "Pass --users-config <file> to grant write or delete access."
         )
 
-    # LDAPGate middleware — enabled via XWING_LDAP_CONFIG env var or --ldap-config CLI flag
-    _ldap_config_path = os.getenv("XWING_LDAP_CONFIG")
+    # LDAPGate middleware — enabled via Settings, XWING_LDAP_CONFIG, or --ldap-config
+    # CLI flag. The env fallback keeps direct ASGI factory deployments simple.
+    _ldap_config_path = settings.ldap_config or (
+        Path(env_path) if (env_path := os.getenv("XWING_LDAP_CONFIG")) else None
+    )
     if _ldap_config_path:
         try:
             from ldapgate.config import load_config  # type: ignore[import]
@@ -94,12 +106,12 @@ def create_app(settings: Settings) -> FastAPI:
         except ImportError as e:
             raise RuntimeError(
                 "ldapgate is not installed but XWING_LDAP_CONFIG is set. "
-                "Install it with: pip install ldapgate"
+                "Install it with: pip install 'xwing[ldap]' or pip install ldapgate"
             ) from e
         _login_template = TEMPLATES_DIR / "login.html"
         add_ldap_auth(
             app,
-            load_config(_ldap_config_path),
+            load_config(str(_ldap_config_path)),
             template_path=str(_login_template) if _login_template.exists() else None,
         )
 
@@ -142,10 +154,34 @@ def create_app(settings: Settings) -> FastAPI:
             return "/"
         return "/" + rel.as_posix()
 
+    def _to_url_path(fspath: Path, *, trailing_slash: bool = False) -> str:
+        rel = fspath.relative_to(settings.root_dir)
+        if rel == Path("."):
+            return "/"
+        encoded = "/" + "/".join(quote(part, safe="") for part in rel.parts)
+        if trailing_slash and not encoded.endswith("/"):
+            encoded += "/"
+        return encoded
+
+    def _is_sensitive_path(fspath: Path) -> bool:
+        try:
+            rel = fspath.resolve().relative_to(settings.root_dir.resolve())
+        except ValueError:
+            rel = Path(fspath.name)
+        return any(part == ".env" or part.startswith(".env.") for part in rel.parts)
+
+    def _reject_sensitive_path(fspath: Path) -> None:
+        if _is_sensitive_path(fspath):
+            raise HTTPException(status_code=403, detail="Forbidden: sensitive file")
+
+    def _is_root_path(fspath: Path) -> bool:
+        return fspath.resolve() == settings.root_dir.resolve()
+
     # ── Method handlers ───────────────────────────────────────────────────────
 
     async def _handle_put(fspath: Path, request: Request, user: str) -> Response:
         require_perm(user, "write", settings)
+        _reject_sensitive_path(fspath)
 
         if fspath.is_dir():
             raise HTTPException(status_code=409, detail="Is a directory")
@@ -162,7 +198,14 @@ def create_app(settings: Settings) -> FastAPI:
                 pass  # Invalid header, fall through to stream-based check
 
         fspath.parent.mkdir(parents=True, exist_ok=True)
-        temp_file = fspath.with_suffix(fspath.suffix + ".tmp")
+        temp_handle = tempfile.NamedTemporaryFile(
+            prefix=f".{fspath.name}.",
+            suffix=".tmp",
+            dir=fspath.parent,
+            delete=False,
+        )
+        temp_file = Path(temp_handle.name)
+        temp_handle.close()
         received_bytes = 0
         try:
             async with await anyio.open_file(temp_file, "wb") as f:
@@ -189,6 +232,9 @@ def create_app(settings: Settings) -> FastAPI:
 
     async def _handle_delete(fspath: Path, user: str) -> Response:
         require_perm(user, "delete", settings)
+        if _is_root_path(fspath):
+            raise HTTPException(status_code=403, detail="Cannot delete root")
+        _reject_sensitive_path(fspath)
 
         if not fspath.exists():
             raise HTTPException(status_code=404)
@@ -202,8 +248,7 @@ def create_app(settings: Settings) -> FastAPI:
         if not fspath.exists():
             raise HTTPException(status_code=404)
 
-        if fspath.name == ".env" or fspath.name.startswith(".env."):
-            raise HTTPException(status_code=403, detail="Forbidden: sensitive file")
+        _reject_sensitive_path(fspath)
 
         if fspath.is_dir():
             return await _handle_get_dir(fspath, request, user)
@@ -215,9 +260,10 @@ def create_app(settings: Settings) -> FastAPI:
 
     async def _handle_get_dir(fspath: Path, request: Request, user: str) -> Response:
         rel_path = _to_rel_path(fspath)
+        url_path = _to_url_path(fspath, trailing_slash=True)
 
         if "zip" in request.query_params:
-            return await _zip_response(fspath)
+            return await _zip_response(fspath, settings.root_dir)
 
         accept = request.headers.get("accept", "")
         if request.method == "GET" and "text/html" not in accept:
@@ -229,11 +275,12 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(status_code=403, detail="Permission denied")
 
         parts = [p for p in rel_path.strip("/").split("/") if p]
-        breadcrumbs = [{"name": "Home", "path": "/"}]
-        cumulative = ""
+        breadcrumbs = [{"name": "Home", "path": "/", "url_path": "/"}]
+        cumulative_parts = []
         for part in parts:
-            cumulative += f"/{part}"
-            breadcrumbs.append({"name": part, "path": cumulative + "/"})
+            cumulative_parts.append(part)
+            encoded = "/" + "/".join(quote(p, safe="") for p in cumulative_parts) + "/"
+            breadcrumbs.append({"name": part, "path": encoded, "url_path": encoded})
 
         return templates.TemplateResponse(
             request,
@@ -241,6 +288,7 @@ def create_app(settings: Settings) -> FastAPI:
             {
                 "entries": entries,
                 "current_path": rel_path if rel_path.endswith("/") else rel_path + "/",
+                "current_url_path": url_path,
                 "breadcrumbs": breadcrumbs,
                 "user": user,
             },
@@ -248,16 +296,20 @@ def create_app(settings: Settings) -> FastAPI:
 
     async def _handle_edit(fspath: Path, request: Request, user: str) -> Response:
         rel_path = _to_rel_path(fspath)
+        url_path = _to_url_path(fspath)
         content = await anyio.Path(fspath).read_text(encoding="utf-8", errors="replace")
         dir_path = rel_path.rsplit("/", 1)[0] + "/"
         if dir_path == "//":
             dir_path = "/"
+        dir_url_path = _to_url_path(fspath.parent, trailing_slash=True)
         return templates.TemplateResponse(
             request,
             "editor.html",
             {
                 "file_path": rel_path,
+                "file_url_path": url_path,
                 "dir_path": dir_path,
+                "dir_url_path": dir_url_path,
                 "filename": fspath.name,
                 "content": content,
                 "ext": fspath.suffix.lstrip(".").lower(),
@@ -265,14 +317,18 @@ def create_app(settings: Settings) -> FastAPI:
             },
         )
 
-    async def _zip_response(fspath: Path) -> Response:
+    async def _zip_response(fspath: Path, root: Path) -> Response:
         zip_name = (fspath.name or "archive") + ".zip"
 
         def _build() -> bytes:
             buf = io.BytesIO()
             with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
                 for child in sorted(fspath.rglob("*")):
-                    if child.is_file():
+                    if (
+                        child.is_file()
+                        and is_within_root(root, child)
+                        and not _is_sensitive_path(child)
+                    ):
                         zf.write(child, child.relative_to(fspath))
             return buf.getvalue()
 
@@ -327,21 +383,30 @@ def create_app(settings: Settings) -> FastAPI:
         if method == "PROPFIND":
             if not fspath.exists():
                 raise HTTPException(status_code=404)
+            _reject_sensitive_path(fspath)
             return propfind_response(request, fspath, settings.root_dir)
 
         if method == "MKCOL":
             require_perm(user, "write", settings)
+            _reject_sensitive_path(fspath)
             return mkcol_response(fspath)
 
         if method == "COPY":
             require_perm(user, "write", settings)
             dest = dest_from_header(request, settings.root_dir)
+            _reject_sensitive_path(fspath)
+            _reject_sensitive_path(dest)
             overwrite = request.headers.get("overwrite", "T").upper() != "F"
             return await copy_response(fspath, dest, overwrite)
 
         if method == "MOVE":
             require_perm(user, "delete", settings)
+            require_perm(user, "write", settings)
             dest = dest_from_header(request, settings.root_dir)
+            if _is_root_path(fspath):
+                raise HTTPException(status_code=403, detail="Cannot move root")
+            _reject_sensitive_path(fspath)
+            _reject_sensitive_path(dest)
             overwrite = request.headers.get("overwrite", "T").upper() != "F"
             return await move_response(fspath, dest, overwrite)
 

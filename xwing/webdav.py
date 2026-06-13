@@ -1,9 +1,12 @@
 """WebDAV method handlers (PROPFIND, MKCOL, COPY, MOVE, LOCK, UNLOCK)."""
 
 import shutil
+import tempfile
+import uuid
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 
 import anyio
 from fastapi import Request, Response
@@ -46,6 +49,16 @@ def _prop_response(href: str, path: Path) -> ET.Element:
     return response
 
 
+def _href_for_path(path: Path, root: Path) -> str:
+    rel = path.relative_to(root)
+    if rel == Path("."):
+        return "/"
+    href = "/" + "/".join(quote(part, safe="") for part in rel.parts)
+    if path.is_dir():
+        href += "/"
+    return href
+
+
 def propfind_response(request: Request, path: Path, root: Path) -> Response:
     depth_header = request.headers.get("depth", "1")
 
@@ -57,19 +70,14 @@ def propfind_response(request: Request, path: Path, root: Path) -> Response:
     if depth_header == "infinity":
         return Response(status_code=403, content="Depth: infinity not supported")
 
-    rel = "/" + str(path.relative_to(root)).replace("\\", "/")
-    if path.is_dir() and not rel.endswith("/"):
-        rel += "/"
+    rel = _href_for_path(path, root)
 
     multistatus = ET.Element(_dav("multistatus"))
     multistatus.append(_prop_response(rel, path))
 
     if depth_header != "0" and path.is_dir():
         for child in sorted(path.iterdir()):
-            child_rel = rel + child.name
-            if child.is_dir():
-                child_rel += "/"
-            multistatus.append(_prop_response(child_rel, child))
+            multistatus.append(_prop_response(_href_for_path(child, root), child))
 
     xml_bytes = ET.tostring(multistatus, encoding="utf-8", xml_declaration=True)
     return Response(
@@ -90,19 +98,36 @@ def mkcol_response(path: Path) -> Response:
     return Response(status_code=201)
 
 
-def _clear_destination(dest: Path, overwrite: bool) -> Response | None:
-    """Remove dest if it exists and overwrite is True; return error Response otherwise.
+def _cleanup_path(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path, ignore_errors=True)
+    else:
+        path.unlink(missing_ok=True)
 
-    Note: synchronous — callers must wrap in run_sync if called from async context.
-    """
-    if dest.exists():
-        if not overwrite:
-            return Response(status_code=412, content="Destination exists")
-        if dest.is_dir():
-            shutil.rmtree(dest)
-        else:
-            dest.unlink()
-    return None
+
+def _unique_hidden_path(parent: Path, name: str, suffix: str) -> Path:
+    return parent / f".{name}.{uuid.uuid4().hex}{suffix}"
+
+
+def _install_staged_path(staged: Path, dest: Path) -> None:
+    backup = None
+    try:
+        if dest.exists():
+            backup = _unique_hidden_path(dest.parent, dest.name, ".bak")
+            dest.replace(backup)
+        try:
+            staged.replace(dest)
+        except OSError:
+            shutil.move(str(staged), str(dest))
+    except Exception:
+        if backup is not None and backup.exists():
+            if dest.exists():
+                _cleanup_path(dest)
+            backup.replace(dest)
+        raise
+    finally:
+        if backup is not None and backup.exists():
+            _cleanup_path(backup)
 
 
 async def copy_response(src: Path, dest: Path, overwrite: bool) -> Response:
@@ -111,22 +136,31 @@ async def copy_response(src: Path, dest: Path, overwrite: bool) -> Response:
     if dest.exists():
         if not overwrite:
             return Response(status_code=412, content="Destination exists")
-        if dest.is_dir():
-            await anyio.to_thread.run_sync(shutil.rmtree, dest)  # type: ignore[reportAttributeAccessIssue]
-        else:
-            await anyio.to_thread.run_sync(dest.unlink)  # type: ignore[reportAttributeAccessIssue]
 
-    # Copy to temp file first, then rename (atomic)
-    temp_dest = dest.with_suffix(dest.suffix + ".tmp")
+    # Copy to a unique temp path first, then rename into place.
+    if src.is_dir():
+        temp_dest = Path(
+            tempfile.mkdtemp(prefix=f".{dest.name}.", suffix=".tmp", dir=dest.parent)
+        )
+        shutil.rmtree(temp_dest)
+    else:
+        temp_handle = tempfile.NamedTemporaryFile(
+            prefix=f".{dest.name}.",
+            suffix=".tmp",
+            dir=dest.parent,
+            delete=False,
+        )
+        temp_dest = Path(temp_handle.name)
+        temp_handle.close()
     try:
         if src.is_dir():
-            await anyio.to_thread.run_sync(lambda: shutil.copytree(src, temp_dest))  # type: ignore[reportAttributeAccessIssue]
+            await anyio.to_thread.run_sync(lambda: shutil.copytree(src, temp_dest, symlinks=True))  # type: ignore[reportAttributeAccessIssue]
         else:
             await anyio.to_thread.run_sync(lambda: shutil.copy2(src, temp_dest))  # type: ignore[reportAttributeAccessIssue]
-        temp_dest.replace(dest)
+        await anyio.to_thread.run_sync(_install_staged_path, temp_dest, dest)  # type: ignore[reportAttributeAccessIssue]
     except OSError:
         try:
-            temp_dest.unlink(missing_ok=True)
+            _cleanup_path(temp_dest)
         except Exception:
             pass
         return Response(status_code=500, content="Copy failed")
@@ -139,20 +173,11 @@ async def move_response(src: Path, dest: Path, overwrite: bool) -> Response:
     if dest.exists():
         if not overwrite:
             return Response(status_code=412, content="Destination exists")
-        if dest.is_dir():
-            await anyio.to_thread.run_sync(shutil.rmtree, dest)  # type: ignore[reportAttributeAccessIssue]
-        else:
-            await anyio.to_thread.run_sync(dest.unlink)  # type: ignore[reportAttributeAccessIssue]
 
-    # Use rename (atomic) - works across filesystems
     try:
-        await anyio.to_thread.run_sync(lambda: src.replace(dest))  # type: ignore[reportAttributeAccessIssue]
+        await anyio.to_thread.run_sync(_install_staged_path, src, dest)  # type: ignore[reportAttributeAccessIssue]
     except OSError:
-        # Fallback to move if rename fails (cross-filesystem)
-        try:
-            await anyio.to_thread.run_sync(lambda: shutil.move(str(src), dest))  # type: ignore[reportAttributeAccessIssue]
-        except Exception:
-            return Response(status_code=500, content="Move failed")
+        return Response(status_code=500, content="Move failed")
     return Response(status_code=201)
 
 

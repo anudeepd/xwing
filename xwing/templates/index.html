@@ -65,7 +65,7 @@
   <nav class="breadcrumb">
     {% for crumb in breadcrumbs %}
       {% if not loop.last %}
-        <a href="{{ crumb.path }}">{{ crumb.name }}</a>
+        <a href="{{ crumb.url_path }}">{{ crumb.name }}</a>
         <span class="sep">/</span>
       {% else %}
         <span class="current">{{ crumb.name }}</span>
@@ -122,26 +122,26 @@
             </td>
             <td class="col-name">
               {% if e.is_dir %}
-              <a href="{{ current_path }}{{ e.name }}/">{{ e.name }}/</a>
+              <a href="{{ current_url_path }}{{ e.url_name }}/">{{ e.name }}/</a>
               {% elif e.editable %}
-              <a href="{{ current_path }}{{ e.name }}?edit">{{ e.name }}</a>
+              <a href="{{ current_url_path }}{{ e.url_name }}?edit">{{ e.name }}</a>
               {% else %}
-              <a href="{{ current_path }}{{ e.name }}" download>{{ e.name }}</a>
+              <a href="{{ current_url_path }}{{ e.url_name }}" download>{{ e.name }}</a>
               {% endif %}
             </td>
             <td class="col-size">{{ e.size_human }}</td>
             <td class="col-date" data-mtime="{{ e.mtime }}"></td>
             <td class="col-action"><div class="col-action-inner">
               {% if e.is_dir %}
-              <a class="btn-zip" href="{{ current_path }}{{ e.name }}/?zip" title="Download as zip">
+              <a class="btn-zip" href="{{ current_url_path }}{{ e.url_name }}/?zip" title="Download as zip">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
               </a>
               {% else %}
-              <a class="btn-zip" href="{{ current_path }}{{ e.name }}" download title="Download">
+              <a class="btn-zip" href="{{ current_url_path }}{{ e.url_name }}" download title="Download">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
               </a>
               {% endif %}
-              <button class="btn-delete" data-path="{{ current_path }}{{ e.name }}{% if e.is_dir %}/{% endif %}" title="Delete">
+              <button class="btn-delete" data-path="{{ current_url_path }}{{ e.url_name }}{% if e.is_dir %}/{% endif %}" title="Delete">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4h6v2"/></svg>
               </button>
             </div></td>
@@ -170,7 +170,7 @@
 </div>
 
 <script>
-  const CURRENT_PATH = {{ current_path | tojson }};
+  const CURRENT_PATH = {{ current_url_path | tojson }};
 </script>
 <script src="/static/app.js"></script>
 </body>

@@ -38,6 +38,8 @@ function detectLang(ext) {
 
 // ── Editor setup ───────────────────────────────────────────────────────────────
 const langExtension = detectLang(FILE_EXT);
+let savedContent = CONTENT;
+let dirty = false;
 
 const view = new EditorView({
   state: EditorState.create({
@@ -48,6 +50,11 @@ const view = new EditorView({
       oneDark,
       ...langExtension,
       EditorView.lineWrapping,
+      EditorView.updateListener.of(update => {
+        if (update.docChanged) {
+          dirty = update.state.doc.toString() !== savedContent;
+        }
+      }),
     ],
   }),
   parent: document.getElementById("editor-wrap"),
@@ -72,6 +79,8 @@ async function save() {
       headers: { "Content-Type": "text/plain; charset=utf-8" },
     });
     if (!res.ok) throw new Error(res.status);
+    savedContent = content;
+    dirty = false;
     setStatus("saved", "saved");
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => setStatus("", ""), 3000);
@@ -91,14 +100,6 @@ document.addEventListener("keydown", e => {
 });
 
 // ── Unsaved changes guard ──────────────────────────────────────────────────────
-let dirty = false;
-view.dispatch({ effects: [] });  // init
-
-const originalContent = CONTENT;
-document.addEventListener("keydown", () => {
-  dirty = view.state.doc.toString() !== originalContent;
-});
-
 window.addEventListener("beforeunload", e => {
   if (dirty) {
     e.preventDefault();

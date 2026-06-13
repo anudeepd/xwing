@@ -1,4 +1,14 @@
 from pathlib import Path
+from urllib.parse import quote
+
+
+def is_within_root(root: Path, path: Path) -> bool:
+    """True if path resolves under root."""
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False
+    return True
 
 
 def safe_path(root: Path, rel: str) -> Path:
@@ -6,9 +16,7 @@ def safe_path(root: Path, rel: str) -> Path:
     # Strip leading slashes so Path doesn't treat it as absolute
     cleaned = rel.lstrip("/")
     resolved = (root / cleaned).resolve()
-    try:
-        resolved.relative_to(root.resolve())
-    except ValueError:
+    if not is_within_root(root, resolved):
         raise PermissionError(f"Path escapes root: {rel!r}")
     return resolved
 
@@ -31,6 +39,7 @@ def list_dir(path: Path) -> list[dict]:
                 entries.append(
                     {
                         "name": child.name,
+                        "url_name": quote(child.name, safe=""),
                         "is_dir": is_dir,
                         "size": stat.st_size,
                         "size_human": "" if is_dir else human_size(stat.st_size),
@@ -45,6 +54,7 @@ def list_dir(path: Path) -> list[dict]:
                 entries.append(
                     {
                         "name": child.name,
+                        "url_name": quote(child.name, safe=""),
                         "is_dir": child.is_dir() if child.exists() else False,
                         "size": 0,
                         "size_human": "",

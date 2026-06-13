@@ -1,18 +1,11 @@
-import asyncio
 import json
 import time
-from pathlib import Path
 
 import pytest
 
 from xwing.app import create_app
 from xwing.config import Settings, DEFAULT_SESSION_TTL_SECONDS
-from xwing.upload import (
-    _cleanup_stale_async,
-    _load_session,
-    _save_session,
-    _delete_session,
-)
+from xwing.upload import _SESSION_LOCKS, _cleanup_stale_async
 from fastapi.testclient import TestClient
 
 
@@ -24,6 +17,24 @@ class TestUploadInit:
         )
         assert r.status_code == 200
         assert "session_id" in r.json()
+
+    def test_invalid_json_rejected(self, client):
+        r = client.post(
+            "/_upload/init",
+            content=b"{not json",
+            headers={"Content-Type": "application/json"},
+        )
+        assert r.status_code == 400
+
+    def test_non_object_json_rejected(self, client):
+        r = client.post("/_upload/init", json=["not", "an", "object"])
+        assert r.status_code == 400
+
+    def test_non_string_filename_rejected(self, client):
+        r = client.post(
+            "/_upload/init", json={"filename": 123, "total_chunks": 1, "dir": "/"}
+        )
+        assert r.status_code == 400
 
     def test_filename_traversal_stripped(self, client, root, tmp_dir):
         r = client.post(
@@ -55,6 +66,13 @@ class TestUploadInit:
         )
         assert r.status_code == 400
 
+    def test_total_chunks_non_integer_rejected(self, client):
+        r = client.post(
+            "/_upload/init",
+            json={"filename": "x.txt", "total_chunks": "nope", "dir": "/"},
+        )
+        assert r.status_code == 400
+
     def test_total_chunks_over_max_rejected(self, client):
         r = client.post(
             "/_upload/init",
@@ -76,6 +94,21 @@ class TestUploadInit:
             json={"filename": "x.txt", "total_chunks": 1, "dir": "/file.txt"},
         )
         assert r.status_code == 404
+
+    def test_dest_non_string_rejected(self, client):
+        r = client.post(
+            "/_upload/init",
+            json={"filename": "x.txt", "total_chunks": 1, "dir": 123},
+        )
+        assert r.status_code == 400
+
+    def test_encoded_dest_dir_is_decoded(self, client, root):
+        (root / "hash#dir?").mkdir()
+        r = client.post(
+            "/_upload/init",
+            json={"filename": "x.txt", "total_chunks": 1, "dir": "/hash%23dir%3F/"},
+        )
+        assert r.status_code == 200
 
     def test_env_file_rejected(self, client):
         r = client.post(
@@ -135,6 +168,16 @@ class TestUploadLifecycle:
         session_file = tmp_dir / sid / "session.json"
         assert not session_file.exists()
 
+    def test_complete_failure_preserves_existing_destination(self, client, root, tmp_dir):
+        (root / "existing.txt").write_text("keep me")
+        sid = self._init(client, "existing.txt", total_chunks=1)
+        client.put(f"/_upload/{sid}/0", content=b"new data")
+        (tmp_dir / sid / "0.part").unlink()
+        r = client.post(f"/_upload/{sid}/complete")
+        assert r.status_code == 500
+        assert (root / "existing.txt").read_text() == "keep me"
+        assert sid not in _SESSION_LOCKS
+
     def test_invalid_chunk_index_rejected(self, client, root):
         sid = self._init(client, "x.txt", total_chunks=2)
         r = client.put(f"/_upload/{sid}/5", content=b"bad")
@@ -157,6 +200,53 @@ class TestUploadLifecycle:
             r = c.put(f"/_upload/{sid}/0", content=b"x" * 100)
         assert r.status_code == 413
 
+    def test_chunks_cannot_exceed_total_upload_bytes(self, root, tmp_dir, users_yaml):
+        s = Settings(
+            root_dir=root,
+            tmp_dir=tmp_dir,
+            max_upload_bytes=10,
+            max_chunk_bytes=10,
+            users_config=users_yaml,
+        )
+        with TestClient(create_app(s)) as c:
+            r = c.post(
+                "/_upload/init",
+                json={"filename": "x.txt", "total_chunks": 2, "dir": "/"},
+            )
+            sid = r.json()["session_id"]
+            assert c.put(f"/_upload/{sid}/0", content=b"123456").status_code == 204
+            r = c.put(f"/_upload/{sid}/1", content=b"abcdef")
+        assert r.status_code == 413
+
+    def test_invalid_session_id_rejected_before_filesystem_lookup(self, client):
+        r = client.put("/_upload/not-a-session/0", content=b"data")
+        assert r.status_code == 404
+
+    def test_chunk_requires_current_write_permission(self, root, tmp_dir, tmp_path):
+        users_yaml = tmp_path / "users.yaml"
+        users_yaml.write_text("users:\n  alice: rw\n")
+        s = Settings(
+            root_dir=root,
+            tmp_dir=tmp_dir,
+            require_auth=True,
+            users_config=users_yaml,
+            trusted_auth_proxies=["testclient"],
+        )
+        with TestClient(create_app(s)) as c:
+            r = c.post(
+                "/_upload/init",
+                json={"filename": "x.txt", "total_chunks": 1, "dir": "/"},
+                headers={"X-Forwarded-User": "alice"},
+            )
+            sid = r.json()["session_id"]
+            users_yaml.write_text("users:\n  alice: r\n")
+            r = c.put(
+                f"/_upload/{sid}/0",
+                content=b"data",
+                headers={"X-Forwarded-User": "alice"},
+            )
+        assert r.status_code == 403
+
 
 class TestUploadAuth:
     def test_init_blocked_when_require_auth(self, root, tmp_dir):
@@ -170,7 +260,8 @@ class TestUploadAuth:
 
     def test_init_allowed_with_user_header(self, root, tmp_dir, users_yaml):
         s = Settings(
-            root_dir=root, tmp_dir=tmp_dir, require_auth=True, users_config=users_yaml
+            root_dir=root, tmp_dir=tmp_dir, require_auth=True,
+            users_config=users_yaml, trusted_auth_proxies=["testclient"]
         )
         with TestClient(create_app(s)) as c:
             r = c.post(
@@ -198,7 +289,8 @@ class TestUploadSessionIsolation:
         users_yaml = tmp_path / "users.yaml"
         users_yaml.write_text("users:\n  alice:\n    read: true\n    write: true\n    delete: true\n")
         s = Settings(
-            root_dir=root, tmp_dir=tmp_dir, require_auth=True, users_config=users_yaml
+            root_dir=root, tmp_dir=tmp_dir, require_auth=True,
+            users_config=users_yaml, trusted_auth_proxies=["testclient"]
         )
         with TestClient(create_app(s)) as c:
             r = c.post(
@@ -218,7 +310,8 @@ class TestUploadSessionIsolation:
         users_yaml = tmp_path / "users.yaml"
         users_yaml.write_text("users:\n  alice:\n    read: true\n    write: true\n    delete: true\n")
         s = Settings(
-            root_dir=root, tmp_dir=tmp_dir, require_auth=True, users_config=users_yaml
+            root_dir=root, tmp_dir=tmp_dir, require_auth=True,
+            users_config=users_yaml, trusted_auth_proxies=["testclient"]
         )
         with TestClient(create_app(s)) as c:
             r = c.post(
@@ -283,5 +376,3 @@ class TestCleanupStale:
         )
         await _cleanup_stale_async(settings)
         assert session_dir.exists()
-
-

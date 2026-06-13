@@ -1,4 +1,5 @@
 import hashlib
+import ipaddress
 import logging
 import os
 import tempfile
@@ -32,6 +33,7 @@ class UserPerms:
 
 
 _DEFAULT_PERMS = UserPerms(read=True, write=False, delete=False)
+_DENY_PERMS = UserPerms(read=False, write=False, delete=False)
 
 
 class UserConfig:
@@ -57,7 +59,9 @@ class UserConfig:
 
     Compact format: only the characters 'r', 'w', 'd' are accepted.
     Any other character raises ValueError at load time.
-    Unlisted users and the '*' wildcard fall back to read-only (_DEFAULT_PERMS).
+    When a users config is present, unlisted users are denied unless the '*'
+    wildcard is configured. Without a users config, anonymous/default users
+    remain read-only for the no-auth local mode.
     """
 
     def __init__(self, path: Path) -> None:
@@ -89,6 +93,10 @@ class UserConfig:
                     f"only 'r', 'w', 'd' are valid characters"
                 )
             return UserPerms(read="r" in v, write="w" in v, delete="d" in v)
+        if not isinstance(v, dict):
+            raise ValueError(
+                f"Permissions for user {username!r} must be a string or mapping, got {type(v).__name__}"
+            )
         perms = {}
         for field, default in (("read", True), ("write", False), ("delete", False)):
             val = v.get(field, default)
@@ -101,7 +109,24 @@ class UserConfig:
 
     def get(self, user: str) -> UserPerms:
         key = user.lower()
-        return self._perms.get(key) or self._perms.get("*") or _DEFAULT_PERMS
+        return self._perms.get(key) or self._perms.get("*") or _DENY_PERMS
+
+
+def _ip_in_networks(ip_str: str, networks: list[str]) -> bool:
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return ip_str in networks
+    for entry in networks:
+        try:
+            if "/" in entry:
+                if ip in ipaddress.ip_network(entry, strict=False):
+                    return True
+            elif ip == ipaddress.ip_address(entry):
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 class Settings(BaseModel):
@@ -116,7 +141,9 @@ class Settings(BaseModel):
     chunk_read_size: int = DEFAULT_CHUNK_READ_SIZE
     require_auth: bool = False
     user_header: str = "X-Forwarded-User"
+    trusted_auth_proxies: list[str] = []
     users_config: Optional[Path] = None
+    ldap_config: Optional[Path] = None
 
     _user_config: Optional[UserConfig] = PrivateAttr(default=None)
     _config_mtime: float = PrivateAttr(default=0.0)
@@ -148,3 +175,6 @@ class Settings(BaseModel):
             if self._user_config is not None:
                 return self._user_config.get(user)
         return _DEFAULT_PERMS
+
+    def is_trusted_auth_proxy(self, client_ip: str) -> bool:
+        return _ip_in_networks(client_ip, self.trusted_auth_proxies)

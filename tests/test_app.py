@@ -1,8 +1,9 @@
 import io
+import sys
+import types
 import zipfile
 from pathlib import Path
 
-import pytest
 from fastapi.testclient import TestClient
 
 from xwing.app import create_app
@@ -29,6 +30,22 @@ class TestDirectoryListing:
         assert r.status_code == 200
         assert "readme.md" in r.text
 
+    def test_listing_url_encodes_special_filename_segments(self, client, root):
+        (root / "hash#file?.txt").write_text("special")
+        r = client.get("/", headers=HTML)
+        assert r.status_code == 200
+        assert 'href="/hash%23file%3F.txt"' in r.text
+        assert 'data-path="/hash%23file%3F.txt"' in r.text
+
+    def test_listing_url_encodes_current_directory(self, client, root):
+        d = root / "hash#dir?"
+        d.mkdir()
+        (d / "child#file.txt").write_text("special")
+        r = client.get("/hash%23dir%3F/", headers=HTML)
+        assert r.status_code == 200
+        assert 'href="/hash%23dir%3F/child%23file.txt"' in r.text
+        assert 'const CURRENT_PATH = "/hash%23dir%3F/";' in r.text
+
     def test_missing_dir_returns_404(self, client):
         r = client.get("/nonexistent/", headers=HTML)
         assert r.status_code == 404
@@ -40,6 +57,12 @@ class TestFileDownload:
         r = client.get("/data.txt")
         assert r.status_code == 200
         assert r.text == "content here"
+
+    def test_download_special_filename(self, client, root):
+        (root / "hash#file?.txt").write_text("special")
+        r = client.get("/hash%23file%3F.txt")
+        assert r.status_code == 200
+        assert r.text == "special"
 
     def test_missing_file_returns_404(self, client):
         r = client.get("/nope.txt")
@@ -54,10 +77,21 @@ class TestAuth:
         assert r.status_code == 403
 
     def test_require_auth_passes_with_header(self, root, tmp_dir):
-        s = Settings(root_dir=root, tmp_dir=tmp_dir, require_auth=True)
+        s = Settings(
+            root_dir=root,
+            tmp_dir=tmp_dir,
+            require_auth=True,
+            trusted_auth_proxies=["testclient"],
+        )
         with TestClient(create_app(s)) as c:
             r = c.get("/", headers={**HTML, "X-Forwarded-User": "alice"})
         assert r.status_code == 200
+
+    def test_require_auth_rejects_untrusted_header(self, root, tmp_dir):
+        s = Settings(root_dir=root, tmp_dir=tmp_dir, require_auth=True)
+        with TestClient(create_app(s)) as c:
+            r = c.get("/", headers={**HTML, "X-Forwarded-User": "alice"})
+        assert r.status_code == 403
 
     def test_no_auth_returns_anonymous(self, client, root):
         r = client.get("/", headers=HTML)
@@ -65,11 +99,56 @@ class TestAuth:
         assert "anonymous" in r.text
 
     def test_custom_user_header(self, root, tmp_dir):
-        s = Settings(root_dir=root, tmp_dir=tmp_dir, user_header="X-Remote-User")
+        s = Settings(
+            root_dir=root,
+            tmp_dir=tmp_dir,
+            user_header="X-Remote-User",
+            trusted_auth_proxies=["testclient"],
+        )
         with TestClient(create_app(s)) as c:
             r = c.get("/", headers={**HTML, "X-Remote-User": "bob"})
         assert r.status_code == 200
         assert "bob" in r.text
+
+    def test_untrusted_header_ignored_when_auth_optional(self, root, tmp_dir):
+        s = Settings(root_dir=root, tmp_dir=tmp_dir)
+        with TestClient(create_app(s)) as c:
+            r = c.get("/", headers={**HTML, "X-Forwarded-User": "alice"})
+        assert r.status_code == 200
+        assert "anonymous" in r.text
+
+    def test_ldap_config_adds_ldapgate_middleware(self, root, tmp_dir, monkeypatch):
+        calls = {}
+
+        ldapgate_pkg = types.ModuleType("ldapgate")
+        config_mod = types.ModuleType("ldapgate.config")
+        middleware_mod = types.ModuleType("ldapgate.middleware")
+
+        def load_config(path):
+            calls["config_path"] = path
+            return {"loaded": path}
+
+        def add_ldap_auth(app, config, template_path=None):
+            calls["app"] = app
+            calls["config"] = config
+            calls["template_path"] = template_path
+
+        config_mod.load_config = load_config
+        middleware_mod.add_ldap_auth = add_ldap_auth
+        monkeypatch.setitem(sys.modules, "ldapgate", ldapgate_pkg)
+        monkeypatch.setitem(sys.modules, "ldapgate.config", config_mod)
+        monkeypatch.setitem(sys.modules, "ldapgate.middleware", middleware_mod)
+
+        ldap_yaml = tmp_dir / "ldapgate.yaml"
+        ldap_yaml.write_text("ldap: {}\nproxy: {}\n")
+        settings = Settings(root_dir=root, tmp_dir=tmp_dir, ldap_config=ldap_yaml)
+
+        app = create_app(settings)
+
+        assert calls["app"] is app
+        assert calls["config_path"] == str(ldap_yaml)
+        assert calls["config"] == {"loaded": str(ldap_yaml)}
+        assert calls["template_path"].endswith("templates/login.html")
 
 
 class TestPut:
@@ -89,12 +168,36 @@ class TestPut:
         r = client.put("/adir", content=b"data")
         assert r.status_code == 409
 
+    def test_put_env_file_rejected(self, client, root):
+        r = client.put("/.env", content=b"SECRET=hunter2")
+        assert r.status_code == 403
+        assert not (root / ".env").exists()
+
+    def test_put_env_variant_rejected(self, client, root):
+        r = client.put("/.env.local", content=b"SECRET=local")
+        assert r.status_code == 403
+        assert not (root / ".env.local").exists()
+
     def test_put_exceeds_max_upload_bytes_returns_413(self, root, tmp_dir, users_yaml):
         s = Settings(root_dir=root, tmp_dir=tmp_dir, max_upload_bytes=10, users_config=users_yaml)
         with TestClient(create_app(s)) as c:
             r = c.put("/large.txt", content=b"x" * 100)
         assert r.status_code == 413
         assert not (root / "large.txt").exists()
+
+    def test_put_does_not_clobber_sibling_tmp_file(self, client, root):
+        (root / "newfile.txt.tmp").write_text("keep me")
+        r = client.put("/newfile.txt", content=b"hello")
+        assert r.status_code == 204
+        assert (root / "newfile.txt").read_bytes() == b"hello"
+        assert (root / "newfile.txt.tmp").read_text() == "keep me"
+
+    def test_editor_uses_encoded_save_and_download_paths(self, client, root):
+        (root / "hash#file?.txt").write_text("special")
+        r = client.get("/hash%23file%3F.txt?edit")
+        assert r.status_code == 200
+        assert 'href="/hash%23file%3F.txt"' in r.text
+        assert 'const FILE_PATH = "/hash%23file%3F.txt";' in r.text
 
 
 class TestHead:
@@ -143,6 +246,27 @@ class TestZip:
         zf = zipfile.ZipFile(io.BytesIO(r.content))
         assert len(zf.namelist()) == 0
 
+    def test_zip_skips_symlink_outside_root(self, client, root, tmp_path):
+        outside = tmp_path.parent / f"{tmp_path.name}-outside-secret.txt"
+        outside.write_text("secret")
+        (root / "leak.txt").symlink_to(outside)
+        r = client.get("/?zip")
+        assert r.status_code == 200
+        zf = zipfile.ZipFile(io.BytesIO(r.content))
+        assert "leak.txt" not in zf.namelist()
+
+    def test_zip_skips_env_files_and_directories(self, client, root):
+        (root / "safe.txt").write_text("safe")
+        (root / ".env").write_text("SECRET=hunter2")
+        (root / ".env.d").mkdir()
+        (root / ".env.d" / "secret.txt").write_text("nested")
+        r = client.get("/?zip")
+        assert r.status_code == 200
+        zf = zipfile.ZipFile(io.BytesIO(r.content))
+        assert "safe.txt" in zf.namelist()
+        assert ".env" not in zf.namelist()
+        assert ".env.d/secret.txt" not in zf.namelist()
+
 
 class TestCopy:
     def test_copy_file(self, client, root):
@@ -161,6 +285,24 @@ class TestCopy:
         assert r.status_code == 201
         assert (root / "dst.txt").read_text() == "source"
 
+    def test_copy_file_overwrite_failure_preserves_destination(
+        self, client, root, monkeypatch
+    ):
+        (root / "src.txt").write_text("source")
+        (root / "dst.txt").write_text("old")
+
+        def fail_copy2(src, dst):
+            raise OSError("simulated copy failure")
+
+        import xwing.webdav
+
+        monkeypatch.setattr(xwing.webdav.shutil, "copy2", fail_copy2)
+        r = client.request(
+            "COPY", "/src.txt", headers={"Destination": "/dst.txt", "Overwrite": "T"}
+        )
+        assert r.status_code == 500
+        assert (root / "dst.txt").read_text() == "old"
+
     def test_copy_file_overwrite_f_returns_412(self, client, root):
         (root / "src.txt").write_text("source")
         (root / "dst.txt").write_text("old")
@@ -172,6 +314,68 @@ class TestCopy:
     def test_copy_missing_source_returns_404(self, client):
         r = client.request("COPY", "/ghost.txt", headers={"Destination": "/dst.txt"})
         assert r.status_code == 404
+
+    def test_copy_to_env_file_rejected(self, client, root):
+        (root / "src.txt").write_text("source")
+        r = client.request("COPY", "/src.txt", headers={"Destination": "/.env"})
+        assert r.status_code == 403
+        assert not (root / ".env").exists()
+
+    def test_copy_from_env_file_rejected(self, client, root):
+        (root / ".env").write_text("SECRET=hunter2")
+        r = client.request("COPY", "/.env", headers={"Destination": "/leak.txt"})
+        assert r.status_code == 403
+        assert not (root / "leak.txt").exists()
+
+    def test_copy_does_not_clobber_sibling_tmp_file(self, client, root):
+        (root / "src.txt").write_text("source")
+        (root / "dst.txt.tmp").write_text("keep me")
+        r = client.request("COPY", "/src.txt", headers={"Destination": "/dst.txt"})
+        assert r.status_code == 201
+        assert (root / "dst.txt").read_text() == "source"
+        assert (root / "dst.txt.tmp").read_text() == "keep me"
+
+    def test_copy_directory_preserves_external_symlink(self, client, root, tmp_path):
+        outside = tmp_path.parent / f"{tmp_path.name}-outside-secret.txt"
+        outside.write_text("secret")
+        (root / "src").mkdir()
+        (root / "src" / "leak.txt").symlink_to(outside)
+        r = client.request("COPY", "/src", headers={"Destination": "/dst"})
+        assert r.status_code == 201
+        assert (root / "dst" / "leak.txt").is_symlink()
+
+    def test_copy_directory_overwrite_failure_restores_destination(
+        self, client, root, monkeypatch
+    ):
+        (root / "src").mkdir()
+        (root / "src" / "new.txt").write_text("new")
+        (root / "dst").mkdir()
+        (root / "dst" / "old.txt").write_text("old")
+
+        original_replace = type(root / "src").replace
+
+        def fail_final_replace(self, dest):
+            if (
+                self.name.startswith(".dst.")
+                and self.name.endswith(".tmp")
+                and Path(dest).name == "dst"
+            ):
+                raise OSError("simulated final replace failure")
+            return original_replace(self, dest)
+
+        def fail_move(src, dst):
+            raise OSError("simulated fallback move failure")
+
+        import xwing.webdav
+
+        monkeypatch.setattr(type(root / "src"), "replace", fail_final_replace)
+        monkeypatch.setattr(xwing.webdav.shutil, "move", fail_move)
+        r = client.request(
+            "COPY", "/src", headers={"Destination": "/dst", "Overwrite": "T"}
+        )
+        assert r.status_code == 500
+        assert (root / "dst" / "old.txt").read_text() == "old"
+        assert not (root / "dst" / "new.txt").exists()
 
 
 class TestMove:
@@ -190,6 +394,104 @@ class TestMove:
         )
         assert r.status_code == 412
         assert (root / "src.txt").read_text() == "source"
+
+    def test_move_file_overwrite_failure_preserves_destination(
+        self, client, root, monkeypatch
+    ):
+        (root / "src.txt").write_text("source")
+        (root / "dst.txt").write_text("old")
+
+        def fail_replace(self, dest):
+            raise OSError("simulated replace failure")
+
+        def fail_move(src, dst):
+            raise OSError("simulated move failure")
+
+        import xwing.webdav
+
+        monkeypatch.setattr(type(root / "src.txt"), "replace", fail_replace)
+        monkeypatch.setattr(xwing.webdav.shutil, "move", fail_move)
+        r = client.request(
+            "MOVE", "/src.txt", headers={"Destination": "/dst.txt", "Overwrite": "T"}
+        )
+        assert r.status_code == 500
+        assert (root / "src.txt").read_text() == "source"
+        assert (root / "dst.txt").read_text() == "old"
+
+    def test_move_root_rejected(self, client, root):
+        (root / "keep.txt").write_text("keep")
+        r = client.request("MOVE", "/", headers={"Destination": "/dst"})
+        assert r.status_code == 403
+        assert (root / "keep.txt").read_text() == "keep"
+        assert not (root / "dst").exists()
+
+    def test_move_directory_overwrite_failure_restores_destination(
+        self, client, root, monkeypatch
+    ):
+        (root / "src").mkdir()
+        (root / "src" / "new.txt").write_text("new")
+        (root / "dst").mkdir()
+        (root / "dst" / "old.txt").write_text("old")
+
+        original_replace = type(root / "src").replace
+
+        def fail_final_replace(self, dest):
+            if self.name == "src" and Path(dest).name == "dst":
+                raise OSError("simulated final replace failure")
+            return original_replace(self, dest)
+
+        def fail_move(src, dst):
+            raise OSError("simulated fallback move failure")
+
+        import xwing.webdav
+
+        monkeypatch.setattr(type(root / "src"), "replace", fail_final_replace)
+        monkeypatch.setattr(xwing.webdav.shutil, "move", fail_move)
+        r = client.request(
+            "MOVE", "/src", headers={"Destination": "/dst", "Overwrite": "T"}
+        )
+        assert r.status_code == 500
+        assert (root / "src" / "new.txt").read_text() == "new"
+        assert (root / "dst" / "old.txt").read_text() == "old"
+        assert not (root / "dst" / "new.txt").exists()
+
+    def test_move_to_env_file_rejected(self, client, root):
+        (root / "src.txt").write_text("source")
+        r = client.request("MOVE", "/src.txt", headers={"Destination": "/.env"})
+        assert r.status_code == 403
+        assert (root / "src.txt").read_text() == "source"
+        assert not (root / ".env").exists()
+
+    def test_move_from_env_file_rejected(self, client, root):
+        (root / ".env").write_text("SECRET=hunter2")
+        r = client.request("MOVE", "/.env", headers={"Destination": "/leak.txt"})
+        assert r.status_code == 403
+        assert (root / ".env").read_text() == "SECRET=hunter2"
+        assert not (root / "leak.txt").exists()
+
+    def test_move_requires_write_permission(self, root, tmp_dir, tmp_path):
+        users_yaml = tmp_path / "users.yaml"
+        users_yaml.write_text("users:\n  alice: rd\n")
+        s = Settings(
+            root_dir=root,
+            tmp_dir=tmp_dir,
+            require_auth=True,
+            users_config=users_yaml,
+            trusted_auth_proxies=["testclient"],
+        )
+        (root / "src.txt").write_text("source")
+        with TestClient(create_app(s)) as c:
+            r = c.request(
+                "MOVE",
+                "/src.txt",
+                headers={
+                    "Destination": "/dst.txt",
+                    "X-Forwarded-User": "alice",
+                },
+            )
+        assert r.status_code == 403
+        assert (root / "src.txt").read_text() == "source"
+        assert not (root / "dst.txt").exists()
 
 
 class TestEnvFile:
@@ -236,6 +538,18 @@ class TestDelete:
         r = client.delete("/ghost.txt")
         assert r.status_code == 404
 
+    def test_delete_root_rejected(self, client, root):
+        (root / "keep.txt").write_text("keep")
+        r = client.delete("/")
+        assert r.status_code == 403
+        assert (root / "keep.txt").read_text() == "keep"
+
+    def test_delete_env_file_rejected(self, client, root):
+        (root / ".env").write_text("SECRET=hunter2")
+        r = client.delete("/.env")
+        assert r.status_code == 403
+        assert (root / ".env").read_text() == "SECRET=hunter2"
+
 
 class TestOptions:
     def test_options_returns_dav_headers(self, client):
@@ -260,6 +574,11 @@ class TestMkcol:
         r = client.request("MKCOL", "/parent/child")
         assert r.status_code == 409
 
+    def test_mkcol_env_directory_rejected(self, client, root):
+        r = client.request("MKCOL", "/.env.d")
+        assert r.status_code == 403
+        assert not (root / ".env.d").exists()
+
 
 class TestPropfind:
     def test_propfind_root(self, client, root):
@@ -267,6 +586,27 @@ class TestPropfind:
         r = client.request("PROPFIND", "/", headers={"Depth": "1"})
         assert r.status_code == 207
         assert "a.txt" in r.text
+        assert "<D:href>/</D:href>" in r.text
+        assert "<D:href>/./</D:href>" not in r.text
+
+    def test_propfind_url_encodes_href_segments(self, client, root):
+        (root / "hash#file?.txt").write_text("a")
+        (root / "hash#dir?").mkdir()
+        r = client.request("PROPFIND", "/", headers={"Depth": "1"})
+        assert r.status_code == 207
+        assert "<D:href>/hash%23file%3F.txt</D:href>" in r.text
+        assert "<D:href>/hash%23dir%3F/</D:href>" in r.text
+
+    def test_propfind_env_file_rejected(self, client, root):
+        (root / ".env").write_text("SECRET=hunter2")
+        r = client.request("PROPFIND", "/.env")
+        assert r.status_code == 403
+
+    def test_get_nested_env_path_rejected(self, client, root):
+        (root / ".env.d").mkdir()
+        (root / ".env.d" / "secret.txt").write_text("SECRET=nested")
+        r = client.get("/.env.d/secret.txt")
+        assert r.status_code == 403
 
     def test_propfind_depth0(self, client, root):
         r = client.request("PROPFIND", "/", headers={"Depth": "0"})

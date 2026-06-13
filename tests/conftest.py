@@ -1,8 +1,20 @@
 import pytest
-from fastapi.testclient import TestClient
+import fastapi.testclient
+from importlib.util import find_spec
+from starlette.testclient import TestClient as StarletteTestClient
 
 from xwing.app import create_app
 from xwing.config import Settings
+
+
+def TestClient(*args, **kwargs):
+    """Create a TestClient with uvloop when available to avoid asyncio portal hangs."""
+    if find_spec("uvloop"):
+        kwargs.setdefault("backend_options", {"use_uvloop": True})
+    return StarletteTestClient(*args, **kwargs)
+
+
+fastapi.testclient.TestClient = TestClient
 
 _ALL_PERMS_YAML = """\
 users:

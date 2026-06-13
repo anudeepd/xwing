@@ -51,6 +51,7 @@ Opens the file browser at `http://127.0.0.1:8989` and launches your default brow
 --require-auth             Require authentication header (403 if missing).
 --users-config FILE        Path to YAML file with per-user permissions.
 --user-header TEXT         Header to read username from. [default: X-Forwarded-User]
+--trusted-auth-proxy TEXT  Trusted proxy IP/CIDR allowed to supply --user-header.
 --reload                   Auto-reload on code changes (dev only).
 --ldap-config FILE         Path to LDAPGate YAML config to enable LDAP authentication.
 ```
@@ -95,7 +96,7 @@ Chunk size and session limits are configurable via `--max-chunk-mb`, `--max-chun
 
 ## Access Control
 
-By default all users are **read-only**. Pass `--users-config` to grant write or delete access per user.
+Without `--users-config`, local/no-auth mode is read-only. When a users config is present, unlisted users are denied unless you configure the `"*"` fallback.
 
 ```bash
 xwing serve --root /data --users-config users.yaml
@@ -137,7 +138,7 @@ The config file is reloaded automatically when it changes on disk — no restart
 
 X-wing supports two modes for LDAP/AD auth:
 
-**Mode 1 — Standalone proxy:** Run LDAPGate as a reverse proxy in front of xwing. Authenticated requests get an `X-Forwarded-User` header that xwing reads.
+**Mode 1 — Standalone proxy:** Run LDAPGate as a reverse proxy in front of xwing. Authenticated requests get an `X-Forwarded-User` header that xwing reads only from trusted proxy IPs.
 
 ```
 Browser → LDAPGate → xwing
@@ -145,7 +146,7 @@ Browser → LDAPGate → xwing
 
 ```bash
 ldapgate serve --config ldapgate.yaml
-xwing serve --root /data --require-auth --users-config users.yaml
+xwing serve --root /data --require-auth --users-config users.yaml --trusted-auth-proxy 127.0.0.1
 ```
 
 **Mode 2 — Built-in middleware:** Inject LDAPGate directly into xwing as FastAPI middleware:
@@ -155,6 +156,7 @@ pip install 'xwing[ldap]'
 xwing serve --root /data --ldap-config ldapgate.yaml --users-config users.yaml
 ```
 
+Use `ldapgate.yaml` in this repository as the starting template for X-wing.
 See the [LDAPGate README](https://github.com/anudeepd/ldapgate) for config file documentation.
 
 ## Development

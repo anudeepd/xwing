@@ -66,11 +66,11 @@ class TestUserConfigFallback:
         cfg = UserConfig(f)
         assert cfg.get("bob") == UserPerms(read=True, write=False, delete=False)
 
-    def test_no_wildcard_returns_default(self, tmp_path):
+    def test_no_wildcard_denies_unlisted(self, tmp_path):
         f = tmp_path / "u.yaml"
         f.write_text("users:\n  alice: rwd\n")
         cfg = UserConfig(f)
-        assert cfg.get("unknown") == UserPerms(read=True, write=False, delete=False)
+        assert cfg.get("unknown") == UserPerms(read=False, write=False, delete=False)
 
     def test_explicit_entry_takes_precedence_over_wildcard(self, tmp_path):
         f = tmp_path / "u.yaml"
@@ -112,4 +112,10 @@ class TestUserConfigErrors:
         f = tmp_path / "u.yaml"
         f.write_text("users:\n  bob: write\n")
         with pytest.raises(ValueError, match="only 'r', 'w', 'd'"):
+            UserConfig(f)
+
+    def test_permission_entry_must_be_string_or_mapping(self, tmp_path):
+        f = tmp_path / "u.yaml"
+        f.write_text("users:\n  alice:\n    - read\n")
+        with pytest.raises(ValueError, match="must be a string or mapping"):
             UserConfig(f)
