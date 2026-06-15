@@ -1,5 +1,10 @@
 "use strict";
 
+const FILE_PATH = document.body.dataset.filePath || "/";
+const FILE_EXT = document.body.dataset.fileExt || "";
+const CAN_WRITE = document.body.dataset.canWrite === "true";
+const CONTENT = document.getElementById("editor-content")?.value || "";
+
 // ── Language detection ─────────────────────────────────────────────────────────
 const { EditorView, EditorState, basicSetup, keymap, indentWithTab, oneDark, langs } = window.CM;
 
@@ -70,6 +75,10 @@ function setStatus(cls, msg) {
 }
 
 async function save() {
+  if (!CAN_WRITE) {
+    setStatus("error", "read-only");
+    return;
+  }
   setStatus("saving", "saving…");
   const content = view.state.doc.toString();
   try {

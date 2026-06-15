@@ -1,6 +1,13 @@
 "use strict";
 
 const CHUNK_SIZE = 8 * 1024 * 1024;  // 8 MB
+const CURRENT_PATH = document.body.dataset.currentPath || "/";
+const CAN_WRITE = document.body.dataset.canWrite === "true";
+const CAN_DELETE = document.body.dataset.canDelete === "true";
+
+function warnReadOnly(action) {
+  alert(`Read-only access: ${action} is disabled for your user.`);
+}
 
 function getConcurrency() {
   return parseInt(document.getElementById("concurrency-select").value, 10) || 4;
@@ -29,6 +36,10 @@ document.querySelectorAll("[data-mtime]").forEach(td => {
 // ── Delete ─────────────────────────────────────────────────────────────────────
 document.querySelectorAll(".btn-delete").forEach(btn => {
   btn.addEventListener("click", async () => {
+    if (!CAN_DELETE) {
+      warnReadOnly("delete");
+      return;
+    }
     const path = btn.dataset.path;
     const name = path.replace(/\/$/, "").split("/").pop();
     if (!confirm(`Delete "${name}"?`)) return;
@@ -40,6 +51,10 @@ document.querySelectorAll(".btn-delete").forEach(btn => {
 
 // ── New folder ─────────────────────────────────────────────────────────────────
 document.getElementById("mkdir-btn").addEventListener("click", async () => {
+  if (!CAN_WRITE) {
+    warnReadOnly("folder creation");
+    return;
+  }
   const name = prompt("Folder name:");
   if (!name) return;
   const path = appendPath(CURRENT_PATH, name);
@@ -272,12 +287,20 @@ async function uploadPairs(pairs, { reload = true } = {}) {
 
 // ── Handle flat File[] from input[type=file] ──────────────────────────────────
 async function uploadFlatFiles(files) {
+  if (!CAN_WRITE) {
+    warnReadOnly("uploads");
+    return;
+  }
   const pairs = [...files].map(f => ({ file: f, destDir: CURRENT_PATH }));
   await uploadPairs(pairs);
 }
 
 // ── Handle folder from input[webkitdirectory] ─────────────────────────────────
 async function uploadFolderInput(files) {
+  if (!CAN_WRITE) {
+    warnReadOnly("uploads");
+    return;
+  }
   if (!files.length) return;
   // files[0].webkitRelativePath gives "folderName/sub/file.txt"
   const rootName = files[0].webkitRelativePath.split("/")[0];
@@ -306,6 +329,10 @@ async function uploadFolderInput(files) {
 
 // ── Handle DataTransfer items (supports folders via FileSystem API) ────────────
 async function uploadDataTransfer(dt) {
+  if (!CAN_WRITE) {
+    warnReadOnly("uploads");
+    return;
+  }
   const items = [...dt.items].filter(i => i.kind === "file");
   if (!items.length) return;
 
@@ -341,8 +368,20 @@ async function uploadDataTransfer(dt) {
 const fileInput = document.getElementById("file-input");
 const folderInput = document.getElementById("folder-input");
 
-document.getElementById("upload-btn").addEventListener("click", () => fileInput.click());
-document.getElementById("upload-folder-btn").addEventListener("click", () => folderInput.click());
+document.getElementById("upload-btn").addEventListener("click", () => {
+  if (!CAN_WRITE) {
+    warnReadOnly("uploads");
+    return;
+  }
+  fileInput.click();
+});
+document.getElementById("upload-folder-btn").addEventListener("click", () => {
+  if (!CAN_WRITE) {
+    warnReadOnly("uploads");
+    return;
+  }
+  folderInput.click();
+});
 
 fileInput.addEventListener("change", () => {
   if (fileInput.files.length) uploadFlatFiles(fileInput.files);

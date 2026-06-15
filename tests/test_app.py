@@ -44,7 +44,7 @@ class TestDirectoryListing:
         r = client.get("/hash%23dir%3F/", headers=HTML)
         assert r.status_code == 200
         assert 'href="/hash%23dir%3F/child%23file.txt"' in r.text
-        assert 'const CURRENT_PATH = "/hash%23dir%3F/";' in r.text
+        assert 'data-current-path="/hash%23dir%3F/"' in r.text
 
     def test_missing_dir_returns_404(self, client):
         r = client.get("/nonexistent/", headers=HTML)
@@ -86,6 +86,44 @@ class TestAuth:
         with TestClient(create_app(s)) as c:
             r = c.get("/", headers={**HTML, "X-Forwarded-User": "alice"})
         assert r.status_code == 200
+
+    def test_authenticated_listing_uses_post_logout_form(self, root, tmp_dir):
+        s = Settings(
+            root_dir=root,
+            tmp_dir=tmp_dir,
+            require_auth=True,
+            trusted_auth_proxies=["testclient"],
+        )
+        with TestClient(create_app(s)) as c:
+            r = c.get("/", headers={**HTML, "X-Forwarded-User": "alice"})
+        assert r.status_code == 200
+        assert 'method="post" action="/_auth/logout"' in r.text
+        assert 'href="/_auth/logout"' not in r.text
+
+    def test_listing_csp_uses_external_assets_only(self, client):
+        r = client.get("/", headers=HTML)
+        assert r.status_code == 200
+        csp = r.headers["content-security-policy"]
+        assert "script-src 'self'" in csp
+        assert "font-src 'self'" in csp
+        assert "'unsafe-inline'" not in csp
+
+    def test_read_only_listing_warns_and_disables_write_controls(self, root, tmp_dir, tmp_path):
+        users_yaml = tmp_path / "users.yaml"
+        users_yaml.write_text("users:\n  alice: r\n")
+        s = Settings(
+            root_dir=root,
+            tmp_dir=tmp_dir,
+            users_config=users_yaml,
+            trusted_auth_proxies=["testclient"],
+        )
+        with TestClient(create_app(s)) as c:
+            r = c.get("/", headers={**HTML, "X-Forwarded-User": "alice"})
+        assert r.status_code == 200
+        assert "Read-only access. Uploads and folder creation are disabled." in r.text
+        assert 'data-can-write="false"' in r.text
+        assert 'id="upload-btn" disabled title="Read-only access"' in r.text
+        assert 'id="mkdir-btn" disabled title="Read-only access"' in r.text
 
     def test_require_auth_rejects_untrusted_header(self, root, tmp_dir):
         s = Settings(root_dir=root, tmp_dir=tmp_dir, require_auth=True)
@@ -197,7 +235,7 @@ class TestPut:
         r = client.get("/hash%23file%3F.txt?edit")
         assert r.status_code == 200
         assert 'href="/hash%23file%3F.txt"' in r.text
-        assert 'const FILE_PATH = "/hash%23file%3F.txt";' in r.text
+        assert 'data-file-path="/hash%23file%3F.txt"' in r.text
 
 
 class TestHead:

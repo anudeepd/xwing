@@ -32,6 +32,14 @@ logger = logging.getLogger(__name__)
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
+APP_CSP = (
+    "default-src 'self'; "
+    "form-action 'self'; "
+    "script-src 'self'; "
+    "style-src 'self'; "
+    "img-src 'self' data:; "
+    "font-src 'self'"
+)
 
 
 def create_app_reload() -> FastAPI:
@@ -85,6 +93,13 @@ def create_app(settings: Settings) -> FastAPI:
         task.cancel()
 
     app = FastAPI(lifespan=lifespan)
+
+    @app.middleware("http")
+    async def add_app_security_headers(request: Request, call_next):
+        response = await call_next(request)
+        if not request.url.path.startswith("/_auth/"):
+            response.headers.setdefault("Content-Security-Policy", APP_CSP)
+        return response
 
     if settings.users_config:
         logger.info("Permissions loaded from %s", settings.users_config)
@@ -291,6 +306,7 @@ def create_app(settings: Settings) -> FastAPI:
                 "current_url_path": url_path,
                 "breadcrumbs": breadcrumbs,
                 "user": user,
+                "perms": settings.perms_for(user),
             },
         )
 
@@ -314,6 +330,7 @@ def create_app(settings: Settings) -> FastAPI:
                 "content": content,
                 "ext": fspath.suffix.lstrip(".").lower(),
                 "user": user,
+                "perms": settings.perms_for(user),
             },
         )
 
