@@ -161,10 +161,12 @@ class TestAuth:
         ldapgate_pkg = types.ModuleType("ldapgate")
         config_mod = types.ModuleType("ldapgate.config")
         middleware_mod = types.ModuleType("ldapgate.middleware")
+        proxy_config = types.SimpleNamespace(static_paths=["/assets"])
+        loaded_config = types.SimpleNamespace(proxy=proxy_config)
 
         def load_config(path):
             calls["config_path"] = path
-            return {"loaded": path}
+            return loaded_config
 
         def add_ldap_auth(app, config, template_path=None):
             calls["app"] = app
@@ -185,8 +187,13 @@ class TestAuth:
 
         assert calls["app"] is app
         assert calls["config_path"] == str(ldap_yaml)
-        assert calls["config"] == {"loaded": str(ldap_yaml)}
+        assert calls["config"] is loaded_config
         assert calls["template_path"].endswith("templates/login.html")
+        assert calls["config"].proxy.static_paths == [
+            "/assets",
+            "/static",
+            "/favicon.ico",
+        ]
 
 
 class TestPut:

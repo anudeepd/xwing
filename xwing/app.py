@@ -123,10 +123,12 @@ def create_app(settings: Settings) -> FastAPI:
                 "ldapgate is not installed but XWING_LDAP_CONFIG is set. "
                 "Install it with: pip install 'xwing[ldap]' or pip install ldapgate"
             ) from e
+        ldap_config = load_config(str(_ldap_config_path))
+        _ensure_ldapgate_static_paths(ldap_config)
         _login_template = TEMPLATES_DIR / "login.html"
         add_ldap_auth(
             app,
-            load_config(str(_ldap_config_path)),
+            ldap_config,
             template_path=str(_login_template) if _login_template.exists() else None,
         )
 
@@ -443,3 +445,15 @@ def create_app(settings: Settings) -> FastAPI:
         return await _handle_get(fspath, request, user)
 
     return app
+
+
+def _ensure_ldapgate_static_paths(config) -> None:
+    """Allow login-page assets to load without triggering Basic auth."""
+    proxy_config = getattr(config, "proxy", None)
+    if proxy_config is None:
+        return
+    static_paths = list(getattr(proxy_config, "static_paths", []) or [])
+    for path in ("/static", "/favicon.ico"):
+        if path not in static_paths:
+            static_paths.append(path)
+    proxy_config.static_paths = static_paths
