@@ -118,6 +118,12 @@ class TestAuth:
         assert "'unsafe-inline'" not in csp
         assert "data-csp-style-nonce=" in r.text
 
+    def test_login_template_avoids_inline_style_attributes(self):
+        template = (Path(__file__).parents[1] / "xwing" / "templates" / "login.html").read_text()
+        assert '<style nonce="{{ csrf_nonce }}">' in template
+        assert '<input type="hidden" name="csrf_token" value="{{ csrf_token }}">' in template
+        assert 'style="' not in template
+
     def test_read_only_listing_warns_and_disables_write_controls(self, root, tmp_dir, tmp_path):
         users_yaml = tmp_path / "users.yaml"
         users_yaml.write_text("users:\n  alice: r\n")
