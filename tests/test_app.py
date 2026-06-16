@@ -140,6 +140,17 @@ class TestAuth:
         assert 'data-can-write="false"' in r.text
         assert 'id="upload-btn" disabled title="Read-only access"' in r.text
         assert 'id="mkdir-btn" disabled title="Read-only access"' in r.text
+        assert 'id="delete-selected-btn" disabled' in r.text
+
+    def test_listing_has_bulk_selection_controls(self, client, root):
+        (root / "hello.txt").write_text("hi")
+        r = client.get("/", headers=HTML)
+        assert r.status_code == 200
+        assert 'id="select-all"' in r.text
+        assert 'id="zip-selected-btn"' in r.text
+        assert 'id="delete-selected-btn"' in r.text
+        assert 'class="entry selectable-entry entry-file"' in r.text
+        assert 'class="entry-select"' in r.text
 
     def test_require_auth_rejects_untrusted_header(self, root, tmp_dir):
         s = Settings(root_dir=root, tmp_dir=tmp_dir, require_auth=True)
@@ -210,6 +221,7 @@ class TestAuth:
             "/static",
             "/favicon.ico",
         ]
+        assert calls["config"].proxy.session_cookie_name == "xwing_session"
 
     def test_ldap_config_inherits_xwing_trusted_proxies_when_unset(self, root, tmp_dir, monkeypatch):
         calls = {}
@@ -366,6 +378,69 @@ class TestZip:
         assert "safe.txt" in zf.namelist()
         assert ".env" not in zf.namelist()
         assert ".env.d/secret.txt" not in zf.namelist()
+
+    def test_bulk_zip_selected_files_and_folders(self, client, root):
+        (root / "a.txt").write_text("hello")
+        (root / "sub").mkdir()
+        (root / "sub" / "b.txt").write_text("world")
+        (root / "skip.txt").write_text("skip")
+        r = client.post(
+            "/_bulk/zip",
+            json={"base": "/", "paths": ["/a.txt", "/sub/"]},
+        )
+        assert r.status_code == 200
+        assert r.headers["content-type"] == "application/zip"
+        zf = zipfile.ZipFile(io.BytesIO(r.content))
+        names = zf.namelist()
+        assert "a.txt" in names
+        assert "sub/b.txt" in names
+        assert "skip.txt" not in names
+
+    def test_bulk_zip_rejects_sensitive_paths(self, client, root):
+        (root / ".env").write_text("SECRET=hunter2")
+        r = client.post("/_bulk/zip", json={"base": "/", "paths": ["/.env"]})
+        assert r.status_code == 403
+
+    def test_bulk_zip_rejects_traversal(self, client):
+        r = client.post("/_bulk/zip", json={"base": "/", "paths": ["/../secret.txt"]})
+        assert r.status_code == 403
+
+
+class TestBulkDelete:
+    def test_bulk_delete_selected_files_and_folders(self, client, root):
+        (root / "a.txt").write_text("hello")
+        (root / "sub").mkdir()
+        (root / "sub" / "b.txt").write_text("world")
+        (root / "keep.txt").write_text("keep")
+        r = client.post("/_bulk/delete", json={"paths": ["/a.txt", "/sub/"]})
+        assert r.status_code == 200
+        assert r.json() == {"deleted": 2}
+        assert not (root / "a.txt").exists()
+        assert not (root / "sub").exists()
+        assert (root / "keep.txt").exists()
+
+    def test_bulk_delete_rejects_root(self, client):
+        r = client.post("/_bulk/delete", json={"paths": ["/"]})
+        assert r.status_code == 403
+
+    def test_bulk_delete_requires_delete_permission(self, root, tmp_dir, tmp_path):
+        (root / "a.txt").write_text("hello")
+        users_yaml = tmp_path / "users.yaml"
+        users_yaml.write_text("users:\n  alice: r\n")
+        s = Settings(
+            root_dir=root,
+            tmp_dir=tmp_dir,
+            users_config=users_yaml,
+            trusted_auth_proxies=["testclient"],
+        )
+        with TestClient(create_app(s)) as c:
+            r = c.post(
+                "/_bulk/delete",
+                headers={"X-Forwarded-User": "alice"},
+                json={"paths": ["/a.txt"]},
+            )
+        assert r.status_code == 403
+        assert (root / "a.txt").exists()
 
 
 class TestCopy:

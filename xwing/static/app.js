@@ -17,6 +17,17 @@ function appendPath(base, name) {
   return base + encodeURIComponent(name) + "/";
 }
 
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 function stagingFolderName(name) {
   const nonce = Math.random().toString(36).slice(2);
   return `.xwing-upload-${Date.now()}-${nonce}-${name}`;
@@ -32,6 +43,137 @@ document.querySelectorAll("[data-mtime]").forEach(td => {
     });
   }
 });
+
+// ── Selection + bulk actions ─────────────────────────────────────────────────
+const selectAll = document.getElementById("select-all");
+const selectableRows = [...document.querySelectorAll(".selectable-entry")];
+const zipSelectedBtn = document.getElementById("zip-selected-btn");
+const deleteSelectedBtn = document.getElementById("delete-selected-btn");
+const selectedPaths = new Set();
+let lastSelectedIndex = null;
+
+function rowPath(row) {
+  return row.dataset.path;
+}
+
+function setRowSelected(row, selected) {
+  const path = rowPath(row);
+  if (!path) return;
+  row.classList.toggle("selected", selected);
+  const checkbox = row.querySelector(".entry-select");
+  if (checkbox) checkbox.checked = selected;
+  if (selected) selectedPaths.add(path);
+  else selectedPaths.delete(path);
+}
+
+function updateBulkActions() {
+  const count = selectedPaths.size;
+  zipSelectedBtn.disabled = count === 0;
+  zipSelectedBtn.textContent = count ? `Download zip (${count})` : "Download zip";
+  zipSelectedBtn.title = count ? "Download selected files and folders as zip" : "Select files or folders first";
+
+  if (CAN_DELETE) {
+    deleteSelectedBtn.disabled = count === 0;
+    deleteSelectedBtn.textContent = count ? `Delete selected (${count})` : "Delete selected";
+    deleteSelectedBtn.title = count ? "Delete selected files and folders" : "Select files or folders first";
+  }
+
+  if (selectAll) {
+    selectAll.checked = count > 0 && count === selectableRows.length;
+    selectAll.indeterminate = count > 0 && count < selectableRows.length;
+  }
+}
+
+function clearSelection() {
+  selectableRows.forEach(row => setRowSelected(row, false));
+  lastSelectedIndex = null;
+  updateBulkActions();
+}
+
+function selectRange(toIndex, selected) {
+  const fromIndex = lastSelectedIndex === null ? toIndex : lastSelectedIndex;
+  const start = Math.min(fromIndex, toIndex);
+  const end = Math.max(fromIndex, toIndex);
+  for (let i = start; i <= end; i++) setRowSelected(selectableRows[i], selected);
+}
+
+function handleRowSelection(row, event) {
+  const index = selectableRows.indexOf(row);
+  const checkbox = row.querySelector(".entry-select");
+  const target = event.target instanceof Element ? event.target : event.target.parentElement;
+  const nextSelected = checkbox ? checkbox.checked : !selectedPaths.has(rowPath(row));
+
+  if (event.shiftKey) {
+    selectRange(index, nextSelected);
+  } else if (event.metaKey || event.ctrlKey || target?.classList.contains("entry-select")) {
+    setRowSelected(row, nextSelected);
+  } else {
+    const wasOnlySelected = selectedPaths.size === 1 && selectedPaths.has(rowPath(row));
+    clearSelection();
+    setRowSelected(row, !wasOnlySelected);
+  }
+  lastSelectedIndex = index;
+  updateBulkActions();
+}
+
+selectableRows.forEach(row => {
+  const checkbox = row.querySelector(".entry-select");
+  checkbox.addEventListener("click", event => {
+    event.stopPropagation();
+    handleRowSelection(row, event);
+  });
+  row.addEventListener("click", event => {
+    const target = event.target instanceof Element ? event.target : event.target.parentElement;
+    if (target && target.closest("a, button, input")) return;
+    handleRowSelection(row, event);
+  });
+});
+
+if (selectAll) {
+  selectAll.addEventListener("change", () => {
+    selectableRows.forEach(row => setRowSelected(row, selectAll.checked));
+    lastSelectedIndex = null;
+    updateBulkActions();
+  });
+}
+
+zipSelectedBtn.addEventListener("click", async () => {
+  if (!selectedPaths.size) return;
+  const res = await fetch("/_bulk/zip", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ base: CURRENT_PATH, paths: [...selectedPaths] }),
+  });
+  if (!res.ok) {
+    alert("Zip download failed: " + res.status);
+    return;
+  }
+  const blob = await res.blob();
+  downloadBlob(blob, "xwing-selection.zip");
+});
+
+deleteSelectedBtn.addEventListener("click", async () => {
+  if (!CAN_DELETE) {
+    warnReadOnly("delete");
+    return;
+  }
+  if (!selectedPaths.size) return;
+  const names = selectableRows
+    .filter(row => selectedPaths.has(rowPath(row)))
+    .map(row => row.dataset.name);
+  const preview = names.slice(0, 6).join("\n");
+  const extra = names.length > 6 ? `\n…and ${names.length - 6} more` : "";
+  if (!confirm(`Delete ${names.length} selected item${names.length === 1 ? "" : "s"}?\n\n${preview}${extra}`)) return;
+  const res = await fetch("/_bulk/delete", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ paths: [...selectedPaths] }),
+  });
+  if (res.ok) location.reload();
+  else alert("Delete failed: " + res.status);
+});
+
+updateBulkActions();
 
 // ── Delete ─────────────────────────────────────────────────────────────────────
 document.querySelectorAll(".btn-delete").forEach(btn => {

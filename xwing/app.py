@@ -12,7 +12,7 @@ from urllib.parse import quote, unquote, urlparse
 
 import anyio
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -39,7 +39,7 @@ APP_CSP = (
     "script-src 'self'; "
     "style-src 'self'; "
     "img-src 'self' data:; "
-    "font-src 'self'"
+    "font-src 'self' data:"
 )
 
 
@@ -53,7 +53,7 @@ def build_app_csp(style_nonce: str | None = None) -> str:
         "script-src 'self'; "
         f"{style_src}; "
         "img-src 'self' data:; "
-        "font-src 'self'"
+        "font-src 'self' data:"
     )
 
 
@@ -146,6 +146,7 @@ def create_app(settings: Settings) -> FastAPI:
             ) from e
         ldap_config = load_config(str(_ldap_config_path))
         _ensure_ldapgate_static_paths(ldap_config)
+        _ensure_ldapgate_cookie_name(ldap_config)
         _sync_ldapgate_trusted_proxies(ldap_config, settings)
         _login_template = TEMPLATES_DIR / "login.html"
         add_ldap_auth(
@@ -383,6 +384,118 @@ def create_app(settings: Settings) -> FastAPI:
             },
         )
 
+    async def _bulk_body(request: Request) -> dict:
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid JSON") from None
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="JSON body must be an object")
+        return body
+
+    def _resolve_bulk_paths(raw_paths: object) -> list[Path]:
+        if not isinstance(raw_paths, list):
+            raise HTTPException(status_code=400, detail="paths must be a list")
+        if not raw_paths:
+            raise HTTPException(status_code=400, detail="paths must not be empty")
+        if len(raw_paths) > 500:
+            raise HTTPException(status_code=400, detail="Too many paths")
+
+        paths: list[Path] = []
+        seen: set[Path] = set()
+        for raw in raw_paths:
+            if not isinstance(raw, str):
+                raise HTTPException(status_code=400, detail="paths entries must be strings")
+            try:
+                fspath = safe_path(settings.root_dir, unquote(raw))
+            except PermissionError:
+                raise HTTPException(status_code=403, detail="Forbidden path") from None
+            if _is_root_path(fspath):
+                raise HTTPException(status_code=403, detail="Cannot select root")
+            _reject_sensitive_path(fspath)
+            if fspath not in seen:
+                seen.add(fspath)
+                paths.append(fspath)
+        return paths
+
+    def _zip_selected(paths: list[Path], base_path: Path) -> bytes:
+        buf = io.BytesIO()
+        written: set[str] = set()
+
+        def arcname(path: Path) -> Path:
+            try:
+                return path.relative_to(base_path)
+            except ValueError:
+                return path.relative_to(settings.root_dir)
+
+        def add_file(zf: zipfile.ZipFile, file_path: Path) -> None:
+            if (
+                not file_path.is_file()
+                or not is_within_root(settings.root_dir, file_path)
+                or _is_sensitive_path(file_path)
+            ):
+                return
+            name = arcname(file_path).as_posix()
+            if name in written:
+                return
+            written.add(name)
+            zf.write(file_path, name)
+
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for path in sorted(paths, key=lambda p: p.as_posix()):
+                if not path.exists():
+                    raise FileNotFoundError(path)
+                if path.is_dir():
+                    for child in sorted(path.rglob("*")):
+                        add_file(zf, child)
+                else:
+                    add_file(zf, path)
+        return buf.getvalue()
+
+    @app.post("/_bulk/zip", include_in_schema=False)
+    async def bulk_zip(request: Request):
+        user = get_user(request, settings)
+        require_perm(user, "read", settings)
+        body = await _bulk_body(request)
+        paths = _resolve_bulk_paths(body.get("paths"))
+        base_raw = body.get("base", "/")
+        if not isinstance(base_raw, str):
+            raise HTTPException(status_code=400, detail="base must be a string")
+        try:
+            base_path = safe_path(settings.root_dir, unquote(base_raw))
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="Forbidden base") from None
+        if not base_path.exists() or not base_path.is_dir():
+            raise HTTPException(status_code=404, detail="Base directory not found")
+
+        try:
+            zip_bytes = await anyio.to_thread.run_sync(_zip_selected, paths, base_path)  # type: ignore[reportAttributeAccessIssue]
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="Selected path not found") from None
+        return Response(
+            zip_bytes,
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": "attachment; filename*=UTF-8''xwing-selection.zip"
+            },
+        )
+
+    @app.post("/_bulk/delete", include_in_schema=False)
+    async def bulk_delete(request: Request):
+        user = get_user(request, settings)
+        require_perm(user, "delete", settings)
+        body = await _bulk_body(request)
+        paths = _resolve_bulk_paths(body.get("paths"))
+
+        for fspath in sorted(paths, key=lambda p: len(p.parts), reverse=True):
+            if not fspath.exists():
+                raise HTTPException(status_code=404, detail="Selected path not found")
+            if fspath.is_dir():
+                await anyio.to_thread.run_sync(shutil.rmtree, fspath)  # type: ignore[reportAttributeAccessIssue]
+            else:
+                await anyio.to_thread.run_sync(fspath.unlink)  # type: ignore[reportAttributeAccessIssue]
+        return JSONResponse({"deleted": len(paths)})
+
     # ── Catch-all route ───────────────────────────────────────────────────────
 
     @app.api_route(
@@ -480,6 +593,15 @@ def _ensure_ldapgate_static_paths(config) -> None:
         if path not in static_paths:
             static_paths.append(path)
     proxy_config.static_paths = static_paths
+
+
+def _ensure_ldapgate_cookie_name(config) -> None:
+    """Keep xwing auth cookies distinct from sibling localhost apps."""
+    proxy_config = getattr(config, "proxy", None)
+    if proxy_config is None:
+        return
+    if getattr(proxy_config, "session_cookie_name", "ldapgate_session") == "ldapgate_session":
+        proxy_config.session_cookie_name = "xwing_session"
 
 
 def _sync_ldapgate_trusted_proxies(config, settings: Settings) -> None:

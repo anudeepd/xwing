@@ -91,6 +91,9 @@
         <input type="file" id="file-input" multiple hidden/>
         <input type="file" id="folder-input" webkitdirectory multiple hidden/>
         <div class="toolbar-sep"></div>
+        <button class="btn" id="zip-selected-btn" disabled title="Select files or folders first">Download zip</button>
+        <button class="btn btn-danger" id="delete-selected-btn" disabled title="{% if perms.delete %}Select files or folders first{% else %}Read-only access{% endif %}" {% if not perms.delete %}data-readonly="true"{% endif %}>Delete selected</button>
+        <div class="toolbar-sep"></div>
         <div class="concurrency-wrap">
           <span>parallel:</span>
           <select id="concurrency-select">
@@ -105,6 +108,9 @@
       <table class="file-table">
         <thead>
           <tr>
+            <th class="col-select">
+              <input type="checkbox" id="select-all" aria-label="Select all files and folders"/>
+            </th>
             <th class="col-icon"></th>
             <th class="col-name">Name</th>
             <th class="col-size">Size</th>
@@ -115,13 +121,20 @@
         <tbody>
           {% if current_path != "/" %}
           <tr class="entry entry-dir">
+            <td class="col-select"></td>
             <td class="col-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7h18v14H3z"/><path d="M3 7l3-4h6l3 4"/></svg></td>
             <td class="col-name"><a href="../">../</a></td>
             <td></td><td></td><td></td>
           </tr>
           {% endif %}
           {% for e in entries %}
-          <tr class="entry {% if e.is_dir %}entry-dir{% else %}entry-file{% endif %}">
+          <tr class="entry selectable-entry {% if e.is_dir %}entry-dir{% else %}entry-file{% endif %}"
+              data-path="{{ current_url_path }}{{ e.url_name }}{% if e.is_dir %}/{% endif %}"
+              data-name="{{ e.name }}{% if e.is_dir %}/{% endif %}"
+              data-is-dir="{{ 'true' if e.is_dir else 'false' }}">
+            <td class="col-select">
+              <input type="checkbox" class="entry-select" aria-label="Select {{ e.name }}{% if e.is_dir %} folder{% endif %}"/>
+            </td>
             <td class="col-icon">
               {% if e.is_dir %}
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7h18v14H3z"/><path d="M3 7l3-4h6l3 4"/></svg>
@@ -157,7 +170,7 @@
           </tr>
           {% else %}
           {% if current_path == "/" %}
-          <tr><td colspan="5" class="empty">No files yet. Upload something!</td></tr>
+          <tr><td colspan="6" class="empty">No files yet. Upload something!</td></tr>
           {% endif %}
           {% endfor %}
         </tbody>
