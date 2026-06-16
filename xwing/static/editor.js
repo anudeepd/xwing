@@ -45,6 +45,12 @@ function detectLang(ext) {
 const langExtension = detectLang(FILE_EXT);
 let savedContent = CONTENT;
 let dirty = false;
+const writeExtensions = CAN_WRITE
+  ? []
+  : [
+      EditorView.editable.of(false),
+      EditorState.readOnly.of(true),
+    ];
 
 const view = new EditorView({
   state: EditorState.create({
@@ -54,6 +60,7 @@ const view = new EditorView({
       keymap.of([indentWithTab]),
       oneDark,
       ...langExtension,
+      ...writeExtensions,
       EditorView.lineWrapping,
       EditorView.updateListener.of(update => {
         if (update.docChanged) {

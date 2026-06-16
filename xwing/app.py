@@ -125,6 +125,7 @@ def create_app(settings: Settings) -> FastAPI:
             ) from e
         ldap_config = load_config(str(_ldap_config_path))
         _ensure_ldapgate_static_paths(ldap_config)
+        _sync_ldapgate_trusted_proxies(ldap_config, settings)
         _login_template = TEMPLATES_DIR / "login.html"
         add_ldap_auth(
             app,
@@ -457,3 +458,14 @@ def _ensure_ldapgate_static_paths(config) -> None:
         if path not in static_paths:
             static_paths.append(path)
     proxy_config.static_paths = static_paths
+
+
+def _sync_ldapgate_trusted_proxies(config, settings: Settings) -> None:
+    """Share xwing's trusted proxy list with embedded ldapgate when unset."""
+    proxy_config = getattr(config, "proxy", None)
+    if proxy_config is None:
+        return
+    if getattr(proxy_config, "trusted_proxies", None):
+        return
+    if settings.trusted_auth_proxies:
+        proxy_config.trusted_proxies = list(settings.trusted_auth_proxies)

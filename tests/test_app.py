@@ -195,6 +195,45 @@ class TestAuth:
             "/favicon.ico",
         ]
 
+    def test_ldap_config_inherits_xwing_trusted_proxies_when_unset(self, root, tmp_dir, monkeypatch):
+        calls = {}
+
+        ldapgate_pkg = types.ModuleType("ldapgate")
+        config_mod = types.ModuleType("ldapgate.config")
+        middleware_mod = types.ModuleType("ldapgate.middleware")
+        proxy_config = types.SimpleNamespace(static_paths=[], trusted_proxies=[])
+        loaded_config = types.SimpleNamespace(proxy=proxy_config)
+
+        def load_config(path):
+            return loaded_config
+
+        def add_ldap_auth(app, config, template_path=None):
+            calls["config"] = config
+
+        config_mod.load_config = load_config
+        middleware_mod.add_ldap_auth = add_ldap_auth
+        monkeypatch.setitem(sys.modules, "ldapgate", ldapgate_pkg)
+        monkeypatch.setitem(sys.modules, "ldapgate.config", config_mod)
+        monkeypatch.setitem(sys.modules, "ldapgate.middleware", middleware_mod)
+
+        ldap_yaml = tmp_dir / "ldapgate.yaml"
+        ldap_yaml.write_text("ldap: {}\nproxy: {}\n")
+        settings = Settings(
+            root_dir=root,
+            tmp_dir=tmp_dir,
+            ldap_config=ldap_yaml,
+            trusted_auth_proxies=["127.0.0.1", "10.0.0.0/8"],
+        )
+
+        create_app(settings)
+
+        assert calls["config"].proxy.trusted_proxies == ["127.0.0.1", "10.0.0.0/8"]
+
+    def test_read_only_editor_script_disables_codemirror_editing(self):
+        script = (Path(__file__).parents[1] / "xwing" / "static" / "editor.js").read_text()
+        assert "EditorView.editable.of(false)" in script
+        assert "EditorState.readOnly.of(true)" in script
+
 
 class TestPut:
     def test_put_creates_file(self, client, root):
