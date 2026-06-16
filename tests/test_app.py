@@ -3,6 +3,7 @@ import sys
 import types
 import zipfile
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 from fastapi.testclient import TestClient
 
@@ -107,6 +108,15 @@ class TestAuth:
         assert "script-src 'self'" in csp
         assert "font-src 'self'" in csp
         assert "'unsafe-inline'" not in csp
+
+    def test_editor_csp_uses_nonce_for_runtime_styles(self, client, root):
+        (root / "notes.txt").write_text("hello")
+        r = client.get("/notes.txt?edit")
+        assert r.status_code == 200
+        csp = r.headers["content-security-policy"]
+        assert "style-src 'self' 'nonce-" in csp
+        assert "'unsafe-inline'" not in csp
+        assert "data-csp-style-nonce=" in r.text
 
     def test_read_only_listing_warns_and_disables_write_controls(self, root, tmp_dir, tmp_path):
         users_yaml = tmp_path / "users.yaml"
@@ -578,6 +588,44 @@ class TestMove:
         assert not (root / "dst.txt").exists()
 
 
+class TestWebDavLocking:
+    def test_lock_returns_finder_compatible_response(self, client, root):
+        (root / "sample.txt").write_text("hello")
+        r = client.request("LOCK", "/sample.txt")
+        assert r.status_code == 200
+        assert r.headers["dav"] == "1, 2"
+        assert r.headers["lock-token"].startswith("<opaquelocktoken:")
+        assert "application/xml" in r.headers["content-type"]
+
+        xml = ET.fromstring(r.content)
+        ns = {"D": "DAV:"}
+        assert xml.find("./D:lockdiscovery/D:activelock/D:lockscope/D:exclusive", ns) is not None
+        assert xml.find("./D:lockdiscovery/D:activelock/D:locktype/D:write", ns) is not None
+        token = xml.findtext("./D:lockdiscovery/D:activelock/D:locktoken/D:href", namespaces=ns)
+        assert token is not None
+        assert r.headers["lock-token"] == f"<{token}>"
+
+    def test_unlock_succeeds_after_lock(self, client, root):
+        (root / "sample.txt").write_text("hello")
+        lock = client.request("LOCK", "/sample.txt")
+        token = lock.headers["lock-token"]
+        r = client.request("UNLOCK", "/sample.txt", headers={"Lock-Token": token})
+        assert r.status_code == 204
+
+    def test_finder_staged_save_sequence_succeeds(self, client, root):
+        (root / "test").mkdir()
+        lock = client.request("LOCK", "/test/sample.txt")
+        assert lock.status_code == 200
+
+        staged_path = "/test/sample.txt.sb-0f9dfb64-wbRrpW/samplte.txt"
+        put = client.put(staged_path, content=b"draft")
+        assert put.status_code == 204
+
+        propfind = client.request("PROPFIND", staged_path, headers={"Depth": "0"})
+        assert propfind.status_code == 207
+        assert (root / "test" / "sample.txt.sb-0f9dfb64-wbRrpW" / "samplte.txt").read_bytes() == b"draft"
+
+
 class TestEnvFile:
     def test_env_file_not_downloadable(self, client, root):
         (root / ".env").write_text("SECRET=hunter2")
@@ -706,10 +754,11 @@ class TestPropfind:
 
 
 class TestLock:
-    def test_lock_returns_501(self, client, root):
+    def test_lock_returns_success(self, client, root):
         (root / "file.txt").write_text("x")
         r = client.request("LOCK", "/file.txt")
-        assert r.status_code == 501
+        assert r.status_code == 200
+        assert r.headers["lock-token"].startswith("<opaquelocktoken:")
 
 
 class TestPathTraversal:

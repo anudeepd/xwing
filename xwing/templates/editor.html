@@ -9,7 +9,8 @@
 </head>
 <body data-file-path="{{ file_url_path }}"
       data-file-ext="{{ ext }}"
-      data-can-write="{{ 'true' if perms.write else 'false' }}">
+      data-can-write="{{ 'true' if perms.write else 'false' }}"
+      data-csp-style-nonce="{{ csp_style_nonce or '' }}">
 <div class="editor-shell">
   <div class="editor-toolbar">
     <a class="btn" href="{{ dir_url_path }}">← back</a>

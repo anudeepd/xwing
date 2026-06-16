@@ -3,6 +3,7 @@
 const FILE_PATH = document.body.dataset.filePath || "/";
 const FILE_EXT = document.body.dataset.fileExt || "";
 const CAN_WRITE = document.body.dataset.canWrite === "true";
+const CSP_STYLE_NONCE = document.body.dataset.cspStyleNonce || "";
 const CONTENT = document.getElementById("editor-content")?.value || "";
 
 // ── Language detection ─────────────────────────────────────────────────────────
@@ -59,6 +60,7 @@ const view = new EditorView({
       basicSetup,
       keymap.of([indentWithTab]),
       oneDark,
+      ...(CSP_STYLE_NONCE ? [EditorView.cspNonce.of(CSP_STYLE_NONCE)] : []),
       ...langExtension,
       ...writeExtensions,
       EditorView.lineWrapping,

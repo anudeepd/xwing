@@ -182,8 +182,27 @@ async def move_response(src: Path, dest: Path, overwrite: bool) -> Response:
 
 
 def lock_response(path: Path) -> Response:
-    """LOCK is not implemented — return 501 so clients fall back gracefully."""
-    return Response(status_code=501, content="LOCK not implemented")
+    """Return a minimal exclusive write lock response for Finder-style clients."""
+    token = f"opaquelocktoken:{uuid.uuid4()}"
+    prop = ET.Element(_dav("prop"))
+    lockdiscovery = ET.SubElement(prop, _dav("lockdiscovery"))
+    activelock = ET.SubElement(lockdiscovery, _dav("activelock"))
+    ET.SubElement(activelock, _dav("locktype")).append(ET.Element(_dav("write")))
+    ET.SubElement(activelock, _dav("lockscope")).append(ET.Element(_dav("exclusive")))
+    ET.SubElement(activelock, _dav("depth")).text = "infinity"
+    ET.SubElement(activelock, _dav("timeout")).text = "Second-3600"
+    locktoken = ET.SubElement(activelock, _dav("locktoken"))
+    ET.SubElement(locktoken, _dav("href")).text = token
+    xml_bytes = ET.tostring(prop, encoding="utf-8", xml_declaration=True)
+    return Response(
+        content=xml_bytes,
+        status_code=200,
+        media_type="application/xml; charset=utf-8",
+        headers={
+            "DAV": "1, 2",
+            "Lock-Token": f"<{token}>",
+        },
+    )
 
 
 def unlock_response() -> Response:

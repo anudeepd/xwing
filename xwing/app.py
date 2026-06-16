@@ -2,6 +2,7 @@ import asyncio
 import io
 import logging
 import os
+import secrets
 import shutil
 import tempfile
 import zipfile
@@ -40,6 +41,20 @@ APP_CSP = (
     "img-src 'self' data:; "
     "font-src 'self'"
 )
+
+
+def build_app_csp(style_nonce: str | None = None) -> str:
+    style_src = "style-src 'self'"
+    if style_nonce:
+        style_src += f" 'nonce-{style_nonce}'"
+    return (
+        "default-src 'self'; "
+        "form-action 'self'; "
+        "script-src 'self'; "
+        f"{style_src}; "
+        "img-src 'self' data:; "
+        "font-src 'self'"
+    )
 
 
 def create_app_reload() -> FastAPI:
@@ -96,9 +111,15 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.middleware("http")
     async def add_app_security_headers(request: Request, call_next):
+        request.state.csp_style_nonce = (
+            secrets.token_urlsafe(16) if "edit" in request.query_params else None
+        )
         response = await call_next(request)
         if not request.url.path.startswith("/_auth/"):
-            response.headers.setdefault("Content-Security-Policy", APP_CSP)
+            response.headers.setdefault(
+                "Content-Security-Policy",
+                build_app_csp(request.state.csp_style_nonce),
+            )
         return response
 
     if settings.users_config:
@@ -334,6 +355,7 @@ def create_app(settings: Settings) -> FastAPI:
                 "ext": fspath.suffix.lstrip(".").lower(),
                 "user": user,
                 "perms": settings.perms_for(user),
+                "csp_style_nonce": request.state.csp_style_nonce,
             },
         )
 
