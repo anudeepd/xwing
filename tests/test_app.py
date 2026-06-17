@@ -2,12 +2,13 @@ import io
 import sys
 import types
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
 from fastapi.testclient import TestClient
 
-from xwing.app import create_app
+from xwing.app import create_app, timestamped_selection_zip_name
 from xwing.config import Settings
 
 
@@ -395,6 +396,21 @@ class TestZip:
         assert "a.txt" in names
         assert "sub/b.txt" in names
         assert "skip.txt" not in names
+
+    def test_bulk_zip_uses_timestamped_download_name(self, client, root):
+        (root / "a.txt").write_text("hello")
+        r = client.post(
+            "/_bulk/zip",
+            json={"base": "/", "paths": ["/a.txt"]},
+        )
+        assert r.status_code == 200
+        disposition = r.headers["content-disposition"]
+        assert disposition.startswith("attachment; filename*=UTF-8''xwing-selection-")
+        assert disposition.endswith(".zip")
+
+    def test_timestamped_selection_zip_name_uses_utc_compact_timestamp(self):
+        name = timestamped_selection_zip_name(datetime(2026, 6, 17, 1, 2, 3, tzinfo=timezone.utc))
+        assert name == "xwing-selection-20260617-010203.zip"
 
     def test_bulk_zip_rejects_sensitive_paths(self, client, root):
         (root / ".env").write_text("SECRET=hunter2")

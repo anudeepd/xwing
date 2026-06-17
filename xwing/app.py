@@ -7,6 +7,7 @@ import shutil
 import tempfile
 import zipfile
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote, unquote, urlparse
 
@@ -41,6 +42,11 @@ APP_CSP = (
     "img-src 'self' data:; "
     "font-src 'self' data:"
 )
+
+
+def timestamped_selection_zip_name(now: datetime | None = None) -> str:
+    dt = now or datetime.now(timezone.utc)
+    return f"xwing-selection-{dt.astimezone(timezone.utc):%Y%m%d-%H%M%S}.zip"
 
 
 def build_app_csp(style_nonce: str | None = None) -> str:
@@ -476,7 +482,7 @@ def create_app(settings: Settings) -> FastAPI:
             zip_bytes,
             media_type="application/zip",
             headers={
-                "Content-Disposition": "attachment; filename*=UTF-8''xwing-selection.zip"
+                "Content-Disposition": f"attachment; filename*=UTF-8''{quote(timestamped_selection_zip_name())}"
             },
         )
 

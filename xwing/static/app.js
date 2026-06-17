@@ -28,6 +28,20 @@ function downloadBlob(blob, filename) {
   URL.revokeObjectURL(url);
 }
 
+function filenameFromContentDisposition(header) {
+  if (!header) return null;
+  const utf8Match = header.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch {
+      return utf8Match[1];
+    }
+  }
+  const plainMatch = header.match(/filename="?([^";]+)"?/i);
+  return plainMatch ? plainMatch[1] : null;
+}
+
 function stagingFolderName(name) {
   const nonce = Math.random().toString(36).slice(2);
   return `.xwing-upload-${Date.now()}-${nonce}-${name}`;
@@ -149,7 +163,8 @@ zipSelectedBtn.addEventListener("click", async () => {
     return;
   }
   const blob = await res.blob();
-  downloadBlob(blob, "xwing-selection.zip");
+  const filename = filenameFromContentDisposition(res.headers.get("Content-Disposition")) || "xwing-selection.zip";
+  downloadBlob(blob, filename);
 });
 
 deleteSelectedBtn.addEventListener("click", async () => {
