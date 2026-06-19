@@ -110,6 +110,13 @@ class TestAuth:
         assert "font-src 'self'" in csp
         assert "'unsafe-inline'" not in csp
 
+    def test_app_html_and_unversioned_assets_are_revalidated(self, client):
+        listing = client.get("/", headers=HTML)
+        asset = client.get("/static/app.js")
+
+        assert listing.headers["cache-control"] == "no-cache, must-revalidate"
+        assert asset.headers["cache-control"] == "no-cache, must-revalidate"
+
     def test_editor_csp_uses_nonce_for_runtime_styles(self, client, root):
         (root / "notes.txt").write_text("hello")
         r = client.get("/notes.txt?edit")

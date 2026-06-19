@@ -42,6 +42,7 @@ APP_CSP = (
     "img-src 'self' data:; "
     "font-src 'self' data:"
 )
+APP_SHELL_CACHE_CONTROL = "no-cache, must-revalidate"
 
 
 def timestamped_selection_zip_name(now: datetime | None = None) -> str:
@@ -126,6 +127,12 @@ def create_app(settings: Settings) -> FastAPI:
                 "Content-Security-Policy",
                 build_app_csp(request.state.csp_style_nonce),
             )
+        # Xwing's JS and CSS filenames are stable across releases, so they
+        # must be revalidated before a normal browser reload can use them.
+        if request.url.path.startswith("/static/") or response.headers.get(
+            "content-type", ""
+        ).startswith("text/html"):
+            response.headers.setdefault("Cache-Control", APP_SHELL_CACHE_CONTROL)
         return response
 
     if settings.users_config:
