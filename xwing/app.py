@@ -141,12 +141,13 @@ def create_app(settings: Settings) -> FastAPI:
     async def _audit_details(request: Request) -> str | None:
         """Capture bounded textual input; uploads remain metadata-only."""
         content_length = request.headers.get("content-length")
-        if content_length:
-            try:
-                if int(content_length) > 32_000:
-                    return None
-            except ValueError:
+        if not content_length:
+            return None
+        try:
+            if int(content_length) > 32_000:
                 return None
+        except ValueError:
+            return None
         content_type = request.headers.get("content-type", "").lower()
         if not ("application/json" in content_type or content_type.startswith("text/")):
             return None
@@ -180,7 +181,7 @@ def create_app(settings: Settings) -> FastAPI:
             user = "anonymous"
         if user != "anonymous":
             try:
-                audit_store.record_event(
+                await audit_store.record_event_async(
                     db_path=settings.audit_db, username=user, method=request.method,
                     path=request.url.path, details=details,
                     status_code=response.status_code,

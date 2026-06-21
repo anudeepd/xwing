@@ -282,18 +282,6 @@ def audit(ctx: click.Context, audit_db: Path | None, username: str | None, since
         _print_audit_events(audit_store.list_events(db_path, username=username, since=since, limit=limit))
 
 
-@audit.command("show")
-@click.option("--audit-db", type=click.Path(dir_okay=False, path_type=Path), default=None)
-@click.option("--user", "username", default=None)
-@click.option("--since", default=None, help="ISO date/time, for example 2026-06-21.")
-@click.option("--limit", default=100, show_default=True, type=click.IntRange(1, 10000))
-def audit_show(audit_db: Path | None, username: str | None, since: str | None, limit: int):
-    """Show authenticated activity."""
-    db_path = _audit_db_path(audit_db)
-    audit_store.init_db(db_path)
-    _print_audit_events(audit_store.list_events(db_path, username=username, since=since, limit=limit))
-
-
 @audit.command("purge")
 @click.option("--audit-db", type=click.Path(dir_okay=False, path_type=Path), default=None)
 @click.option("--older-than", default=90, show_default=True, type=click.IntRange(1))

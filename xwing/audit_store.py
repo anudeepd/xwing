@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -69,3 +70,12 @@ def purge_events(db_path: Path, older_than_days: int) -> int:
     with sqlite3.connect(db_path) as db:
         cursor = db.execute("DELETE FROM audit_events WHERE occurred_at < ?", (cutoff,))
         return cursor.rowcount
+
+
+async def record_event_async(*, db_path: Path, username: str, method: str, path: str,
+                             details: str | None, status_code: int, duration_ms: float) -> None:
+    await asyncio.to_thread(
+        record_event,
+        db_path=db_path, username=username, method=method, path=path,
+        details=details, status_code=status_code, duration_ms=duration_ms,
+    )
