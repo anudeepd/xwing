@@ -1,10 +1,12 @@
 import asyncio
 import io
+import json
 import logging
 import os
 import secrets
 import shutil
 import tempfile
+import time
 import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -18,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .auth import get_user, require_perm
+from . import audit_store
 from .config import Settings
 from .files import human_size, is_editable, is_within_root, list_dir, safe_path
 from .upload import cleanup_stale_sessions, create_upload_router
@@ -31,6 +34,20 @@ from .webdav import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _configure_log_file_from_env() -> None:
+    log_file = os.getenv("XWING_LOG_FILE")
+    if not log_file:
+        return
+    path = Path(log_file).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-8s %(name)s %(message)s",
+        datefmt="%H:%M:%S",
+        handlers=[logging.StreamHandler(), logging.FileHandler(path, encoding="utf-8")],
+    )
 
 TEMPLATES_DIR = Path(__file__).parent / "templates"
 STATIC_DIR = Path(__file__).parent / "static"
@@ -66,6 +83,7 @@ def build_app_csp(style_nonce: str | None = None) -> str:
 
 def create_app_reload() -> FastAPI:
     """Factory for uvicorn reload mode — reads settings from environment variables."""
+    _configure_log_file_from_env()
     root = os.environ.get("XWING_ROOT")
     if not root:
         raise RuntimeError(
@@ -101,6 +119,8 @@ def create_app_reload() -> FastAPI:
         kwargs["users_config"] = Path(os.environ["XWING_USERS_CONFIG"])
     if os.environ.get("XWING_LDAP_CONFIG"):
         kwargs["ldap_config"] = Path(os.environ["XWING_LDAP_CONFIG"])
+    if os.environ.get("XWING_AUDIT_DB"):
+        kwargs["audit_db"] = Path(os.environ["XWING_AUDIT_DB"])
     settings = Settings(**kwargs)
     return create_app(settings)
 
@@ -110,11 +130,65 @@ def create_app(settings: Settings) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        if settings.audit_db:
+            audit_store.init_db(settings.audit_db)
         task = asyncio.create_task(cleanup_stale_sessions(settings))
         yield
         task.cancel()
 
     app = FastAPI(lifespan=lifespan)
+
+    async def _audit_details(request: Request) -> str | None:
+        """Capture bounded textual input; uploads remain metadata-only."""
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                if int(content_length) > 32_000:
+                    return None
+            except ValueError:
+                return None
+        content_type = request.headers.get("content-type", "").lower()
+        if not ("application/json" in content_type or content_type.startswith("text/")):
+            return None
+        body = await request.body()
+        if not body or len(body) > 32_000:
+            return None
+        if "application/json" in content_type:
+            try:
+                data = json.loads(body)
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                return None
+            if isinstance(data, dict):
+                for key in list(data):
+                    if "password" in key.lower() or "token" in key.lower():
+                        data[key] = "[redacted]"
+            return json.dumps(data, ensure_ascii=False)[:16_000]
+        return body.decode("utf-8", errors="replace")[:16_000]
+
+    @app.middleware("http")
+    async def authenticated_activity_audit(request: Request, call_next):
+        started = time.monotonic()
+        details = await _audit_details(request) if (
+            settings.audit_db and not request.url.path.startswith("/_auth/")
+        ) else None
+        response = await call_next(request)
+        if not settings.audit_db or request.url.path.startswith("/_auth/"):
+            return response
+        try:
+            user = get_user(request, settings)
+        except HTTPException:
+            user = "anonymous"
+        if user != "anonymous":
+            try:
+                audit_store.record_event(
+                    db_path=settings.audit_db, username=user, method=request.method,
+                    path=request.url.path, details=details,
+                    status_code=response.status_code,
+                    duration_ms=round((time.monotonic() - started) * 1000, 2),
+                )
+            except Exception:
+                logger.exception("Failed to record audit event")
+        return response
 
     @app.middleware("http")
     async def add_app_security_headers(request: Request, call_next):

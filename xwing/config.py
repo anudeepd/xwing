@@ -144,6 +144,7 @@ class Settings(BaseModel):
     trusted_auth_proxies: list[str] = []
     users_config: Optional[Path] = None
     ldap_config: Optional[Path] = None
+    audit_db: Optional[Path] = None
 
     _user_config: Optional[UserConfig] = PrivateAttr(default=None)
     _config_mtime: float = PrivateAttr(default=0.0)
@@ -160,6 +161,13 @@ class Settings(BaseModel):
             self.tmp_dir = (
                 Path(tempfile.gettempdir()) / f"xwing-{self.root_dir.name}-{root_hash}"
             )
+        # Audit authenticated deployments by default. Supplying audit_db also
+        # enables it for externally-authenticated (e.g. standalone LDAPGate) use.
+        if self.audit_db is None and (
+            self.ldap_config is not None or os.getenv("XWING_LDAP_CONFIG") or self.require_auth
+        ):
+            data_home = Path(os.getenv("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+            self.audit_db = data_home / "xwing" / "audit.db"
         return self
 
     def perms_for(self, user: str) -> UserPerms:

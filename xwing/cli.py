@@ -2,11 +2,13 @@
 
 import logging
 import os
+from pathlib import Path
 
 import click
 import uvicorn
 
 from .config import Settings
+from . import audit_store
 
 
 @click.group()
@@ -15,7 +17,24 @@ def main():
     """X-wing — simple file sharing server with WebDAV support."""
 
 
+def _configure_logging(log_file: Path | None) -> None:
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    if log_file:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)-8s %(name)s %(message)s",
+        datefmt="%H:%M:%S",
+        handlers=handlers,
+    )
+
+
 @main.command()
+@click.option("--audit-db", default=None, type=click.Path(dir_okay=False, path_type=Path),
+              help="SQLite audit database path (also enables auditing).")
+@click.option("--log-file", default=None, type=click.Path(dir_okay=False, path_type=Path),
+              help="Append application logs to this file.")
 @click.option(
     "--root",
     required=True,
@@ -113,6 +132,8 @@ def serve(
     trusted_auth_proxies,
     reload,
     ldap_config,
+    audit_db,
+    log_file,
 ):
     """Start the X-wing web server."""
     for flag, val in (
@@ -125,17 +146,17 @@ def serve(
                 f"{flag} was removed in 0.2.2. "
                 "Use --users-config with a YAML file instead."
             )
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)-8s %(name)s %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    _configure_logging(log_file)
 
     url = f"http://{host}:{port}"
 
     if ldap_config:
         os.environ["XWING_LDAP_CONFIG"] = ldap_config
         click.echo(f"LDAP authentication enabled ({ldap_config})")
+    if audit_db:
+        os.environ["XWING_AUDIT_DB"] = str(audit_db)
+    if log_file:
+        os.environ["XWING_LOG_FILE"] = str(log_file)
 
     click.echo(f"Starting X-wing at {url}")
     if not users_config:
@@ -177,6 +198,8 @@ def serve(
         kwargs["users_config"] = users_config
     if ldap_config is not None:
         kwargs["ldap_config"] = ldap_config
+    if audit_db is not None:
+        kwargs["audit_db"] = audit_db
 
     if reload:
         os.environ["XWING_ROOT"] = root
@@ -199,6 +222,10 @@ def serve(
             os.environ["XWING_TRUSTED_AUTH_PROXIES"] = ",".join(trusted_auth_proxies)
         if ldap_config is not None:
             os.environ["XWING_LDAP_CONFIG"] = ldap_config
+        if audit_db is not None:
+            os.environ["XWING_AUDIT_DB"] = str(audit_db)
+        if log_file is not None:
+            os.environ["XWING_LOG_FILE"] = str(log_file)
 
         uvicorn.run(
             "xwing.app:create_app_reload",
@@ -207,6 +234,7 @@ def serve(
             factory=True,
             reload=reload,
             log_level="info",
+            log_config=None,
         )
     else:
         settings = Settings(**kwargs)
@@ -219,4 +247,58 @@ def serve(
             port=port,
             reload=False,
             log_level="info",
+            log_config=None,
         )
+
+
+def _audit_db_path(value: Path | None) -> Path:
+    if value:
+        return value
+    configured = os.getenv("XWING_AUDIT_DB")
+    if configured:
+        return Path(configured).expanduser()
+    data_home = Path(os.getenv("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    return data_home / "xwing" / "audit.db"
+
+
+def _print_audit_events(events: list[dict]) -> None:
+    for event in events:
+        click.echo(f"{event['occurred_at']} {event['username']} {event['method']} {event['path']} status={event['status_code']} {event['duration_ms']}ms")
+        if event["details"]:
+            click.echo(f"  {event['details']}")
+
+
+@main.group(invoke_without_command=True)
+@click.option("--audit-db", type=click.Path(dir_okay=False, path_type=Path), default=None)
+@click.option("--user", "username", default=None)
+@click.option("--since", default=None, help="ISO date/time, for example 2026-06-21.")
+@click.option("--limit", default=100, show_default=True, type=click.IntRange(1, 10000))
+@click.pass_context
+def audit(ctx: click.Context, audit_db: Path | None, username: str | None, since: str | None, limit: int):
+    """Read or purge authenticated X-wing activity."""
+    if ctx.invoked_subcommand is None:
+        db_path = _audit_db_path(audit_db)
+        audit_store.init_db(db_path)
+        _print_audit_events(audit_store.list_events(db_path, username=username, since=since, limit=limit))
+
+
+@audit.command("show")
+@click.option("--audit-db", type=click.Path(dir_okay=False, path_type=Path), default=None)
+@click.option("--user", "username", default=None)
+@click.option("--since", default=None, help="ISO date/time, for example 2026-06-21.")
+@click.option("--limit", default=100, show_default=True, type=click.IntRange(1, 10000))
+def audit_show(audit_db: Path | None, username: str | None, since: str | None, limit: int):
+    """Show authenticated activity."""
+    db_path = _audit_db_path(audit_db)
+    audit_store.init_db(db_path)
+    _print_audit_events(audit_store.list_events(db_path, username=username, since=since, limit=limit))
+
+
+@audit.command("purge")
+@click.option("--audit-db", type=click.Path(dir_okay=False, path_type=Path), default=None)
+@click.option("--older-than", default=90, show_default=True, type=click.IntRange(1))
+def audit_purge(audit_db: Path | None, older_than: int):
+    """Purge old audit rows."""
+    db_path = _audit_db_path(audit_db)
+    audit_store.init_db(db_path)
+    click.echo(f"Purged {audit_store.purge_events(db_path, older_than)} audit events")

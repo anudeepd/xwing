@@ -159,6 +159,19 @@ xwing serve --root /data --ldap-config ldapgate.yaml --users-config users.yaml
 Use `ldapgate.yaml` in this repository as the starting template for X-wing.
 See the [LDAPGate README](https://github.com/anudeepd/ldapgate) for config file documentation.
 
+### Audit log
+
+LDAP-enabled and `--require-auth` deployments retain authenticated activity in
+`~/.local/share/xwing/audit.db` by default. The log records the user, method,
+path, status, and timing. Text and JSON request input is retained up to 16 KiB;
+large or binary upload bodies are metadata-only. Set `XWING_AUDIT_DB` (or pass
+`--audit-db`) to choose another location.
+
+```bash
+xwing audit --user alice
+xwing audit purge --older-than 90
+```
+
 ## Development
 
 Requires [uv](https://github.com/astral-sh/uv).
