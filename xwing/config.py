@@ -161,6 +161,9 @@ class Settings(BaseModel):
             self.tmp_dir = (
                 Path(tempfile.gettempdir()) / f"xwing-{self.root_dir.name}-{root_hash}"
             )
+        # Honour the environment override in both normal and reload startup.
+        if self.audit_db is None and (configured_audit_db := os.getenv("XWING_AUDIT_DB")):
+            self.audit_db = Path(configured_audit_db).expanduser()
         # Audit authenticated deployments by default. Supplying audit_db also
         # enables it for externally-authenticated (e.g. standalone LDAPGate) use.
         if self.audit_db is None and (

@@ -1,6 +1,15 @@
 import pytest
 
-from xwing.config import UserConfig, UserPerms
+from xwing.config import Settings, UserConfig, UserPerms
+
+
+def test_audit_db_uses_environment_override(monkeypatch, tmp_path):
+    audit_db = tmp_path / "audit" / "xwing.db"
+    monkeypatch.setenv("XWING_AUDIT_DB", str(audit_db))
+
+    settings = Settings(root_dir=tmp_path)
+
+    assert settings.audit_db == audit_db
 
 
 class TestUserConfigCompact:
