@@ -2,8 +2,10 @@
 
 const CHUNK_SIZE = 8 * 1024 * 1024;  // 8 MB
 const CURRENT_PATH = document.body.dataset.currentPath || "/";
+const CURRENT_USER = document.body.dataset.user || "anonymous";
 const CAN_WRITE = document.body.dataset.canWrite === "true";
 const CAN_DELETE = document.body.dataset.canDelete === "true";
+const SORT_STORAGE_KEY = `xwing.sort.${CURRENT_USER}`;
 
 function warnReadOnly(action) {
   alert(`Read-only access: ${action} is disabled for your user.`);
@@ -60,11 +62,145 @@ document.querySelectorAll("[data-mtime]").forEach(td => {
 
 // ── Selection + bulk actions ─────────────────────────────────────────────────
 const selectAll = document.getElementById("select-all");
-const selectableRows = [...document.querySelectorAll(".selectable-entry")];
+let selectableRows = [...document.querySelectorAll(".selectable-entry")];
 const zipSelectedBtn = document.getElementById("zip-selected-btn");
 const deleteSelectedBtn = document.getElementById("delete-selected-btn");
 const selectedPaths = new Set();
 let lastSelectedIndex = null;
+
+// ── Sorting ──────────────────────────────────────────────────────────────────
+const SORT_KEYS = ["name", "size", "mtime"];
+const DEFAULT_SORT = [{ key: "name", dir: "asc" }];
+const sortHeaders = [...document.querySelectorAll(".sort-header")];
+const resetSortBtn = document.getElementById("reset-sort-btn");
+const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
+function isValidSortEntry(entry) {
+  return entry
+    && SORT_KEYS.includes(entry.key)
+    && ["asc", "desc"].includes(entry.dir);
+}
+
+function readSortPreference() {
+  try {
+    const pref = JSON.parse(localStorage.getItem(SORT_STORAGE_KEY) || "null");
+    if (Array.isArray(pref)) {
+      const entries = pref.filter(isValidSortEntry);
+      if (entries.length) return entries;
+    }
+    if (isValidSortEntry(pref)) {
+      return [pref];
+    }
+  } catch {
+    // Ignore invalid browser storage and fall back to the default listing.
+  }
+  return [...DEFAULT_SORT];
+}
+
+function writeSortPreference(pref) {
+  try {
+    localStorage.setItem(SORT_STORAGE_KEY, JSON.stringify(pref));
+  } catch {
+    // Sorting still works for the current page when storage is unavailable.
+  }
+}
+
+function clearSortPreference() {
+  try {
+    localStorage.removeItem(SORT_STORAGE_KEY);
+  } catch {
+    // Ignore locked-down browser storage.
+  }
+}
+
+function rowSortValue(row, key) {
+  if (key === "name") return row.dataset.sortName || row.dataset.name || "";
+  const value = Number(row.dataset[`sort${key[0].toUpperCase()}${key.slice(1)}`]);
+  return Number.isFinite(value) ? value : 0;
+}
+
+function compareRowsByEntry(a, b, entry) {
+  const aValue = rowSortValue(a, entry.key);
+  const bValue = rowSortValue(b, entry.key);
+  const result = typeof aValue === "string"
+    ? collator.compare(aValue, String(bValue))
+    : aValue - Number(bValue);
+  return entry.dir === "asc" ? result : -result;
+}
+
+function compareRows(a, b, sortEntries) {
+  const aDir = a.dataset.isDir === "true";
+  const bDir = b.dataset.isDir === "true";
+  if (aDir !== bDir) return aDir ? -1 : 1;
+
+  for (const entry of sortEntries) {
+    const result = compareRowsByEntry(a, b, entry);
+    if (result !== 0) return result;
+  }
+  return collator.compare(a.dataset.sortName || "", b.dataset.sortName || "");
+}
+
+function refreshSelectableRows() {
+  selectableRows = [...document.querySelectorAll(".selectable-entry")];
+}
+
+function updateSortUi(sortEntries) {
+  sortHeaders.forEach(btn => {
+    const index = sortEntries.findIndex(entry => entry.key === btn.dataset.sortKey);
+    const entry = sortEntries[index];
+    const active = Boolean(entry);
+    const th = btn.closest("th");
+    const indicator = btn.querySelector(".sort-indicator");
+    btn.classList.toggle("active", active);
+    if (indicator) {
+      indicator.textContent = active
+        ? `${entry.dir === "asc" ? "▲" : "▼"}${sortEntries.length > 1 ? index + 1 : ""}`
+        : "";
+    }
+    if (th) th.setAttribute("aria-sort", active ? (entry.dir === "asc" ? "ascending" : "descending") : "none");
+  });
+}
+
+function applySort(sortEntries) {
+  const tbody = document.querySelector(".file-table tbody");
+  if (!tbody) return;
+  const rows = [...tbody.querySelectorAll(".selectable-entry")].sort((a, b) => compareRows(a, b, sortEntries));
+  rows.forEach(row => tbody.appendChild(row));
+  refreshSelectableRows();
+  updateSortUi(sortEntries);
+}
+
+let currentSort = readSortPreference();
+applySort(currentSort);
+
+sortHeaders.forEach(btn => {
+  btn.addEventListener("click", () => {
+    const key = btn.dataset.sortKey;
+    const existing = currentSort.find(entry => entry.key === key);
+    if (!existing) {
+      currentSort = [
+        ...currentSort,
+        { key, dir: "asc" },
+      ];
+    } else if (existing.dir === "asc") {
+      currentSort = currentSort.map(entry => (
+        entry.key === key ? { key, dir: "desc" } : entry
+      ));
+    } else {
+      currentSort = currentSort.filter(entry => entry.key !== key);
+    }
+    writeSortPreference(currentSort);
+    clearSelection();
+    applySort(currentSort);
+  });
+});
+
+resetSortBtn.addEventListener("click", () => {
+  currentSort = [...DEFAULT_SORT];
+  clearSortPreference();
+  clearSelection();
+  applySort(currentSort);
+});
 
 function rowPath(row) {
   return row.dataset.path;
@@ -254,7 +390,7 @@ function addUploadItem(name) {
 
   const status = document.createElement("div");
   status.className = "upload-status";
-  status.textContent = "0%";
+  status.textContent = "Preparing upload...";
 
   item.append(nameEl, progressWrap, status);
   uploadList.appendChild(item);
@@ -263,6 +399,9 @@ function addUploadItem(name) {
     setProgress(pct) {
       progressBar.style.width = pct + "%";
       status.textContent = Math.round(pct) + "%";
+    },
+    setStatus(msg) {
+      status.textContent = msg;
     },
     setDone() {
       item.classList.add("done");
@@ -375,6 +514,7 @@ async function uploadFile(file, destDir) {
   }
 
   try {
+    ui.setStatus("Finalizing...");
     const res = await fetch(`/_upload/${sessionId}/complete`, { method: "POST" });
     if (!res.ok) throw new Error("complete → " + res.status);
   } catch (e) {

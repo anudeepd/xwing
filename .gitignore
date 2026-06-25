@@ -6,7 +6,7 @@ __pycache__/
 dist/
 build/
 
-# Editor bundle build tooling (node_modules kept local, bundle committed)
+# Frontend bundle build tooling (node_modules kept local, bundles committed)
 scripts/node_modules/
 scripts/package-lock.json
 

@@ -24,6 +24,27 @@ class TestDirectoryListing:
         assert "hello.txt" in r.text
         assert "subdir" in r.text
 
+    def test_listing_has_sort_controls_and_user_scope(self, root, tmp_dir, users_yaml):
+        (root / "hello.txt").write_text("hi")
+        s = Settings(
+            root_dir=root,
+            tmp_dir=tmp_dir,
+            require_auth=True,
+            users_config=users_yaml,
+            trusted_auth_proxies=["testclient"],
+        )
+        with TestClient(create_app(s)) as c:
+            r = c.get("/", headers={**HTML, "X-Forwarded-User": "alice"})
+        assert r.status_code == 200
+        assert 'data-user="alice"' in r.text
+        assert 'id="reset-sort-btn"' in r.text
+        assert 'data-sort-key="name"' in r.text
+        assert 'data-sort-key="size"' in r.text
+        assert 'data-sort-key="mtime"' in r.text
+        assert 'data-sort-name=' in r.text
+        assert 'data-sort-mtime=' in r.text
+        assert 'data-sort-size=' in r.text
+
     def test_subdir_listing(self, client, root):
         d = root / "docs"
         d.mkdir()
@@ -112,7 +133,7 @@ class TestAuth:
 
     def test_app_html_and_unversioned_assets_are_revalidated(self, client):
         listing = client.get("/", headers=HTML)
-        asset = client.get("/static/app.js")
+        asset = client.get("/static/assets/app.js")
 
         assert listing.headers["cache-control"] == "no-cache, must-revalidate"
         assert asset.headers["cache-control"] == "no-cache, must-revalidate"
@@ -266,9 +287,36 @@ class TestAuth:
         assert calls["config"].proxy.trusted_proxies == ["127.0.0.1", "10.0.0.0/8"]
 
     def test_read_only_editor_script_disables_codemirror_editing(self):
-        script = (Path(__file__).parents[1] / "xwing" / "static" / "editor.js").read_text()
+        script = (
+            Path(__file__).parents[1] / "xwing" / "frontend" / "src" / "editor.js"
+        ).read_text()
         assert "EditorView.editable.of(false)" in script
         assert "EditorState.readOnly.of(true)" in script
+
+    def test_upload_script_shows_waiting_and_finalizing_statuses(self):
+        script = (
+            Path(__file__).parents[1] / "xwing" / "frontend" / "src" / "app.js"
+        ).read_text()
+        assert "Preparing upload..." in script
+        assert "Finalizing..." in script
+        assert "xwing.sort." in script
+        assert "localStorage" in script
+        assert 'existing.dir === "asc"' in script
+        assert "currentSort.filter" in script
+
+    def test_pages_use_bundled_frontend_assets(self, client, root):
+        (root / "notes.txt").write_text("hello")
+        listing = client.get("/", headers=HTML)
+        editor = client.get("/notes.txt?edit")
+
+        assert listing.status_code == 200
+        assert editor.status_code == 200
+        assert '/static/assets/style.css' in listing.text
+        assert '/static/assets/app.js' in listing.text
+        assert '/static/assets/style.css' in editor.text
+        assert '/static/assets/editor.js' in editor.text
+        assert '/static/app.js' not in listing.text
+        assert '/static/editor.js' not in editor.text
 
 
 class TestPut:

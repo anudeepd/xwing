@@ -169,6 +169,7 @@ header {
   transition: background 0.12s, border-color 0.12s;
 }
 .btn:hover { background: var(--surface3); border-color: var(--surface3); }
+.btn-compact { padding: 6px 10px; }
 .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 .btn-primary:hover { background: var(--accent-h); border-color: var(--accent-h); }
 .btn-danger { background: rgba(239,68,68,0.14); border-color: rgba(239,68,68,0.45); color: #fca5a5; }
@@ -228,6 +229,31 @@ header {
   color: var(--text-muted);
   background: var(--surface2);
   border-bottom: 1px solid var(--border2);
+}
+.sort-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 20px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+}
+.sort-header:hover,
+.sort-header.active {
+  color: var(--text);
+}
+.sort-indicator {
+  display: inline-block;
+  width: 9px;
+  color: var(--accent);
+  font-size: 0.62rem;
+  line-height: 1;
 }
 .file-table tbody tr {
   border-bottom: 1px solid var(--border);

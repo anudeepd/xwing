@@ -4,7 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "build": "node bundle-editor.mjs && node build-frontend.mjs",
+    "build:app": "node build-frontend.mjs",
+    "build:editor": "node bundle-editor.mjs"
   },
   "keywords": [],
   "author": "",

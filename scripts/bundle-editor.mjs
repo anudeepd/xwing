@@ -1,9 +1,8 @@
-// Build a self-contained CodeMirror 6 bundle for fileshare's in-browser editor.
+// Build a self-contained CodeMirror 6 bundle for X-wing's in-browser editor.
 // Run with: node bundle-editor.mjs
-// Output:   ../fileshare/static/codemirror-bundle.js
+// Output:   ../xwing/static/codemirror-bundle.js
 
 import { build } from "esbuild";
-import { writeFileSync } from "fs";
 
 // Entry point — everything the editor needs, exposed as window.CM
 const entry = `
@@ -40,16 +39,14 @@ window.CM = {
 };
 `;
 
-writeFileSync("/tmp/cm-entry.mjs", entry);
-
 await build({
   stdin: { contents: entry, resolveDir: "./node_modules/.bin/../.." },
   bundle: true,
   minify: true,
   format: "iife",
   target: ["es2020"],
-  outfile: "../fileshare/static/codemirror-bundle.js",
+  outfile: "../xwing/static/codemirror-bundle.js",
   logLevel: "info",
 });
 
-console.log("Done → fileshare/static/codemirror-bundle.js");
+console.log("Done -> xwing/static/codemirror-bundle.js");

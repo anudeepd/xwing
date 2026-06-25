@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import re
 import shutil
 import tempfile
@@ -13,8 +14,11 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 
 from .auth import get_user, require_perm
+from . import audit_store
 from .config import Settings
 from .files import is_within_root, safe_path
+
+logger = logging.getLogger(__name__)
 
 _SESSION_FILE = "session.json"
 _SESSION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -71,6 +75,53 @@ async def _delete_session(tmp_dir: Path, session_id: str) -> None:  # type: igno
 
 def _drop_session_lock(session_id: str) -> None:
     _SESSION_LOCKS.pop(session_id, None)
+
+
+def _to_audit_path(root: Path, fspath: Path) -> str:
+    rel = fspath.relative_to(root)
+    if rel == Path("."):
+        return "/"
+    return "/" + rel.as_posix()
+
+
+async def _record_upload_audit(
+    *,
+    settings: Settings,
+    user: str,
+    dest_file: Path,
+    total_bytes: int,
+    total_chunks: int,
+    status_code: int,
+    started: float,
+) -> None:
+    duration_ms = round((time.monotonic() - started) * 1000, 2)
+    details = json.dumps(
+        {"bytes": total_bytes, "chunks": total_chunks},
+        ensure_ascii=False,
+    )
+    path = _to_audit_path(settings.root_dir, dest_file)
+    logger.info(
+        "file operation user=%s operation=upload path=%s status=%s duration_ms=%s details=%s",
+        user,
+        path,
+        status_code,
+        duration_ms,
+        details,
+    )
+    if not settings.audit_db or user == "anonymous":
+        return
+    try:
+        await audit_store.record_event_async(
+            db_path=settings.audit_db,
+            username=user,
+            method="upload",
+            path=path,
+            details=details,
+            status_code=status_code,
+            duration_ms=duration_ms,
+        )
+    except Exception:
+        logger.exception("Failed to record upload audit event")
 
 
 def create_upload_router(settings: Settings) -> APIRouter:
@@ -190,6 +241,7 @@ def create_upload_router(settings: Settings) -> APIRouter:
 
     @router.post("/{session_id}/complete")
     async def upload_complete(session_id: str, request: Request):
+        started = time.monotonic()
         user = get_user(request, settings)
         require_perm(user, "write", settings)
         _validate_session_id(session_id)
@@ -251,6 +303,15 @@ def create_upload_router(settings: Settings) -> APIRouter:
 
                 response = JSONResponse(
                     {"path": str(dest_file.relative_to(settings.root_dir))}
+                )
+                await _record_upload_audit(
+                    settings=settings,
+                    user=user,
+                    dest_file=dest_file,
+                    total_bytes=int(session.get("total_bytes", 0)),
+                    total_chunks=total,
+                    status_code=response.status_code,
+                    started=started,
                 )
         finally:
             if drop_lock:

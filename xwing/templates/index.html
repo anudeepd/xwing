@@ -5,9 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>X-wing — {{ current_path }}</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg"/>
-  <link rel="stylesheet" href="/static/style.css"/>
+  <link rel="stylesheet" href="/static/assets/style.css"/>
 </head>
 <body data-current-path="{{ current_url_path }}"
+      data-user="{{ user }}"
       data-can-write="{{ 'true' if perms.write else 'false' }}"
       data-can-delete="{{ 'true' if perms.delete else 'false' }}">
 <div class="bg-watermark" aria-hidden="true">
@@ -91,6 +92,8 @@
         <input type="file" id="file-input" multiple hidden/>
         <input type="file" id="folder-input" webkitdirectory multiple hidden/>
         <div class="toolbar-sep"></div>
+        <button class="btn btn-compact" id="reset-sort-btn" title="Reset file sorting">Reset sort</button>
+        <div class="toolbar-sep"></div>
         <button class="btn" id="zip-selected-btn" disabled title="Select files or folders first">Download zip</button>
         <button class="btn btn-danger" id="delete-selected-btn" disabled title="{% if perms.delete %}Select files or folders first{% else %}Read-only access{% endif %}" {% if not perms.delete %}data-readonly="true"{% endif %}>Delete selected</button>
         <div class="toolbar-sep"></div>
@@ -112,9 +115,15 @@
               <input type="checkbox" id="select-all" aria-label="Select all files and folders"/>
             </th>
             <th class="col-icon"></th>
-            <th class="col-name">Name</th>
-            <th class="col-size">Size</th>
-            <th class="col-date">Modified</th>
+            <th class="col-name" aria-sort="ascending">
+              <button class="sort-header" type="button" data-sort-key="name">Name <span class="sort-indicator" aria-hidden="true"></span></button>
+            </th>
+            <th class="col-size" aria-sort="none">
+              <button class="sort-header" type="button" data-sort-key="size">Size <span class="sort-indicator" aria-hidden="true"></span></button>
+            </th>
+            <th class="col-date" aria-sort="none">
+              <button class="sort-header" type="button" data-sort-key="mtime">Modified <span class="sort-indicator" aria-hidden="true"></span></button>
+            </th>
             <th class="col-action"></th>
           </tr>
         </thead>
@@ -131,6 +140,9 @@
           <tr class="entry selectable-entry {% if e.is_dir %}entry-dir{% else %}entry-file{% endif %}"
               data-path="{{ current_url_path }}{{ e.url_name }}{% if e.is_dir %}/{% endif %}"
               data-name="{{ e.name }}{% if e.is_dir %}/{% endif %}"
+              data-sort-name="{{ e.name|lower }}"
+              data-sort-size="{{ e.size }}"
+              data-sort-mtime="{{ e.mtime }}"
               data-is-dir="{{ 'true' if e.is_dir else 'false' }}">
             <td class="col-select">
               <input type="checkbox" class="entry-select" aria-label="Select {{ e.name }}{% if e.is_dir %} folder{% endif %}"/>
@@ -190,6 +202,6 @@
   </div>
 
 </div>
-<script src="/static/app.js"></script>
+<script src="/static/assets/app.js"></script>
 </body>
 </html>

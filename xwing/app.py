@@ -138,6 +138,49 @@ def create_app(settings: Settings) -> FastAPI:
 
     app = FastAPI(lifespan=lifespan)
 
+    def _skip_generic_audit(request: Request) -> bool:
+        if request.url.path.startswith("/_auth/"):
+            return True
+        if request.url.path.startswith("/_upload/"):
+            return True
+        if request.url.path == "/_bulk/delete":
+            return True
+        return request.method.upper() in {"PUT", "DELETE", "MKCOL", "COPY", "MOVE"}
+
+    async def _record_semantic_audit(
+        *,
+        user: str,
+        operation: str,
+        path: str,
+        details: str | None,
+        status_code: int,
+        started: float,
+    ) -> None:
+        duration_ms = round((time.monotonic() - started) * 1000, 2)
+        logger.info(
+            "file operation user=%s operation=%s path=%s status=%s duration_ms=%s details=%s",
+            user,
+            operation,
+            path,
+            status_code,
+            duration_ms,
+            details or "",
+        )
+        if not settings.audit_db or user == "anonymous":
+            return
+        try:
+            await audit_store.record_event_async(
+                db_path=settings.audit_db,
+                username=user,
+                method=operation,
+                path=path,
+                details=details,
+                status_code=status_code,
+                duration_ms=duration_ms,
+            )
+        except Exception:
+            logger.exception("Failed to record audit event")
+
     async def _audit_details(request: Request) -> str | None:
         """Capture bounded textual input; uploads remain metadata-only."""
         content_length = request.headers.get("content-length")
@@ -170,10 +213,10 @@ def create_app(settings: Settings) -> FastAPI:
     async def authenticated_activity_audit(request: Request, call_next):
         started = time.monotonic()
         details = await _audit_details(request) if (
-            settings.audit_db and not request.url.path.startswith("/_auth/")
+            settings.audit_db and not _skip_generic_audit(request)
         ) else None
         response = await call_next(request)
-        if not settings.audit_db or request.url.path.startswith("/_auth/"):
+        if not settings.audit_db or _skip_generic_audit(request):
             return response
         try:
             user = get_user(request, settings)
@@ -308,6 +351,7 @@ def create_app(settings: Settings) -> FastAPI:
     # ── Method handlers ───────────────────────────────────────────────────────
 
     async def _handle_put(fspath: Path, request: Request, user: str) -> Response:
+        started = time.monotonic()
         require_perm(user, "write", settings)
         _reject_sensitive_path(fspath)
 
@@ -356,9 +400,19 @@ def create_app(settings: Settings) -> FastAPI:
             except Exception:
                 pass
             raise HTTPException(status_code=500, detail=f"Write failed: {e}")
-        return Response(status_code=204)
+        response = Response(status_code=204)
+        await _record_semantic_audit(
+            user=user,
+            operation="upload",
+            path=_to_rel_path(fspath),
+            details=json.dumps({"bytes": received_bytes}, ensure_ascii=False),
+            status_code=response.status_code,
+            started=started,
+        )
+        return response
 
     async def _handle_delete(fspath: Path, user: str) -> Response:
+        started = time.monotonic()
         require_perm(user, "delete", settings)
         if _is_root_path(fspath):
             raise HTTPException(status_code=403, detail="Cannot delete root")
@@ -366,11 +420,22 @@ def create_app(settings: Settings) -> FastAPI:
 
         if not fspath.exists():
             raise HTTPException(status_code=404)
+        deleted_kind = "directory" if fspath.is_dir() else "file"
+        rel_path = _to_rel_path(fspath)
         if fspath.is_dir():
             await anyio.to_thread.run_sync(shutil.rmtree, fspath)  # type: ignore[reportAttributeAccessIssue]
         else:
             await anyio.to_thread.run_sync(fspath.unlink)  # type: ignore[reportAttributeAccessIssue]
-        return Response(status_code=204)
+        response = Response(status_code=204)
+        await _record_semantic_audit(
+            user=user,
+            operation="delete",
+            path=rel_path,
+            details=json.dumps({"kind": deleted_kind}, ensure_ascii=False),
+            status_code=response.status_code,
+            started=started,
+        )
+        return response
 
     async def _handle_get(fspath: Path, request: Request, user: str) -> Response:
         if not fspath.exists():
@@ -570,10 +635,12 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.post("/_bulk/delete", include_in_schema=False)
     async def bulk_delete(request: Request):
+        started = time.monotonic()
         user = get_user(request, settings)
         require_perm(user, "delete", settings)
         body = await _bulk_body(request)
         paths = _resolve_bulk_paths(body.get("paths"))
+        rel_paths = [_to_rel_path(fspath) for fspath in paths]
 
         for fspath in sorted(paths, key=lambda p: len(p.parts), reverse=True):
             if not fspath.exists():
@@ -582,7 +649,16 @@ def create_app(settings: Settings) -> FastAPI:
                 await anyio.to_thread.run_sync(shutil.rmtree, fspath)  # type: ignore[reportAttributeAccessIssue]
             else:
                 await anyio.to_thread.run_sync(fspath.unlink)  # type: ignore[reportAttributeAccessIssue]
-        return JSONResponse({"deleted": len(paths)})
+        response = JSONResponse({"deleted": len(paths)})
+        await _record_semantic_audit(
+            user=user,
+            operation="bulk_delete",
+            path="/_bulk/delete",
+            details=json.dumps({"count": len(paths), "paths": rel_paths}, ensure_ascii=False),
+            status_code=response.status_code,
+            started=started,
+        )
+        return response
 
     # ── Catch-all route ───────────────────────────────────────────────────────
 
@@ -604,6 +680,7 @@ def create_app(settings: Settings) -> FastAPI:
     )
     async def catch_all(request: Request, path: str = ""):
         method = request.method.upper()
+        started = time.monotonic()
         user = get_user(request, settings)
         fspath = resolve(request)
 
@@ -632,7 +709,16 @@ def create_app(settings: Settings) -> FastAPI:
         if method == "MKCOL":
             require_perm(user, "write", settings)
             _reject_sensitive_path(fspath)
-            return mkcol_response(fspath)
+            response = mkcol_response(fspath)
+            await _record_semantic_audit(
+                user=user,
+                operation="mkdir",
+                path=_to_rel_path(fspath),
+                details=None,
+                status_code=response.status_code,
+                started=started,
+            )
+            return response
 
         if method == "COPY":
             require_perm(user, "write", settings)
@@ -640,7 +726,19 @@ def create_app(settings: Settings) -> FastAPI:
             _reject_sensitive_path(fspath)
             _reject_sensitive_path(dest)
             overwrite = request.headers.get("overwrite", "T").upper() != "F"
-            return await copy_response(fspath, dest, overwrite)
+            response = await copy_response(fspath, dest, overwrite)
+            await _record_semantic_audit(
+                user=user,
+                operation="copy",
+                path=_to_rel_path(fspath),
+                details=json.dumps(
+                    {"destination": _to_rel_path(dest), "overwrite": overwrite},
+                    ensure_ascii=False,
+                ),
+                status_code=response.status_code,
+                started=started,
+            )
+            return response
 
         if method == "MOVE":
             require_perm(user, "delete", settings)
@@ -651,7 +749,20 @@ def create_app(settings: Settings) -> FastAPI:
             _reject_sensitive_path(fspath)
             _reject_sensitive_path(dest)
             overwrite = request.headers.get("overwrite", "T").upper() != "F"
-            return await move_response(fspath, dest, overwrite)
+            source_path = _to_rel_path(fspath)
+            response = await move_response(fspath, dest, overwrite)
+            await _record_semantic_audit(
+                user=user,
+                operation="move",
+                path=source_path,
+                details=json.dumps(
+                    {"destination": _to_rel_path(dest), "overwrite": overwrite},
+                    ensure_ascii=False,
+                ),
+                status_code=response.status_code,
+                started=started,
+            )
+            return response
 
         if method == "LOCK":
             return lock_response(fspath)

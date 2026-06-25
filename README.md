@@ -183,6 +183,15 @@ uv sync
 uv run xwing serve --root .
 ```
 
+Frontend source lives in `xwing/frontend/src`; shipped browser assets are the
+bundled files under `xwing/static/assets`. Rebuild them after frontend changes:
+
+```bash
+cd scripts
+npm install
+npm run build:app
+```
+
 ## License
 
 MIT
