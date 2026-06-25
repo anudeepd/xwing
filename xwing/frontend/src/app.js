@@ -1,6 +1,8 @@
 "use strict";
 
 const CHUNK_SIZE = 8 * 1024 * 1024;  // 8 MB
+const UPLOAD_PROGRESS_CAP = 95;
+const UPLOAD_STALL_MS = 1500;
 const CURRENT_PATH = document.body.dataset.currentPath || "/";
 const CURRENT_USER = document.body.dataset.user || "anonymous";
 const CAN_WRITE = document.body.dataset.canWrite === "true";
@@ -47,6 +49,12 @@ function filenameFromContentDisposition(header) {
 function stagingFolderName(name) {
   const nonce = Math.random().toString(36).slice(2);
   return `.xwing-upload-${Date.now()}-${nonce}-${name}`;
+}
+
+function nextPaint() {
+  return new Promise(resolve => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  });
 }
 
 // ── Date formatting ────────────────────────────────────────────────────────────
@@ -403,12 +411,17 @@ function addUploadItem(name) {
     setStatus(msg) {
       status.textContent = msg;
     },
+    setProcessing(on) {
+      item.classList.toggle("processing", on);
+    },
     setDone() {
+      item.classList.remove("processing");
       item.classList.add("done");
       progressBar.style.width = "100%";
       status.textContent = "Done";
     },
     setError(msg) {
+      item.classList.remove("processing");
       item.classList.add("error");
       status.textContent = "Error: " + msg;
     },
@@ -460,6 +473,74 @@ async function finishFolderRoot(root) {
   return false;
 }
 
+function putBlob(url, blob, callbacks = {}) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    let settled = false;
+    let uploadComplete = false;
+    let stallTimer = null;
+    let responseTimer = null;
+
+    const clearTimers = () => {
+      clearTimeout(stallTimer);
+      clearTimeout(responseTimer);
+    };
+    const fail = message => {
+      if (settled) return;
+      settled = true;
+      clearTimers();
+      reject(new Error(message));
+    };
+    const armStallTimer = () => {
+      clearTimeout(stallTimer);
+      if (blob.size === 0) return;
+      stallTimer = setTimeout(() => {
+        if (!settled && !uploadComplete) callbacks.onStalled?.();
+      }, UPLOAD_STALL_MS);
+    };
+
+    xhr.upload.addEventListener("loadstart", () => {
+      callbacks.onStart?.();
+      armStallTimer();
+    });
+    xhr.upload.addEventListener("progress", event => {
+      const loaded = Math.min(blob.size, event.loaded);
+      callbacks.onProgress?.(loaded, event.lengthComputable ? event.total : blob.size);
+      if (loaded >= blob.size) {
+        clearTimeout(stallTimer);
+      } else {
+        armStallTimer();
+      }
+    });
+    xhr.upload.addEventListener("load", () => {
+      uploadComplete = true;
+      clearTimeout(stallTimer);
+      callbacks.onProgress?.(blob.size, blob.size);
+      callbacks.onUploaded?.();
+      responseTimer = setTimeout(() => {
+        if (!settled) callbacks.onResponseWait?.();
+      }, UPLOAD_STALL_MS);
+    });
+
+    xhr.addEventListener("load", () => {
+      if (settled) return;
+      settled = true;
+      clearTimers();
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(xhr);
+      } else {
+        reject(new Error(`HTTP ${xhr.status}`));
+      }
+    });
+    xhr.addEventListener("error", () => fail("network error"));
+    xhr.addEventListener("abort", () => fail("aborted"));
+    xhr.addEventListener("timeout", () => fail("timeout"));
+
+    xhr.open("PUT", url, true);
+    xhr.send(blob);
+  });
+}
+
 // ── Core: upload a single File to destDir on the server ───────────────────────
 async function uploadFile(file, destDir) {
   const label = destDir !== CURRENT_PATH
@@ -467,11 +548,13 @@ async function uploadFile(file, destDir) {
     : file.name;
   const ui = addUploadItem(label);
   showPanel();
+  await nextPaint();
 
   const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
 
   let sessionId;
   try {
+    ui.setStatus("Creating upload session...");
     const res = await fetch("/_upload/init", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -484,20 +567,52 @@ async function uploadFile(file, destDir) {
     return false;
   }
 
-  let done = 0;
   const concurrency = getConcurrency();
+  const chunkLoaded = new Array(totalChunks).fill(0);
+  let loadedBytes = 0;
+
+  function noteChunkLoaded(i, loaded, chunkSize) {
+    const nextLoaded = Math.max(chunkLoaded[i], Math.min(chunkSize, loaded));
+    loadedBytes += nextLoaded - chunkLoaded[i];
+    chunkLoaded[i] = nextLoaded;
+    const pct = file.size === 0
+      ? UPLOAD_PROGRESS_CAP
+      : Math.min(UPLOAD_PROGRESS_CAP, (loadedBytes / file.size) * UPLOAD_PROGRESS_CAP);
+    ui.setProgress(pct);
+  }
 
   async function uploadChunk(i) {
     const start = i * CHUNK_SIZE;
     const slice = file.slice(start, start + CHUNK_SIZE);
-    const res = await fetch(`/_upload/${sessionId}/${i}`, {
-      method: "PUT",
-      headers: { "Content-Length": String(slice.size) },
-      body: slice,
-    });
-    if (!res.ok) throw new Error(`chunk ${i} → ${res.status}`);
-    done++;
-    ui.setProgress((done / totalChunks) * 95);
+    try {
+      await putBlob(`/_upload/${sessionId}/${i}`, slice, {
+        onStart() {
+          ui.setProcessing(false);
+          ui.setStatus(`Starting chunk ${i + 1}/${totalChunks}...`);
+        },
+        onProgress(loaded) {
+          ui.setProcessing(false);
+          noteChunkLoaded(i, loaded, slice.size);
+          ui.setStatus("Uploading...");
+        },
+        onStalled() {
+          ui.setProcessing(true);
+          ui.setStatus("Processing upload...");
+        },
+        onUploaded() {
+          ui.setProcessing(true);
+          noteChunkLoaded(i, slice.size, slice.size);
+          ui.setStatus("Waiting for server response...");
+        },
+        onResponseWait() {
+          ui.setProcessing(true);
+          ui.setStatus("Still processing...");
+        },
+      });
+      noteChunkLoaded(i, slice.size, slice.size);
+    } finally {
+      ui.setProcessing(false);
+    }
   }
 
   try {

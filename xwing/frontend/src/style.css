@@ -382,6 +382,15 @@ tr:hover .btn-delete, tr:hover .btn-zip { opacity: 1; }
 .upload-item.done .progress-bar { background: #22c55e; }
 .upload-item.error .progress-bar { background: var(--danger); }
 .upload-status { font-size: 0.72rem; color: var(--text-muted); margin-top: 4px; }
+.upload-item.processing .progress-bar {
+  background-image: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.18) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: processing-sweep 1.2s ease-in-out infinite;
+}
+@keyframes processing-sweep {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
 
 /* ── Background watermark ───────────────────────────────────────────────────── */
 .bg-watermark {
