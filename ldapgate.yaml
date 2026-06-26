@@ -10,5 +10,7 @@ ldap:
 proxy:
     backend_url: http://localhost:8989
     secret_key: replace-with-at-least-32-random-characters
+    # Optional browser inactivity timeout in seconds. 0 disables idle expiry.
+    idle_timeout: 0
     app_name: X-wing
     secure_cookies: true
