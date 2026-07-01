@@ -5,6 +5,7 @@ const FILE_EXT = document.body.dataset.fileExt || "";
 const CAN_WRITE = document.body.dataset.canWrite === "true";
 const CSP_STYLE_NONCE = document.body.dataset.cspStyleNonce || "";
 const CONTENT = document.getElementById("editor-content")?.value || "";
+let authRedirecting = false;
 
 // ── Language detection ─────────────────────────────────────────────────────────
 const { EditorView, EditorState, basicSetup, keymap, indentWithTab, oneDark, langs } = window.CM;
@@ -83,6 +84,38 @@ function setStatus(cls, msg) {
   saveStatus.textContent = msg;
 }
 
+function currentAuthRedirectTarget() {
+  return `${window.location.pathname || "/"}${window.location.search || ""}${window.location.hash || ""}`;
+}
+
+function loginUrlForCurrentPage() {
+  return `/_auth/login?redirect=${encodeURIComponent(currentAuthRedirectTarget())}`;
+}
+
+function isLoginResponseUrl(url) {
+  if (!url) return false;
+  try {
+    return new URL(url, window.location.href).pathname === "/_auth/login";
+  } catch {
+    return false;
+  }
+}
+
+function redirectToLogin() {
+  if (authRedirecting) return;
+  authRedirecting = true;
+  window.location.assign(loginUrlForCurrentPage());
+}
+
+async function authFetch(input, init) {
+  const res = await fetch(input, init);
+  if (res.status === 401 || isLoginResponseUrl(res.url)) {
+    redirectToLogin();
+    throw new Error("authentication required");
+  }
+  return res;
+}
+
 async function save() {
   if (!CAN_WRITE) {
     setStatus("error", "read-only");
@@ -91,7 +124,7 @@ async function save() {
   setStatus("saving", "saving…");
   const content = view.state.doc.toString();
   try {
-    const res = await fetch(FILE_PATH, {
+    const res = await authFetch(FILE_PATH, {
       method: "PUT",
       body: content,
       headers: { "Content-Type": "text/plain; charset=utf-8" },
@@ -103,6 +136,7 @@ async function save() {
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => setStatus("", ""), 3000);
   } catch (e) {
+    if (authRedirecting) return;
     setStatus("error", "save failed: " + e.message);
   }
 }
@@ -119,7 +153,7 @@ document.addEventListener("keydown", e => {
 
 // ── Unsaved changes guard ──────────────────────────────────────────────────────
 window.addEventListener("beforeunload", e => {
-  if (dirty) {
+  if (dirty && !authRedirecting) {
     e.preventDefault();
     e.returnValue = "";
   }

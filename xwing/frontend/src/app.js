@@ -3,11 +3,77 @@
 const CHUNK_SIZE = 8 * 1024 * 1024;  // 8 MB
 const UPLOAD_PROGRESS_CAP = 95;
 const UPLOAD_STALL_MS = 1500;
+const UPLOAD_RETRY_DELAYS_MS = [750, 1500, 3000];
+const RETRYABLE_UPLOAD_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const CURRENT_PATH = document.body.dataset.currentPath || "/";
 const CURRENT_USER = document.body.dataset.user || "anonymous";
 const CAN_WRITE = document.body.dataset.canWrite === "true";
 const CAN_DELETE = document.body.dataset.canDelete === "true";
 const SORT_STORAGE_KEY = `xwing.sort.${CURRENT_USER}`;
+let authRedirecting = false;
+
+function currentAuthRedirectTarget() {
+  return `${window.location.pathname || "/"}${window.location.search || ""}${window.location.hash || ""}`;
+}
+
+function loginUrlForCurrentPage() {
+  return `/_auth/login?redirect=${encodeURIComponent(currentAuthRedirectTarget())}`;
+}
+
+function isLoginResponseUrl(url) {
+  if (!url) return false;
+  try {
+    return new URL(url, window.location.href).pathname === "/_auth/login";
+  } catch {
+    return false;
+  }
+}
+
+function redirectToLogin() {
+  if (authRedirecting) return;
+  authRedirecting = true;
+  window.location.assign(loginUrlForCurrentPage());
+}
+
+async function authFetch(input, init) {
+  const res = await fetch(input, init);
+  if (res.status === 401 || isLoginResponseUrl(res.url)) {
+    redirectToLogin();
+    throw new Error("authentication required");
+  }
+  return res;
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function httpStatusError(status, message = `HTTP ${status}`) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
+}
+
+function isRetryableUploadError(error) {
+  if (authRedirecting) return false;
+  if (RETRYABLE_UPLOAD_STATUSES.has(error?.status)) return true;
+  return error?.message === "network error" || error?.message === "timeout";
+}
+
+async function withUploadRetries(action, { label, ui } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await action();
+    } catch (error) {
+      if (!isRetryableUploadError(error) || attempt >= UPLOAD_RETRY_DELAYS_MS.length) {
+        throw error;
+      }
+      const delay = UPLOAD_RETRY_DELAYS_MS[attempt];
+      ui?.setStatus(`${label} failed (${error.message}); retrying ${attempt + 1}/${UPLOAD_RETRY_DELAYS_MS.length}...`);
+      await sleep(delay);
+    }
+  }
+}
 
 function warnReadOnly(action) {
   alert(`Read-only access: ${action} is disabled for your user.`);
@@ -297,7 +363,7 @@ if (selectAll) {
 
 zipSelectedBtn.addEventListener("click", async () => {
   if (!selectedPaths.size) return;
-  const res = await fetch("/_bulk/zip", {
+  const res = await authFetch("/_bulk/zip", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ base: CURRENT_PATH, paths: [...selectedPaths] }),
@@ -323,7 +389,7 @@ deleteSelectedBtn.addEventListener("click", async () => {
   const preview = names.slice(0, 6).join("\n");
   const extra = names.length > 6 ? `\n…and ${names.length - 6} more` : "";
   if (!confirm(`Delete ${names.length} selected item${names.length === 1 ? "" : "s"}?\n\n${preview}${extra}`)) return;
-  const res = await fetch("/_bulk/delete", {
+  const res = await authFetch("/_bulk/delete", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ paths: [...selectedPaths] }),
@@ -344,7 +410,7 @@ document.querySelectorAll(".btn-delete").forEach(btn => {
     const path = btn.dataset.path;
     const name = path.replace(/\/$/, "").split("/").pop();
     if (!confirm(`Delete "${name}"?`)) return;
-    const res = await fetch(path, { method: "DELETE" });
+    const res = await authFetch(path, { method: "DELETE" });
     if (res.ok) location.reload();
     else alert("Delete failed: " + res.status);
   });
@@ -359,7 +425,7 @@ document.getElementById("mkdir-btn").addEventListener("click", async () => {
   const name = prompt("Folder name:");
   if (!name) return;
   const path = appendPath(CURRENT_PATH, name);
-  const res = await fetch(path, { method: "MKCOL" });
+  const res = await authFetch(path, { method: "MKCOL" });
   if (res.ok || res.status === 201) location.reload();
   else alert("Could not create folder: " + res.status);
 });
@@ -430,7 +496,7 @@ function addUploadItem(name) {
 
 // ── Directory helpers ─────────────────────────────────────────────────────────
 async function ensureDir(serverPath) {
-  const res = await fetch(serverPath, { method: "MKCOL" });
+  const res = await authFetch(serverPath, { method: "MKCOL" });
   if (!res.ok && res.status !== 405 && res.status !== 301) {
     throw new Error(`MKCOL ${serverPath} failed: ${res.status}`);
   }
@@ -455,7 +521,7 @@ async function prepareFolderRoot(name) {
 
 async function finishFolderRoot(root) {
   if (!root || !root.staged) return true;
-  const res = await fetch(root.uploadRoot, {
+  const res = await authFetch(root.uploadRoot, {
     method: "MOVE",
     headers: {
       "Destination": root.finalRoot,
@@ -465,8 +531,9 @@ async function finishFolderRoot(root) {
   if (res.ok || res.status === 201 || res.status === 204) return true;
 
   try {
-    await fetch(root.uploadRoot, { method: "DELETE" });
+    await authFetch(root.uploadRoot, { method: "DELETE" });
   } catch {
+    if (authRedirecting) return false;
     // Best-effort cleanup; leave the staging folder visible if delete fails.
   }
   alert("Could not replace folder: " + res.status);
@@ -526,10 +593,13 @@ function putBlob(url, blob, callbacks = {}) {
       if (settled) return;
       settled = true;
       clearTimers();
-      if (xhr.status >= 200 && xhr.status < 300) {
+      if (xhr.status === 401 || isLoginResponseUrl(xhr.responseURL)) {
+        redirectToLogin();
+        reject(new Error("authentication required"));
+      } else if (xhr.status >= 200 && xhr.status < 300) {
         resolve(xhr);
       } else {
-        reject(new Error(`HTTP ${xhr.status}`));
+        reject(httpStatusError(xhr.status));
       }
     });
     xhr.addEventListener("error", () => fail("network error"));
@@ -555,14 +625,18 @@ async function uploadFile(file, destDir) {
   let sessionId;
   try {
     ui.setStatus("Creating upload session...");
-    const res = await fetch("/_upload/init", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: file.name, total_chunks: totalChunks, dir: destDir }),
-    });
-    if (!res.ok) throw new Error("init failed " + res.status);
+    const res = await withUploadRetries(async () => {
+      const initRes = await authFetch("/_upload/init", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename: file.name, total_chunks: totalChunks, dir: destDir }),
+      });
+      if (!initRes.ok) throw httpStatusError(initRes.status, "init failed " + initRes.status);
+      return initRes;
+    }, { label: "Upload session", ui });
     ({ session_id: sessionId } = await res.json());
   } catch (e) {
+    if (authRedirecting) return false;
     ui.setError(e.message);
     return false;
   }
@@ -585,7 +659,7 @@ async function uploadFile(file, destDir) {
     const start = i * CHUNK_SIZE;
     const slice = file.slice(start, start + CHUNK_SIZE);
     try {
-      await putBlob(`/_upload/${sessionId}/${i}`, slice, {
+      await withUploadRetries(() => putBlob(`/_upload/${sessionId}/${i}`, slice, {
         onStart() {
           ui.setProcessing(false);
           ui.setStatus(`Starting chunk ${i + 1}/${totalChunks}...`);
@@ -608,7 +682,7 @@ async function uploadFile(file, destDir) {
           ui.setProcessing(true);
           ui.setStatus("Still processing...");
         },
-      });
+      }), { label: `Chunk ${i + 1}/${totalChunks}`, ui });
       noteChunkLoaded(i, slice.size, slice.size);
     } finally {
       ui.setProcessing(false);
@@ -624,15 +698,20 @@ async function uploadFile(file, destDir) {
       await Promise.all(batch);
     }
   } catch (e) {
+    if (authRedirecting) return false;
     ui.setError(e.message);
     return false;
   }
 
   try {
     ui.setStatus("Finalizing...");
-    const res = await fetch(`/_upload/${sessionId}/complete`, { method: "POST" });
-    if (!res.ok) throw new Error("complete → " + res.status);
+    await withUploadRetries(async () => {
+      const res = await authFetch(`/_upload/${sessionId}/complete`, { method: "POST" });
+      if (!res.ok) throw httpStatusError(res.status, "complete → " + res.status);
+      return res;
+    }, { label: "Finalizing upload", ui });
   } catch (e) {
+    if (authRedirecting) return false;
     ui.setError(e.message);
     return false;
   }

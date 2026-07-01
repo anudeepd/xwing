@@ -218,6 +218,23 @@ class TestUploadLifecycle:
             r = c.put(f"/_upload/{sid}/1", content=b"abcdef")
         assert r.status_code == 413
 
+    def test_retrying_chunk_replaces_metadata_without_double_counting(
+        self, client, root, tmp_dir
+    ):
+        sid = self._init(client, "retry.txt", total_chunks=2)
+        assert client.put(f"/_upload/{sid}/0", content=b"aa").status_code == 204
+        assert client.put(f"/_upload/{sid}/1", content=b"bbb").status_code == 204
+        assert client.put(f"/_upload/{sid}/0", content=b"c").status_code == 204
+
+        session = json.loads((tmp_dir / sid / "session.json").read_text())
+        assert session["total_bytes"] == 4
+        assert session["chunk_bytes"] == {"0": 1, "1": 3}
+        assert sorted(session["received"]) == [0, 1]
+
+        r = client.post(f"/_upload/{sid}/complete")
+        assert r.status_code == 200
+        assert (root / "retry.txt").read_bytes() == b"cbbb"
+
     def test_invalid_session_id_rejected_before_filesystem_lookup(self, client):
         r = client.put("/_upload/not-a-session/0", content=b"data")
         assert r.status_code == 404

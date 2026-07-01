@@ -149,6 +149,7 @@ class TestAuth:
 
     def test_login_template_avoids_inline_style_attributes(self):
         template = (Path(__file__).parents[1] / "xwing" / "templates" / "login.html").read_text()
+        assert '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">' in template
         assert '<style nonce="{{ csrf_nonce }}">' in template
         assert '<input type="hidden" name="csrf_token" value="{{ csrf_token }}">' in template
         assert 'style="' not in template
@@ -303,6 +304,26 @@ class TestAuth:
         assert "localStorage" in script
         assert 'existing.dir === "asc"' in script
         assert "currentSort.filter" in script
+        assert "UPLOAD_RETRY_DELAYS_MS" in script
+        assert "RETRYABLE_UPLOAD_STATUSES" in script
+        assert "withUploadRetries" in script
+        assert "502" in script
+
+    def test_frontend_auth_challenges_redirect_to_ldap_login(self):
+        base = Path(__file__).parents[1] / "xwing"
+        app_script = (base / "frontend" / "src" / "app.js").read_text()
+        editor_script = (base / "frontend" / "src" / "editor.js").read_text()
+        app_bundle = (base / "static" / "assets" / "app.js").read_text()
+        editor_bundle = (base / "static" / "assets" / "editor.js").read_text()
+
+        for script in (app_script, editor_script, app_bundle, editor_bundle):
+            assert "/_auth/login?redirect=" in script
+            assert "authentication required" in script
+
+        assert app_script.count("await fetch(") == 1
+        assert editor_script.count("await fetch(") == 1
+        assert "xhr.status === 401 || isLoginResponseUrl(xhr.responseURL)" in app_script
+        assert "dirty && !authRedirecting" in editor_script
 
     def test_pages_use_bundled_frontend_assets(self, client, root):
         (root / "notes.txt").write_text("hello")

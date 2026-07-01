@@ -84,6 +84,39 @@ def _to_audit_path(root: Path, fspath: Path) -> str:
     return "/" + rel.as_posix()
 
 
+def _validate_session_owner_and_chunk(
+    session: dict | None,
+    *,
+    user: str,
+    chunk_index: int | None = None,
+) -> None:
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session_user = session.get("user")
+    if session_user and session_user != user:
+        raise HTTPException(status_code=403, detail="Not session owner")
+    if chunk_index is not None and (
+        chunk_index < 0 or chunk_index >= session["total_chunks"]
+    ):
+        raise HTTPException(status_code=400, detail="Invalid chunk index")
+
+
+def _session_chunk_bytes(session: dict, tmp_dir: Path, session_id: str) -> dict[str, int]:
+    chunk_bytes = session.get("chunk_bytes")
+    if isinstance(chunk_bytes, dict):
+        return {str(k): int(v) for k, v in chunk_bytes.items()}
+
+    session_dir = tmp_dir / session_id
+    sizes = {}
+    for index in session.get("received", []):
+        chunk_path = session_dir / f"{index}.part"
+        try:
+            sizes[str(index)] = chunk_path.stat().st_size
+        except OSError:
+            sizes[str(index)] = 0
+    return sizes
+
+
 async def _record_upload_audit(
     *,
     settings: Settings,
@@ -185,6 +218,7 @@ def create_upload_router(settings: Settings) -> APIRouter:
             "total_chunks": total_chunks,
             "total_bytes": 0,
             "received": [],  # Stored as list for JSON serialization
+            "chunk_bytes": {},
             "created_at": time.monotonic(),
             "user": user,
         }
@@ -196,47 +230,73 @@ def create_upload_router(settings: Settings) -> APIRouter:
         user = get_user(request, settings)
         require_perm(user, "write", settings)
         _validate_session_id(session_id)
+
         async with _session_lock(session_id):
             session = await _load_session(settings.tmp_dir, session_id)  # type: ignore[union-attr]
-            if session is None:
-                raise HTTPException(status_code=404, detail="Session not found")
-            session_user = session.get("user")
-            if session_user and session_user != user:
-                raise HTTPException(status_code=403, detail="Not session owner")
+            _validate_session_owner_and_chunk(
+                session, user=user, chunk_index=chunk_index
+            )
 
-            if chunk_index < 0 or chunk_index >= session["total_chunks"]:
-                raise HTTPException(status_code=400, detail="Invalid chunk index")
+        session_dir = settings.tmp_dir / session_id  # type: ignore[operator]
+        chunk_path = session_dir / f"{chunk_index}.part"
+        pending_path = session_dir / f".{chunk_index}.{uuid.uuid4().hex}.part.tmp"
+        received_bytes = 0
 
-            chunk_path = settings.tmp_dir / session_id / f"{chunk_index}.part"  # type: ignore[union-attr]
-            received_bytes = 0
-            old_chunk_bytes = chunk_path.stat().st_size if chunk_path.exists() else 0
-            prior_total_bytes = int(session.get("total_bytes", 0)) - old_chunk_bytes
+        try:
+            async with await anyio.open_file(pending_path, "wb") as f:
+                async for chunk in request.stream():
+                    received_bytes += len(chunk)
+                    if received_bytes > settings.max_chunk_bytes:
+                        raise HTTPException(
+                            status_code=413, detail="Chunk exceeds 100MB limit"
+                        )
+                    await f.write(chunk)
+        except HTTPException:
             try:
-                async with await anyio.open_file(chunk_path, "wb") as f:
-                    async for chunk in request.stream():
-                        received_bytes += len(chunk)
-                        if received_bytes > settings.max_chunk_bytes:
-                            raise HTTPException(
-                                status_code=413, detail="Chunk exceeds 100MB limit"
-                            )
-                        if prior_total_bytes + received_bytes > settings.max_upload_bytes:
-                            raise HTTPException(
-                                status_code=413, detail="Upload exceeds total size limit"
-                            )
-                        await f.write(chunk)
-            except HTTPException:
+                pending_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            raise
+        except Exception:
+            try:
+                pending_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            raise
+
+        async with _session_lock(session_id):
+            session = await _load_session(settings.tmp_dir, session_id)  # type: ignore[union-attr]
+            try:
+                _validate_session_owner_and_chunk(
+                    session, user=user, chunk_index=chunk_index
+                )
+                assert session is not None
+                chunk_bytes = _session_chunk_bytes(
+                    session, settings.tmp_dir, session_id  # type: ignore[arg-type]
+                )
+                old_chunk_bytes = chunk_bytes.get(str(chunk_index), 0)
+                prior_total_bytes = int(
+                    session.get("total_bytes", sum(chunk_bytes.values()))
+                ) - old_chunk_bytes
+
+                if prior_total_bytes + received_bytes > settings.max_upload_bytes:
+                    raise HTTPException(
+                        status_code=413, detail="Upload exceeds total size limit"
+                    )
+
+                await anyio.to_thread.run_sync(pending_path.replace, chunk_path)  # type: ignore[reportAttributeAccessIssue]
+                if chunk_index not in session["received"]:
+                    session["received"].append(chunk_index)
+                chunk_bytes[str(chunk_index)] = received_bytes
+                session["chunk_bytes"] = chunk_bytes
+                session["total_bytes"] = prior_total_bytes + received_bytes
+                session["created_at"] = time.monotonic()
+                await _save_session(settings.tmp_dir, session)  # type: ignore[union-attr]
+            finally:
                 try:
-                    chunk_path.unlink(missing_ok=True)
+                    pending_path.unlink(missing_ok=True)
                 except Exception:
                     pass
-                raise
-
-            # Update received chunks in session and refresh TTL on activity
-            if chunk_index not in session["received"]:
-                session["received"].append(chunk_index)
-            session["total_bytes"] = prior_total_bytes + received_bytes
-            session["created_at"] = time.monotonic()
-            await _save_session(settings.tmp_dir, session)  # type: ignore[union-attr]
         return Response(status_code=204)
 
     @router.post("/{session_id}/complete")
@@ -249,11 +309,8 @@ def create_upload_router(settings: Settings) -> APIRouter:
         try:
             async with _session_lock(session_id):
                 session = await _load_session(settings.tmp_dir, session_id)  # type: ignore[union-attr]
-                if session is None:
-                    raise HTTPException(status_code=404, detail="Session not found")
-                session_user = session.get("user")
-                if session_user and session_user != user:
-                    raise HTTPException(status_code=403, detail="Not session owner")
+                _validate_session_owner_and_chunk(session, user=user)
+                assert session is not None
 
                 total = session["total_chunks"]
                 received = set(session["received"])
