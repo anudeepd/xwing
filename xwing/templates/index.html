@@ -11,6 +11,15 @@
       data-user="{{ user }}"
       data-can-write="{{ 'true' if perms.write else 'false' }}"
       data-can-delete="{{ 'true' if perms.delete else 'false' }}">
+<div class="auth-overlay" id="auth-overlay" hidden>
+  <div class="auth-overlay-card" role="status" aria-live="polite">
+    <div class="auth-pulse" aria-hidden="true"><span></span></div>
+    <div>
+      <h2 id="auth-overlay-title">Session expired</h2>
+      <p id="auth-overlay-message">Your session has ended. Redirecting to sign in...</p>
+    </div>
+  </div>
+</div>
 <div class="bg-watermark" aria-hidden="true">
   <svg viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg">
     <polygon points="71,78 23,48 15,100 23,152 71,122"
@@ -60,7 +69,7 @@
     <div class="header-right">
       <span class="user-badge">{{ user }}</span>
       {% if user != "anonymous" %}
-      <form class="logout-form" method="post" action="/_auth/logout">
+      <form class="logout-form" method="post" action="/_auth/logout" id="logout-form">
         <button class="logout-btn" type="submit">logout</button>
       </form>
       {% endif %}

@@ -121,6 +121,24 @@ class TestAuth:
             r = c.get("/", headers={**HTML, "X-Forwarded-User": "alice"})
         assert r.status_code == 200
         assert 'method="post" action="/_auth/logout"' in r.text
+        assert 'id="logout-form"' in r.text
+        assert 'id="auth-overlay"' in r.text
+        assert 'href="/_auth/logout"' not in r.text
+
+    def test_authenticated_editor_uses_post_logout_form(self, root, tmp_dir):
+        (root / "notes.txt").write_text("hello")
+        s = Settings(
+            root_dir=root,
+            tmp_dir=tmp_dir,
+            require_auth=True,
+            trusted_auth_proxies=["testclient"],
+        )
+        with TestClient(create_app(s)) as c:
+            r = c.get("/notes.txt?edit", headers={**HTML, "X-Forwarded-User": "alice"})
+        assert r.status_code == 200
+        assert 'method="post" action="/_auth/logout"' in r.text
+        assert 'id="logout-form"' in r.text
+        assert 'id="auth-overlay"' in r.text
         assert 'href="/_auth/logout"' not in r.text
 
     def test_listing_csp_uses_external_assets_only(self, client):
@@ -316,14 +334,40 @@ class TestAuth:
         app_bundle = (base / "static" / "assets" / "app.js").read_text()
         editor_bundle = (base / "static" / "assets" / "editor.js").read_text()
 
-        for script in (app_script, editor_script, app_bundle, editor_bundle):
+        for script in (app_script, editor_script):
             assert "/_auth/login?redirect=" in script
             assert "authentication required" in script
+            assert "AUTH_REDIRECT_DELAY_MS" in script
+            assert "showAuthOverlay" in script
+            assert "Signing out" in script
+
+        for script in (app_bundle, editor_bundle):
+            assert "/_auth/login?redirect=" in script
+            assert "authentication required" in script
+            assert "Session expired" in script
+            assert "Signing out" in script
+            assert "Ending your session..." in script
 
         assert app_script.count("await fetch(") == 1
         assert editor_script.count("await fetch(") == 1
         assert "xhr.status === 401 || isLoginResponseUrl(xhr.responseURL)" in app_script
         assert "dirty && !authRedirecting" in editor_script
+
+    def test_frontend_logout_submit_is_delayed_for_overlay(self):
+        base = Path(__file__).parents[1] / "xwing"
+        scripts = (
+            (base / "frontend" / "src" / "app.js").read_text(),
+            (base / "frontend" / "src" / "editor.js").read_text(),
+            (base / "static" / "assets" / "app.js").read_text(),
+            (base / "static" / "assets" / "editor.js").read_text(),
+        )
+
+        for script in scripts:
+            assert "logout-form" in script
+            assert "Signing out" in script
+            assert "Ending your session..." in script
+            assert "setTimeout" in script
+            assert ".submit()" in script
 
     def test_pages_use_bundled_frontend_assets(self, client, root):
         (root / "notes.txt").write_text("hello")

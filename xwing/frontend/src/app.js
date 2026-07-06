@@ -10,6 +10,7 @@ const CURRENT_USER = document.body.dataset.user || "anonymous";
 const CAN_WRITE = document.body.dataset.canWrite === "true";
 const CAN_DELETE = document.body.dataset.canDelete === "true";
 const SORT_STORAGE_KEY = `xwing.sort.${CURRENT_USER}`;
+const AUTH_REDIRECT_DELAY_MS = 1500;
 let authRedirecting = false;
 
 function currentAuthRedirectTarget() {
@@ -32,7 +33,30 @@ function isLoginResponseUrl(url) {
 function redirectToLogin() {
   if (authRedirecting) return;
   authRedirecting = true;
-  window.location.assign(loginUrlForCurrentPage());
+  showAuthOverlay("Session expired", "Your session has ended. Redirecting to sign in...");
+  window.setTimeout(() => window.location.assign(loginUrlForCurrentPage()), AUTH_REDIRECT_DELAY_MS);
+}
+
+function showAuthOverlay(title, message) {
+  const overlay = document.getElementById("auth-overlay");
+  if (!overlay) return;
+  const titleEl = document.getElementById("auth-overlay-title");
+  const messageEl = document.getElementById("auth-overlay-message");
+  if (titleEl) titleEl.textContent = title;
+  if (messageEl) messageEl.textContent = message;
+  overlay.hidden = false;
+}
+
+function wireLogoutForm() {
+  const form = document.getElementById("logout-form");
+  if (!form) return;
+  form.addEventListener("submit", event => {
+    event.preventDefault();
+    if (authRedirecting) return;
+    authRedirecting = true;
+    showAuthOverlay("Signing out", "Ending your session...");
+    window.setTimeout(() => form.submit(), AUTH_REDIRECT_DELAY_MS);
+  });
 }
 
 async function authFetch(input, init) {
@@ -124,6 +148,8 @@ function nextPaint() {
 }
 
 // ── Date formatting ────────────────────────────────────────────────────────────
+wireLogoutForm();
+
 document.querySelectorAll("[data-mtime]").forEach(td => {
   const ts = parseFloat(td.dataset.mtime);
   if (!isNaN(ts)) {
