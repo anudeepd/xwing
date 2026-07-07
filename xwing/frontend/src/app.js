@@ -1,6 +1,8 @@
 "use strict";
 
-const CHUNK_SIZE = 8 * 1024 * 1024;  // 8 MB
+const DEFAULT_CHUNK_SIZE = 8 * 1024 * 1024;  // 8 MB
+const TARGET_UPLOAD_CHUNKS = 128;
+const MAX_BROWSER_CHUNK_SIZE = 32 * 1024 * 1024;  // 32 MB
 const UPLOAD_PROGRESS_CAP = 95;
 const UPLOAD_STALL_MS = 1500;
 const UPLOAD_RETRY_DELAYS_MS = [750, 1500, 3000];
@@ -9,6 +11,7 @@ const CURRENT_PATH = document.body.dataset.currentPath || "/";
 const CURRENT_USER = document.body.dataset.user || "anonymous";
 const CAN_WRITE = document.body.dataset.canWrite === "true";
 const CAN_DELETE = document.body.dataset.canDelete === "true";
+const SERVER_MAX_CHUNK_BYTES = parseInt(document.body.dataset.maxChunkBytes, 10) || DEFAULT_CHUNK_SIZE;
 const SORT_STORAGE_KEY = `xwing.sort.${CURRENT_USER}`;
 const AUTH_REDIRECT_DELAY_MS = 1500;
 let authRedirecting = false;
@@ -105,6 +108,13 @@ function warnReadOnly(action) {
 
 function getConcurrency() {
   return parseInt(document.getElementById("concurrency-select").value, 10) || 4;
+}
+
+function chunkSizeForFile(fileSize) {
+  if (fileSize <= 0) return DEFAULT_CHUNK_SIZE;
+  const targetSize = Math.ceil(fileSize / TARGET_UPLOAD_CHUNKS);
+  const chunkSize = Math.max(DEFAULT_CHUNK_SIZE, targetSize);
+  return Math.max(1, Math.min(chunkSize, MAX_BROWSER_CHUNK_SIZE, SERVER_MAX_CHUNK_BYTES));
 }
 
 function appendPath(base, name) {
@@ -646,7 +656,8 @@ async function uploadFile(file, destDir) {
   showPanel();
   await nextPaint();
 
-  const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
+  const chunkSize = chunkSizeForFile(file.size);
+  const totalChunks = Math.max(1, Math.ceil(file.size / chunkSize));
 
   let sessionId;
   try {
@@ -655,7 +666,7 @@ async function uploadFile(file, destDir) {
       const initRes = await authFetch("/_upload/init", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ filename: file.name, total_chunks: totalChunks, dir: destDir }),
+        body: JSON.stringify({ filename: file.name, total_chunks: totalChunks, chunk_size: chunkSize, dir: destDir }),
       });
       if (!initRes.ok) throw httpStatusError(initRes.status, "init failed " + initRes.status);
       return initRes;
@@ -682,8 +693,8 @@ async function uploadFile(file, destDir) {
   }
 
   async function uploadChunk(i) {
-    const start = i * CHUNK_SIZE;
-    const slice = file.slice(start, start + CHUNK_SIZE);
+    const start = i * chunkSize;
+    const slice = file.slice(start, start + chunkSize);
     try {
       await withUploadRetries(() => putBlob(`/_upload/${sessionId}/${i}`, slice, {
         onStart() {
@@ -716,13 +727,19 @@ async function uploadFile(file, destDir) {
   }
 
   try {
-    for (let i = 0; i < totalChunks; i += concurrency) {
-      const batch = [];
-      for (let j = i; j < Math.min(i + concurrency, totalChunks); j++) {
-        batch.push(uploadChunk(j));
+    let nextChunk = 0;
+    async function uploadWorker() {
+      while (nextChunk < totalChunks) {
+        const chunkIndex = nextChunk;
+        nextChunk += 1;
+        await uploadChunk(chunkIndex);
       }
-      await Promise.all(batch);
     }
+    const workers = [];
+    for (let i = 0; i < Math.min(concurrency, totalChunks); i++) {
+      workers.push(uploadWorker());
+    }
+    await Promise.all(workers);
   } catch (e) {
     if (authRedirecting) return false;
     ui.setError(e.message);

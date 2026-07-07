@@ -74,6 +74,23 @@ open http://localhost:8989
 net use Z: \\localhost@8989\DavWWWRoot /persistent:yes
 ```
 
+Windows' built-in WebDAV client is limited by the WebClient service policy. By
+default, `BasicAuthLevel` is `1`, which allows Basic authentication only for
+HTTPS WebDAV sites. With X-wing behind HTTPS and LDAPGate enabled, Windows
+Explorer can use the normal username/password prompt because LDAPGate provides
+the Basic auth challenge Windows expects.
+
+Without LDAPGate, Windows Explorer can still connect only as anonymous. That
+works for read-only access, or for writes only if your `users.yaml` grants write
+permission to `"*"`. X-wing does not provide its own username/password Basic
+auth prompt in no-LDAP mode.
+
+Setting `BasicAuthLevel` to `2` enables Basic authentication over HTTP too, but
+that requires administrator access to
+`HKLM\SYSTEM\CurrentControlSet\Services\WebClient\Parameters` and sends
+credentials in clear text. For Windows users, prefer HTTPS with LDAPGate or a
+WebDAV-capable client such as [WinSCP](https://winscp.net/).
+
 ### Resumable Upload (Chunked)
 
 For large files, use the chunked upload API:

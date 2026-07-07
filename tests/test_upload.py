@@ -1,5 +1,6 @@
 import json
 import time
+from pathlib import Path
 
 import pytest
 
@@ -136,6 +137,19 @@ class TestUploadLifecycle:
         assert r.status_code == 200
         return r.json()["session_id"]
 
+    def _init_direct(self, client, filename="out.txt", total_chunks=2, chunk_size=3):
+        r = client.post(
+            "/_upload/init",
+            json={
+                "filename": filename,
+                "total_chunks": total_chunks,
+                "chunk_size": chunk_size,
+                "dir": "/",
+            },
+        )
+        assert r.status_code == 200
+        return r.json()["session_id"]
+
     def test_full_upload_single_chunk(self, client, root):
         sid = self._init(client, "single.txt", total_chunks=1)
         client.put(f"/_upload/{sid}/0", content=b"hello world")
@@ -151,6 +165,38 @@ class TestUploadLifecycle:
         r = client.post(f"/_upload/{sid}/complete")
         assert r.status_code == 200
         assert (root / "multi.txt").read_bytes() == b"aaabbbccc"
+
+    def test_direct_chunk_upload_writes_final_offsets(self, client, root, tmp_dir):
+        sid = self._init_direct(client, "direct.txt", total_chunks=3, chunk_size=3)
+        assert client.put(f"/_upload/{sid}/2", content=b"cc").status_code == 204
+        assert client.put(f"/_upload/{sid}/0", content=b"aaa").status_code == 204
+        assert client.put(f"/_upload/{sid}/1", content=b"bbb").status_code == 204
+
+        session = json.loads((tmp_dir / sid / "session.json").read_text())
+        temp_file = Path(session["temp_file"])
+        assert temp_file.exists()
+        assert not (tmp_dir / sid / "0.part").exists()
+
+        r = client.post(f"/_upload/{sid}/complete")
+        assert r.status_code == 200
+        assert (root / "direct.txt").read_bytes() == b"aaabbbcc"
+        assert not temp_file.exists()
+
+    def test_direct_chunk_retry_truncates_old_tail_on_complete(self, client, root):
+        sid = self._init_direct(client, "retry-direct.txt", total_chunks=2, chunk_size=3)
+        assert client.put(f"/_upload/{sid}/0", content=b"aaa").status_code == 204
+        assert client.put(f"/_upload/{sid}/1", content=b"bbb").status_code == 204
+        assert client.put(f"/_upload/{sid}/1", content=b"c").status_code == 204
+
+        r = client.post(f"/_upload/{sid}/complete")
+        assert r.status_code == 200
+        assert (root / "retry-direct.txt").read_bytes() == b"aaac"
+
+    def test_direct_non_final_chunk_must_match_chunk_size(self, client):
+        sid = self._init_direct(client, "bad-direct.txt", total_chunks=2, chunk_size=3)
+        r = client.put(f"/_upload/{sid}/0", content=b"aa")
+        assert r.status_code == 400
+        assert "Non-final chunk" in r.json()["detail"]
 
     def test_complete_with_missing_chunk_fails(self, client, root):
         sid = self._init(client, "partial.txt", total_chunks=2)

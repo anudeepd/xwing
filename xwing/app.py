@@ -485,6 +485,7 @@ def create_app(settings: Settings) -> FastAPI:
                 "breadcrumbs": breadcrumbs,
                 "user": user,
                 "perms": settings.perms_for(user),
+                "max_chunk_bytes": settings.max_chunk_bytes,
             },
         )
 

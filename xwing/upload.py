@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 _SESSION_FILE = "session.json"
 _SESSION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _SESSION_LOCKS: dict[str, asyncio.Lock] = {}
+_SESSION_CACHE: dict[str, dict] = {}
 
 
 def _session_lock(session_id: str) -> asyncio.Lock:
@@ -49,11 +50,17 @@ def _session_path_sync(tmp_dir: Path, session_id: str) -> Path:  # type: ignore[
 
 async def _load_session(tmp_dir: Path, session_id: str) -> dict | None:  # type: ignore[union-attr]
     """Load session from disk, returns None if not found or expired."""
+    cached = _SESSION_CACHE.get(session_id)
+    if cached is not None:
+        return cached
+
     session_file = _session_path(tmp_dir, session_id)
     try:
         async with await anyio.open_file(session_file, "r") as f:
             content = await f.read()
-            return json.loads(content)
+            session = json.loads(content)
+            _SESSION_CACHE[session_id] = session
+            return session
     except (FileNotFoundError, json.JSONDecodeError):
         return None
 
@@ -65,16 +72,33 @@ async def _save_session(tmp_dir: Path, session: dict) -> None:  # type: ignore[u
     session_file.parent.mkdir(parents=True, exist_ok=True)
     async with await anyio.open_file(session_file, "w") as f:
         await f.write(json.dumps(session))
+    _SESSION_CACHE[session_id] = session
 
 
 async def _delete_session(tmp_dir: Path, session_id: str) -> None:  # type: ignore[union-attr]
     """Delete session from disk."""
+    _SESSION_CACHE.pop(session_id, None)
     session_dir = tmp_dir / session_id
     shutil.rmtree(session_dir, ignore_errors=True)
 
 
+def _delete_direct_temp(session: dict | None, root: Path) -> None:
+    if not session:
+        return
+    temp_file = session.get("temp_file")
+    if not temp_file:
+        return
+    try:
+        path = Path(temp_file)
+        if is_within_root(root, path):
+            path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
 def _drop_session_lock(session_id: str) -> None:
     _SESSION_LOCKS.pop(session_id, None)
+    _SESSION_CACHE.pop(session_id, None)
 
 
 def _to_audit_path(root: Path, fspath: Path) -> str:
@@ -197,6 +221,21 @@ def create_upload_router(settings: Settings) -> APIRouter:
                 status_code=400, detail=f"total_chunks must be 1–{settings.max_chunks}"
             )
 
+        raw_chunk_size = body.get("chunk_size")
+        chunk_size = None
+        if raw_chunk_size is not None:
+            try:
+                chunk_size = int(raw_chunk_size)
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=400, detail="chunk_size must be an integer"
+                ) from None
+            if chunk_size < 1 or chunk_size > settings.max_chunk_bytes:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"chunk_size must be 1–{settings.max_chunk_bytes}",
+                )
+
         raw_dir = body.get("dir", "")
         if not isinstance(raw_dir, str):
             raise HTTPException(status_code=400, detail="dir must be a string")
@@ -210,6 +249,16 @@ def create_upload_router(settings: Settings) -> APIRouter:
         session_id = uuid.uuid4().hex
         session_tmp = settings.tmp_dir / session_id  # type: ignore[operator]
         session_tmp.mkdir(parents=True, exist_ok=True)
+        temp_file = None
+        if chunk_size is not None:
+            temp_handle = tempfile.NamedTemporaryFile(
+                prefix=f".{filename}.",
+                suffix=".upload.tmp",
+                dir=dest_dir,
+                delete=False,
+            )
+            temp_file = temp_handle.name
+            temp_handle.close()
 
         session = {
             "session_id": session_id,
@@ -222,6 +271,9 @@ def create_upload_router(settings: Settings) -> APIRouter:
             "created_at": time.monotonic(),
             "user": user,
         }
+        if chunk_size is not None:
+            session["chunk_size"] = chunk_size
+            session["temp_file"] = temp_file
         await _save_session(settings.tmp_dir, session)  # type: ignore[union-attr]
         return JSONResponse({"session_id": session_id})
 
@@ -231,38 +283,67 @@ def create_upload_router(settings: Settings) -> APIRouter:
         require_perm(user, "write", settings)
         _validate_session_id(session_id)
 
+        session_dir = settings.tmp_dir / session_id  # type: ignore[operator]
+        chunk_path = session_dir / f"{chunk_index}.part"
+        pending_path = session_dir / f".{chunk_index}.{uuid.uuid4().hex}.part.tmp"
+        received_bytes = 0
+        direct_temp_file = None
+        direct_chunk_size = None
         async with _session_lock(session_id):
             session = await _load_session(settings.tmp_dir, session_id)  # type: ignore[union-attr]
             _validate_session_owner_and_chunk(
                 session, user=user, chunk_index=chunk_index
             )
-
-        session_dir = settings.tmp_dir / session_id  # type: ignore[operator]
-        chunk_path = session_dir / f"{chunk_index}.part"
-        pending_path = session_dir / f".{chunk_index}.{uuid.uuid4().hex}.part.tmp"
-        received_bytes = 0
+            assert session is not None
+            if "chunk_size" in session and "temp_file" in session:
+                direct_chunk_size = int(session["chunk_size"])
+                direct_temp_file = Path(session["temp_file"])
+                if not is_within_root(settings.root_dir, direct_temp_file):
+                    raise HTTPException(status_code=403, detail="Forbidden temp file")
 
         try:
-            async with await anyio.open_file(pending_path, "wb") as f:
-                async for chunk in request.stream():
-                    received_bytes += len(chunk)
-                    if received_bytes > settings.max_chunk_bytes:
-                        raise HTTPException(
-                            status_code=413, detail="Chunk exceeds 100MB limit"
-                        )
-                    await f.write(chunk)
+            if direct_temp_file is not None and direct_chunk_size is not None:
+                offset = chunk_index * direct_chunk_size
+                async with await anyio.open_file(direct_temp_file, "r+b") as f:
+                    await f.seek(offset)
+                    async for chunk in request.stream():
+                        received_bytes += len(chunk)
+                        if received_bytes > settings.max_chunk_bytes:
+                            raise HTTPException(
+                                status_code=413, detail="Chunk exceeds 100MB limit"
+                            )
+                        await f.write(chunk)
+            else:
+                async with await anyio.open_file(pending_path, "wb") as f:
+                    async for chunk in request.stream():
+                        received_bytes += len(chunk)
+                        if received_bytes > settings.max_chunk_bytes:
+                            raise HTTPException(
+                                status_code=413, detail="Chunk exceeds 100MB limit"
+                            )
+                        await f.write(chunk)
         except HTTPException:
-            try:
-                pending_path.unlink(missing_ok=True)
-            except Exception:
-                pass
+            if direct_temp_file is None:
+                try:
+                    pending_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
             raise
         except Exception:
-            try:
-                pending_path.unlink(missing_ok=True)
-            except Exception:
-                pass
+            if direct_temp_file is None:
+                try:
+                    pending_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
             raise
+
+        if (
+            direct_chunk_size is not None
+            and received_bytes != direct_chunk_size
+            and session is not None
+            and chunk_index < session["total_chunks"] - 1
+        ):
+            raise HTTPException(status_code=400, detail="Non-final chunk has wrong size")
 
         async with _session_lock(session_id):
             session = await _load_session(settings.tmp_dir, session_id)  # type: ignore[union-attr]
@@ -284,7 +365,8 @@ def create_upload_router(settings: Settings) -> APIRouter:
                         status_code=413, detail="Upload exceeds total size limit"
                     )
 
-                await anyio.to_thread.run_sync(pending_path.replace, chunk_path)  # type: ignore[reportAttributeAccessIssue]
+                if direct_temp_file is None:
+                    await anyio.to_thread.run_sync(pending_path.replace, chunk_path)  # type: ignore[reportAttributeAccessIssue]
                 if chunk_index not in session["received"]:
                     session["received"].append(chunk_index)
                 chunk_bytes[str(chunk_index)] = received_bytes
@@ -293,10 +375,11 @@ def create_upload_router(settings: Settings) -> APIRouter:
                 session["created_at"] = time.monotonic()
                 await _save_session(settings.tmp_dir, session)  # type: ignore[union-attr]
             finally:
-                try:
-                    pending_path.unlink(missing_ok=True)
-                except Exception:
-                    pass
+                if direct_temp_file is None:
+                    try:
+                        pending_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
         return Response(status_code=204)
 
     @router.post("/{session_id}/complete")
@@ -328,24 +411,32 @@ def create_upload_router(settings: Settings) -> APIRouter:
                 temp_file = None
 
                 try:
-                    temp_handle = tempfile.NamedTemporaryFile(
-                        prefix=f".{dest_file.name}.",
-                        suffix=".tmp",
-                        dir=dest_dir,
-                        delete=False,
-                    )
-                    temp_file = Path(temp_handle.name)
-                    temp_handle.close()
-                    async with await anyio.open_file(temp_file, "wb") as out:
-                        for i in range(total):
-                            chunk_path = tmp_dir / f"{i}.part"
-                            async with await anyio.open_file(chunk_path, "rb") as inp:
-                                while True:
-                                    data = await inp.read(settings.chunk_read_size)
-                                    if not data:
-                                        break
-                                    await out.write(data)
-                    await anyio.to_thread.run_sync(temp_file.replace, dest_file)  # type: ignore[reportAttributeAccessIssue]
+                    if "temp_file" in session:
+                        temp_file = Path(session["temp_file"])
+                        if not is_within_root(settings.root_dir, temp_file):
+                            raise HTTPException(status_code=403, detail="Forbidden temp file")
+                        async with await anyio.open_file(temp_file, "r+b") as out:
+                            await out.truncate(int(session.get("total_bytes", 0)))
+                        await anyio.to_thread.run_sync(temp_file.replace, dest_file)  # type: ignore[reportAttributeAccessIssue]
+                    else:
+                        temp_handle = tempfile.NamedTemporaryFile(
+                            prefix=f".{dest_file.name}.",
+                            suffix=".tmp",
+                            dir=dest_dir,
+                            delete=False,
+                        )
+                        temp_file = Path(temp_handle.name)
+                        temp_handle.close()
+                        async with await anyio.open_file(temp_file, "wb") as out:
+                            for i in range(total):
+                                chunk_path = tmp_dir / f"{i}.part"
+                                async with await anyio.open_file(chunk_path, "rb") as inp:
+                                    while True:
+                                        data = await inp.read(settings.chunk_read_size)
+                                        if not data:
+                                            break
+                                        await out.write(data)
+                        await anyio.to_thread.run_sync(temp_file.replace, dest_file)  # type: ignore[reportAttributeAccessIssue]
                 except OSError as e:
                     if temp_file is not None:
                         try:
@@ -402,6 +493,8 @@ async def _cleanup_stale_async(settings: Settings) -> None:  # type: ignore[unio
         try:
             session = json.loads(session_file.read_text())
             if now - session.get("created_at", 0) > ttl:
+                _SESSION_CACHE.pop(session.get("session_id", session_dir.name), None)
+                _delete_direct_temp(session, settings.root_dir)
                 shutil.rmtree(session_dir, ignore_errors=True)
         except (json.JSONDecodeError, OSError):
             continue
