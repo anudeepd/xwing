@@ -14,6 +14,9 @@ const CAN_DELETE = document.body.dataset.canDelete === "true";
 const SERVER_MAX_CHUNK_BYTES = parseInt(document.body.dataset.maxChunkBytes, 10) || DEFAULT_CHUNK_SIZE;
 const SORT_STORAGE_KEY = `xwing.sort.${CURRENT_USER}`;
 const AUTH_REDIRECT_DELAY_MS = 1500;
+const AUTH_IDLE_GRACE_MS = 1000;
+const AUTH_IDLE_TIMEOUT_SECONDS = parseInt(document.body.dataset.authIdleTimeout, 10) || 0;
+const AUTH_ACTIVITY_EVENTS = ["pointerdown", "keydown", "touchstart", "wheel"];
 let authRedirecting = false;
 
 function currentAuthRedirectTarget() {
@@ -60,6 +63,20 @@ function wireLogoutForm() {
     showAuthOverlay("Signing out", "Ending your session...");
     window.setTimeout(() => form.submit(), AUTH_REDIRECT_DELAY_MS);
   });
+}
+
+function wireAuthIdleTimer() {
+  if (AUTH_IDLE_TIMEOUT_SECONDS <= 0) return;
+  const timeoutMs = AUTH_IDLE_TIMEOUT_SECONDS * 1000 + AUTH_IDLE_GRACE_MS;
+  let timer = null;
+  const schedule = () => {
+    if (timer !== null) window.clearTimeout(timer);
+    timer = window.setTimeout(redirectToLogin, timeoutMs);
+  };
+  for (const eventName of AUTH_ACTIVITY_EVENTS) {
+    window.addEventListener(eventName, schedule, { passive: true });
+  }
+  schedule();
 }
 
 async function authFetch(input, init) {
@@ -159,6 +176,7 @@ function nextPaint() {
 
 // ── Date formatting ────────────────────────────────────────────────────────────
 wireLogoutForm();
+wireAuthIdleTimer();
 
 document.querySelectorAll("[data-mtime]").forEach(td => {
   const ts = parseFloat(td.dataset.mtime);

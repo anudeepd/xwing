@@ -11,7 +11,8 @@
       data-user="{{ user }}"
       data-can-write="{{ 'true' if perms.write else 'false' }}"
       data-can-delete="{{ 'true' if perms.delete else 'false' }}"
-      data-max-chunk-bytes="{{ max_chunk_bytes }}">
+      data-max-chunk-bytes="{{ max_chunk_bytes }}"
+      data-auth-idle-timeout="{{ auth_idle_timeout }}">
 <div class="auth-overlay" id="auth-overlay" hidden>
   <div class="auth-overlay-card" role="status" aria-live="polite">
     <div class="auth-pulse" aria-hidden="true"><span></span></div>

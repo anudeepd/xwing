@@ -266,6 +266,7 @@ def create_app(settings: Settings) -> FastAPI:
     _ldap_config_path = settings.ldap_config or (
         Path(env_path) if (env_path := os.getenv("XWING_LDAP_CONFIG")) else None
     )
+    ldap_idle_timeout = 0
     if _ldap_config_path:
         try:
             from ldapgate.config import load_config  # type: ignore[import]
@@ -279,6 +280,9 @@ def create_app(settings: Settings) -> FastAPI:
         _ensure_ldapgate_static_paths(ldap_config)
         _ensure_ldapgate_cookie_name(ldap_config)
         _sync_ldapgate_trusted_proxies(ldap_config, settings)
+        ldap_idle_timeout = int(
+            getattr(getattr(ldap_config, "proxy", None), "idle_timeout", 0) or 0
+        )
         _login_template = TEMPLATES_DIR / "login.html"
         add_ldap_auth(
             app,
@@ -486,6 +490,7 @@ def create_app(settings: Settings) -> FastAPI:
                 "user": user,
                 "perms": settings.perms_for(user),
                 "max_chunk_bytes": settings.max_chunk_bytes,
+                "auth_idle_timeout": ldap_idle_timeout,
             },
         )
 
@@ -511,6 +516,7 @@ def create_app(settings: Settings) -> FastAPI:
                 "user": user,
                 "perms": settings.perms_for(user),
                 "csp_style_nonce": request.state.csp_style_nonce,
+                "auth_idle_timeout": ldap_idle_timeout,
             },
         )
 

@@ -236,7 +236,7 @@ class TestAuth:
         ldapgate_pkg = types.ModuleType("ldapgate")
         config_mod = types.ModuleType("ldapgate.config")
         middleware_mod = types.ModuleType("ldapgate.middleware")
-        proxy_config = types.SimpleNamespace(static_paths=["/assets"])
+        proxy_config = types.SimpleNamespace(static_paths=["/assets"], idle_timeout=900)
         loaded_config = types.SimpleNamespace(proxy=proxy_config)
 
         def load_config(path):
@@ -338,6 +338,8 @@ class TestAuth:
             assert "/_auth/login?redirect=" in script
             assert "authentication required" in script
             assert "AUTH_REDIRECT_DELAY_MS" in script
+            assert "AUTH_IDLE_TIMEOUT_SECONDS" in script
+            assert "wireAuthIdleTimer" in script
             assert "showAuthOverlay" in script
             assert "Signing out" in script
 
@@ -345,6 +347,7 @@ class TestAuth:
             assert "/_auth/login?redirect=" in script
             assert "authentication required" in script
             assert "Session expired" in script
+            assert "authIdleTimeout" in script
             assert "Signing out" in script
             assert "Ending your session..." in script
 
@@ -352,6 +355,29 @@ class TestAuth:
         assert editor_script.count("await fetch(") == 1
         assert "xhr.status === 401 || isLoginResponseUrl(xhr.responseURL)" in app_script
         assert "dirty && !authRedirecting" in editor_script
+
+    def test_ldap_idle_timeout_is_rendered_for_frontend_timer(self, root, tmp_dir, monkeypatch):
+        ldapgate_pkg = types.ModuleType("ldapgate")
+        config_mod = types.ModuleType("ldapgate.config")
+        middleware_mod = types.ModuleType("ldapgate.middleware")
+        proxy_config = types.SimpleNamespace(static_paths=[], idle_timeout=900)
+        loaded_config = types.SimpleNamespace(proxy=proxy_config)
+
+        config_mod.load_config = lambda path: loaded_config
+        middleware_mod.add_ldap_auth = lambda app, config, template_path=None: None
+        monkeypatch.setitem(sys.modules, "ldapgate", ldapgate_pkg)
+        monkeypatch.setitem(sys.modules, "ldapgate.config", config_mod)
+        monkeypatch.setitem(sys.modules, "ldapgate.middleware", middleware_mod)
+
+        ldap_yaml = tmp_dir / "ldapgate.yaml"
+        ldap_yaml.write_text("ldap: {}\nproxy: {}\n")
+        settings = Settings(root_dir=root, tmp_dir=tmp_dir, ldap_config=ldap_yaml)
+
+        with TestClient(create_app(settings)) as c:
+            directory = c.get("/", headers=HTML)
+
+        assert directory.status_code == 200
+        assert 'data-auth-idle-timeout="900"' in directory.text
 
     def test_frontend_logout_submit_is_delayed_for_overlay(self):
         base = Path(__file__).parents[1] / "xwing"

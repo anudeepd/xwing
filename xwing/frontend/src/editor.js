@@ -6,6 +6,9 @@ const CAN_WRITE = document.body.dataset.canWrite === "true";
 const CSP_STYLE_NONCE = document.body.dataset.cspStyleNonce || "";
 const CONTENT = document.getElementById("editor-content")?.value || "";
 const AUTH_REDIRECT_DELAY_MS = 1500;
+const AUTH_IDLE_GRACE_MS = 1000;
+const AUTH_IDLE_TIMEOUT_SECONDS = parseInt(document.body.dataset.authIdleTimeout, 10) || 0;
+const AUTH_ACTIVITY_EVENTS = ["pointerdown", "keydown", "touchstart", "wheel"];
 let authRedirecting = false;
 
 // ── Language detection ─────────────────────────────────────────────────────────
@@ -132,6 +135,22 @@ function wireLogoutForm() {
 }
 
 wireLogoutForm();
+
+function wireAuthIdleTimer() {
+  if (AUTH_IDLE_TIMEOUT_SECONDS <= 0) return;
+  const timeoutMs = AUTH_IDLE_TIMEOUT_SECONDS * 1000 + AUTH_IDLE_GRACE_MS;
+  let timer = null;
+  const schedule = () => {
+    if (timer !== null) window.clearTimeout(timer);
+    timer = window.setTimeout(redirectToLogin, timeoutMs);
+  };
+  for (const eventName of AUTH_ACTIVITY_EVENTS) {
+    window.addEventListener(eventName, schedule, { passive: true });
+  }
+  schedule();
+}
+
+wireAuthIdleTimer();
 
 async function authFetch(input, init) {
   const res = await fetch(input, init);

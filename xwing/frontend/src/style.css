@@ -112,31 +112,32 @@ header {
   align-items: center;
   justify-content: center;
   padding: 16px;
-  background: rgba(2, 6, 23, 0.74);
+  background: rgba(2, 6, 23, 0.7);
   backdrop-filter: blur(8px);
 }
 .auth-overlay[hidden] { display: none; }
 .auth-overlay-card {
   display: flex;
   align-items: center;
-  gap: 14px;
-  width: min(100%, 380px);
+  gap: 12px;
+  width: min(100%, 384px);
   border: 1px solid var(--border2);
-  border-radius: var(--radius);
+  border-radius: 12px;
   background: rgba(15, 23, 42, 0.96);
   box-shadow: 0 24px 70px rgba(0, 0, 0, 0.45);
-  padding: 18px;
+  padding: 20px;
 }
 .auth-overlay-card h2 {
   margin-bottom: 4px;
   font-family: ui-sans-serif, system-ui, sans-serif;
-  font-size: 0.95rem;
+  font-size: 0.875rem;
+  font-weight: 600;
   color: #f8fafc;
 }
 .auth-overlay-card p {
   color: var(--text-muted);
-  font-size: 0.78rem;
-  line-height: 1.45;
+  font-size: 0.75rem;
+  line-height: 1.25;
 }
 .auth-pulse {
   width: 36px;

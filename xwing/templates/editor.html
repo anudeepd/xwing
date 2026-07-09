@@ -10,6 +10,7 @@
 <body data-file-path="{{ file_url_path }}"
       data-file-ext="{{ ext }}"
       data-can-write="{{ 'true' if perms.write else 'false' }}"
+      data-auth-idle-timeout="{{ auth_idle_timeout }}"
       data-csp-style-nonce="{{ csp_style_nonce or '' }}">
 <div class="auth-overlay" id="auth-overlay" hidden>
   <div class="auth-overlay-card" role="status" aria-live="polite">
