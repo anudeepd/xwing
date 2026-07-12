@@ -6,7 +6,8 @@
   "scripts": {
     "build": "node bundle-editor.mjs && node build-frontend.mjs",
     "build:app": "node build-frontend.mjs",
-    "build:editor": "node bundle-editor.mjs"
+    "build:editor": "node bundle-editor.mjs",
+    "test": "vitest run --environment jsdom"
   },
   "keywords": [],
   "author": "",
@@ -25,6 +26,8 @@
     "@codemirror/legacy-modes": "^6.5.2",
     "@codemirror/theme-one-dark": "^6.1.3",
     "codemirror": "^6.0.2",
-    "esbuild": "^0.28.0"
+    "esbuild": "^0.28.0",
+    "jsdom": "^29.1.1",
+    "vitest": "^4.1.10"
   }
 }

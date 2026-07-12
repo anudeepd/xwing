@@ -45,6 +45,87 @@ class TestDirectoryListing:
         assert 'data-sort-mtime=' in r.text
         assert 'data-sort-size=' in r.text
 
+    def test_listing_has_accessible_icon_controls_and_skip_link(self, client, root):
+        (root / "notes.txt").write_text("hi")
+        (root / "docs").mkdir()
+
+        r = client.get("/", headers=HTML)
+
+        assert r.status_code == 200
+        assert 'class="skip-link" href="#files-region"' in r.text
+        assert '<main id="files-region" tabindex="-1">' in r.text
+        assert 'aria-label="Download docs folder as zip"' in r.text
+        assert 'aria-label="Download notes.txt"' in r.text
+        assert 'aria-label="Delete docs folder"' in r.text
+        assert 'aria-label="Delete notes.txt"' in r.text
+
+    def test_listing_has_selection_and_item_counts(self, client, root):
+        (root / "notes.txt").write_text("hi")
+
+        r = client.get("/", headers=HTML)
+
+        assert r.status_code == 200
+        assert 'class="toolbar-group toolbar-primary"' in r.text
+        assert 'class="toolbar-group toolbar-selection"' in r.text
+        assert 'class="toolbar-group toolbar-meta"' in r.text
+        assert 'id="selection-count"' in r.text
+        assert 'aria-hidden="true">0 selected' in r.text
+        assert 'aria-live="polite"' in r.text
+        assert "1 item" in r.text
+
+    def test_trash_directory_is_hidden_from_listing(self, client, root):
+        (root / ".xwing-trash").mkdir()
+        (root / ".xwing-trash" / "deleted.txt").write_text("secret")
+        (root / "visible.txt").write_text("hi")
+
+        r = client.get("/", headers=HTML)
+
+        assert r.status_code == 200
+        assert "visible.txt" in r.text
+        assert ".xwing-trash" not in r.text
+
+    def test_os_metadata_files_are_hidden_from_listing(self, client, root):
+        (root / ".DS_Store").write_bytes(b"junk")
+        (root / "Thumbs.db").write_bytes(b"junk")
+        (root / "desktop.ini").write_text("junk")
+        (root / "visible.txt").write_text("hi")
+
+        r = client.get("/", headers=HTML)
+
+        assert r.status_code == 200
+        assert "visible.txt" in r.text
+        assert ".DS_Store" not in r.text
+        assert "Thumbs.db" not in r.text
+        assert "desktop.ini" not in r.text
+
+    def test_empty_state_is_permission_aware_for_writable_user(self, client):
+        r = client.get("/", headers=HTML)
+
+        assert r.status_code == 200
+        assert 'class="empty-state"' in r.text
+        assert "This folder is empty" in r.text
+        assert 'data-empty-action="upload"' in r.text
+        assert 'data-empty-action="mkdir"' in r.text
+
+    def test_empty_state_omits_ctas_for_read_only_user(self, root, tmp_dir, tmp_path):
+        users_yaml = tmp_path / "users.yaml"
+        users_yaml.write_text("users:\n  alice: r\n")
+        s = Settings(
+            root_dir=root,
+            tmp_dir=tmp_dir,
+            users_config=users_yaml,
+            trusted_auth_proxies=["testclient"],
+        )
+
+        with TestClient(create_app(s)) as c:
+            r = c.get("/", headers={**HTML, "X-Forwarded-User": "alice"})
+
+        assert r.status_code == 200
+        assert "This folder is empty" in r.text
+        assert "You have read-only access here." in r.text
+        assert 'data-empty-action="upload"' not in r.text
+        assert 'aria-label="Close upload panel"' in r.text
+
     def test_subdir_listing(self, client, root):
         d = root / "docs"
         d.mkdir()
@@ -165,12 +246,33 @@ class TestAuth:
         assert "'unsafe-inline'" not in csp
         assert "data-csp-style-nonce=" in r.text
 
+    def test_editor_save_status_is_live_region(self, client, root):
+        (root / "notes.txt").write_text("hello")
+        r = client.get("/notes.txt?edit", headers=HTML)
+        assert r.status_code == 200
+        assert (
+            'id="save-status" role="status" aria-live="polite" aria-atomic="true"'
+            in r.text
+        )
+
     def test_login_template_avoids_inline_style_attributes(self):
         template = (Path(__file__).parents[1] / "xwing" / "templates" / "login.html").read_text()
         assert '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">' in template
         assert '<style nonce="{{ csrf_nonce }}">' in template
         assert '<input type="hidden" name="csrf_token" value="{{ csrf_token }}">' in template
         assert 'style="' not in template
+
+    def test_login_template_keeps_ldapgate_shape_with_brand_safe_deltas(self):
+        template = (Path(__file__).parents[1] / "xwing" / "templates" / "login.html").read_text()
+        assert "Powered by" in template
+        assert "LDAPGate" in template
+        assert "font-display: swap" in template
+        assert "letter-spacing: 0;" in template
+        assert "rgb(124 58 237 / .22)" in template
+        assert "@media (prefers-reduced-motion: reduce)" in template
+        assert "font-display: block" not in template
+        assert "letter-spacing: -0.025em" not in template
+        assert "#3b82f6" not in template
 
     def test_read_only_listing_warns_and_disables_write_controls(self, root, tmp_dir, tmp_path):
         users_yaml = tmp_path / "users.yaml"
@@ -312,12 +414,38 @@ class TestAuth:
         assert "EditorView.editable.of(false)" in script
         assert "EditorState.readOnly.of(true)" in script
 
+    def test_editor_escape_key_navigates_to_back_link(self):
+        base = Path(__file__).parents[1] / "xwing"
+        template = (base / "templates" / "editor.html").read_text()
+        script = (base / "frontend" / "src" / "editor.js").read_text()
+
+        assert 'id="editor-back-link"' in template
+        assert 'document.getElementById("editor-back-link")' in script
+        assert 'e.key === "Escape"' in script
+        assert "leaveEditor(backLink.href)" in script
+        assert "!e.defaultPrevented" in script
+
+    def test_editor_confirms_before_discarding_unsaved_changes(self):
+        script = (
+            Path(__file__).parents[1] / "xwing" / "frontend" / "src" / "editor.js"
+        ).read_text()
+        assert "createDialogController" in script
+        assert "Discard unsaved changes?" in script
+        assert "Discard changes" in script
+        assert 'backLink?.addEventListener("click"' in script
+        assert 'logoutForm?.addEventListener("submit"' in script
+        assert "event.stopImmediatePropagation()" in script
+        assert "allowNavigation" in script
+
     def test_upload_script_shows_waiting_and_finalizing_statuses(self):
         script = (
             Path(__file__).parents[1] / "xwing" / "frontend" / "src" / "app.js"
         ).read_text()
         assert "Preparing upload..." in script
         assert "Finalizing..." in script
+        assert 'status.setAttribute("role", "status")' in script
+        assert 'status.setAttribute("aria-live", "polite")' in script
+        assert 'status.setAttribute("aria-atomic", "true")' in script
         assert "xwing.sort." in script
         assert "localStorage" in script
         assert 'existing.dir === "asc"' in script
@@ -331,17 +459,20 @@ class TestAuth:
         base = Path(__file__).parents[1] / "xwing"
         app_script = (base / "frontend" / "src" / "app.js").read_text()
         editor_script = (base / "frontend" / "src" / "editor.js").read_text()
+        shared_script = (base / "frontend" / "src" / "shared.js").read_text()
         app_bundle = (base / "static" / "assets" / "app.js").read_text()
         editor_bundle = (base / "static" / "assets" / "editor.js").read_text()
 
         for script in (app_script, editor_script):
-            assert "/_auth/login?redirect=" in script
-            assert "authentication required" in script
+            assert "createAuthSession" in script
             assert "AUTH_REDIRECT_DELAY_MS" in script
             assert "AUTH_IDLE_TIMEOUT_SECONDS" in script
-            assert "wireAuthIdleTimer" in script
-            assert "showAuthOverlay" in script
-            assert "Signing out" in script
+
+        assert "/_auth/login?redirect=" in shared_script
+        assert "authentication required" in shared_script
+        assert "wireAuthIdleTimer" in shared_script
+        assert "showAuthOverlay" in shared_script
+        assert "Signing out" in shared_script
 
         for script in (app_bundle, editor_bundle):
             assert "/_auth/login?redirect=" in script
@@ -351,10 +482,9 @@ class TestAuth:
             assert "Signing out" in script
             assert "Ending your session..." in script
 
-        assert app_script.count("await fetch(") == 1
-        assert editor_script.count("await fetch(") == 1
+        assert shared_script.count("await fetchRef(") == 1
         assert "xhr.status === 401 || isLoginResponseUrl(xhr.responseURL)" in app_script
-        assert "dirty && !authRedirecting" in editor_script
+        assert "dirty && !allowNavigation && !auth.isRedirecting()" in editor_script
 
     def test_ldap_idle_timeout_is_rendered_for_frontend_timer(self, root, tmp_dir, monkeypatch):
         ldapgate_pkg = types.ModuleType("ldapgate")
@@ -382,8 +512,7 @@ class TestAuth:
     def test_frontend_logout_submit_is_delayed_for_overlay(self):
         base = Path(__file__).parents[1] / "xwing"
         scripts = (
-            (base / "frontend" / "src" / "app.js").read_text(),
-            (base / "frontend" / "src" / "editor.js").read_text(),
+            (base / "frontend" / "src" / "shared.js").read_text(),
             (base / "static" / "assets" / "app.js").read_text(),
             (base / "static" / "assets" / "editor.js").read_text(),
         )
@@ -436,6 +565,12 @@ class TestPut:
         r = client.put("/.env.local", content=b"SECRET=local")
         assert r.status_code == 403
         assert not (root / ".env.local").exists()
+
+    def test_put_os_metadata_files_is_successful_noop(self, client, root):
+        for path in ("/.DS_Store", "/Thumbs.db", "/desktop.ini", "/._notes.txt"):
+            r = client.put(path, content=b"junk")
+            assert r.status_code == 204
+            assert not (root / path.lstrip("/")).exists()
 
     def test_put_exceeds_max_upload_bytes_returns_413(self, root, tmp_dir, users_yaml):
         s = Settings(root_dir=root, tmp_dir=tmp_dir, max_upload_bytes=10, users_config=users_yaml)
@@ -526,6 +661,27 @@ class TestZip:
         assert ".env" not in zf.namelist()
         assert ".env.d/secret.txt" not in zf.namelist()
 
+    def test_zip_skips_xwing_trash(self, client, root):
+        (root / "safe.txt").write_text("safe")
+        (root / ".xwing-trash").mkdir()
+        (root / ".xwing-trash" / "deleted.txt").write_text("trash")
+        r = client.get("/?zip")
+        assert r.status_code == 200
+        zf = zipfile.ZipFile(io.BytesIO(r.content))
+        assert "safe.txt" in zf.namelist()
+        assert ".xwing-trash/deleted.txt" not in zf.namelist()
+
+    def test_zip_skips_os_metadata_files(self, client, root):
+        (root / "safe.txt").write_text("safe")
+        (root / ".DS_Store").write_bytes(b"junk")
+        (root / "Thumbs.db").write_bytes(b"junk")
+        r = client.get("/?zip")
+        assert r.status_code == 200
+        zf = zipfile.ZipFile(io.BytesIO(r.content))
+        assert "safe.txt" in zf.namelist()
+        assert ".DS_Store" not in zf.namelist()
+        assert "Thumbs.db" not in zf.namelist()
+
     def test_bulk_zip_selected_files_and_folders(self, client, root):
         (root / "a.txt").write_text("hello")
         (root / "sub").mkdir()
@@ -568,6 +724,48 @@ class TestZip:
         assert r.status_code == 403
 
 
+class TestRestore:
+    def test_single_delete_can_be_restored(self, client, root):
+        (root / "notes.txt").write_text("hello")
+        deleted = client.delete("/notes.txt")
+        txid = deleted.json()["transaction_id"]
+        assert not (root / "notes.txt").exists()
+
+        restored = client.post(f"/api/restore/{txid}")
+
+        assert restored.status_code == 200
+        assert restored.json()["restored"] == 1
+        assert (root / "notes.txt").read_text() == "hello"
+
+    def test_restore_nonexistent_transaction_returns_404(self, client):
+        r = client.post("/api/restore/nonexistent-id")
+        assert r.status_code == 404
+
+    def test_restore_directory(self, client, root):
+        (root / "docs").mkdir()
+        (root / "docs" / "readme.md").write_text("docs")
+        deleted = client.delete("/docs/")
+        txid = deleted.json()["transaction_id"]
+        assert not (root / "docs").exists()
+
+        restored = client.post(f"/api/restore/{txid}")
+
+        assert restored.status_code == 200
+        assert restored.json()["restored"] == 1
+        assert (root / "docs" / "readme.md").read_text() == "docs"
+
+    def test_restore_returns_paths(self, client, root):
+        (root / "a.txt").write_text("a")
+        deleted = client.delete("/a.txt")
+        txid = deleted.json()["transaction_id"]
+
+        restored = client.post(f"/api/restore/{txid}")
+
+        data = restored.json()
+        assert data["ok"] is True
+        assert data["paths"] == ["/a.txt"]
+
+
 class TestBulkDelete:
     def test_bulk_delete_selected_files_and_folders(self, client, root):
         (root / "a.txt").write_text("hello")
@@ -576,10 +774,41 @@ class TestBulkDelete:
         (root / "keep.txt").write_text("keep")
         r = client.post("/_bulk/delete", json={"paths": ["/a.txt", "/sub/"]})
         assert r.status_code == 200
-        assert r.json() == {"deleted": 2}
+        data = r.json()
+        assert data["ok"] is True
+        assert data["deleted"] == 2
+        assert data["count"] == 2
+        assert data["transaction_id"]
         assert not (root / "a.txt").exists()
         assert not (root / "sub").exists()
+        assert (root / ".xwing-trash").is_dir()
         assert (root / "keep.txt").exists()
+
+    def test_bulk_delete_can_be_restored(self, client, root):
+        (root / "a.txt").write_text("hello")
+        (root / "sub").mkdir()
+        (root / "sub" / "b.txt").write_text("world")
+        deleted = client.post("/_bulk/delete", json={"paths": ["/a.txt", "/sub/"]})
+        txid = deleted.json()["transaction_id"]
+
+        restored = client.post(f"/api/restore/{txid}")
+
+        assert restored.status_code == 200
+        assert restored.json()["restored"] == 2
+        assert (root / "a.txt").read_text() == "hello"
+        assert (root / "sub" / "b.txt").read_text() == "world"
+
+    def test_restore_conflict_uses_restored_suffix(self, client, root):
+        (root / "a.txt").write_text("deleted")
+        deleted = client.delete("/a.txt")
+        txid = deleted.json()["transaction_id"]
+        (root / "a.txt").write_text("replacement")
+
+        restored = client.post(f"/api/restore/{txid}")
+
+        assert restored.status_code == 200
+        assert (root / "a.txt").read_text() == "replacement"
+        assert (root / "a (restored).txt").read_text() == "deleted"
 
     def test_bulk_delete_rejects_root(self, client):
         r = client.post("/_bulk/delete", json={"paths": ["/"]})
@@ -898,15 +1127,18 @@ class TestDelete:
         f = root / "todelete.txt"
         f.write_text("bye")
         r = client.delete("/todelete.txt")
-        assert r.status_code == 204
+        assert r.status_code == 200
+        assert r.json()["transaction_id"]
         assert not f.exists()
+        assert (root / ".xwing-trash").is_dir()
 
     def test_delete_directory(self, client, root):
         d = root / "rmdir"
         d.mkdir()
         (d / "child.txt").write_text("x")
         r = client.delete("/rmdir/")
-        assert r.status_code == 204
+        assert r.status_code == 200
+        assert r.json()["count"] == 1
         assert not d.exists()
 
     def test_delete_missing_returns_404(self, client):
@@ -954,6 +1186,11 @@ class TestMkcol:
         assert r.status_code == 403
         assert not (root / ".env.d").exists()
 
+    def test_mkcol_ignored_system_directory_is_successful_noop(self, client, root):
+        r = client.request("MKCOL", "/__MACOSX/")
+        assert r.status_code == 201
+        assert not (root / "__MACOSX").exists()
+
 
 class TestPropfind:
     def test_propfind_root(self, client, root):
@@ -976,6 +1213,11 @@ class TestPropfind:
         (root / ".env").write_text("SECRET=hunter2")
         r = client.request("PROPFIND", "/.env")
         assert r.status_code == 403
+
+    def test_propfind_ignored_system_file_is_hidden(self, client, root):
+        (root / ".DS_Store").write_bytes(b"junk")
+        r = client.request("PROPFIND", "/.DS_Store")
+        assert r.status_code == 404
 
     def test_get_nested_env_path_rejected(self, client, root):
         (root / ".env.d").mkdir()

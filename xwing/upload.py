@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse
 from .auth import get_user, require_perm
 from . import audit_store
 from .config import Settings
-from .files import is_within_root, safe_path
+from .files import is_ignored_system_file, is_within_root, safe_path
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +203,8 @@ def create_upload_router(settings: Settings) -> APIRouter:
         filename = Path(raw_name).name
         if not filename or filename in (".", ".."):
             raise HTTPException(status_code=400, detail="Invalid filename")
+        if is_ignored_system_file(filename):
+            return JSONResponse({"ignored": True})
 
         # .env files and variants contain sensitive data — reject before accepting any data
         if filename == ".env" or filename.startswith(".env."):

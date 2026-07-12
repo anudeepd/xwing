@@ -110,11 +110,13 @@ def test_authenticated_delete_is_semantically_audited(root, tmp_dir, users_yaml,
     with TestClient(create_app(settings)) as client:
         response = client.delete("/old.txt", headers={"X-Forwarded-User": "alice"})
 
-    assert response.status_code == 204
+    assert response.status_code == 200
     event = audit_store.list_events(db_path, username="alice")[0]
     assert event["method"] == "delete"
     assert event["path"] == "/old.txt"
-    assert json.loads(event["details"]) == {"kind": "file"}
+    details = json.loads(event["details"])
+    assert details["count"] == 1
+    assert details["transaction_id"]
 
 
 def test_authenticated_bulk_delete_is_semantically_audited(
@@ -142,10 +144,10 @@ def test_authenticated_bulk_delete_is_semantically_audited(
     event = audit_store.list_events(db_path, username="alice")[0]
     assert event["method"] == "bulk_delete"
     assert event["path"] == "/_bulk/delete"
-    assert json.loads(event["details"]) == {
-        "count": 2,
-        "paths": ["/a.txt", "/b.txt"],
-    }
+    details = json.loads(event["details"])
+    assert details["count"] == 2
+    assert details["paths"] == ["/a.txt", "/b.txt"]
+    assert details["transaction_id"]
 
 
 def test_semantic_operations_are_written_to_application_log(
@@ -164,5 +166,6 @@ def test_semantic_operations_are_written_to_application_log(
     with TestClient(create_app(settings)) as client:
         response = client.delete("/old.txt", headers={"X-Forwarded-User": "alice"})
 
-    assert response.status_code == 204
+    assert response.status_code == 200
     assert "file operation user=alice operation=delete path=/old.txt" in caplog.text
+    assert "status=200" in caplog.text

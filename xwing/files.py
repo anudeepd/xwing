@@ -1,6 +1,18 @@
 from pathlib import Path
 from urllib.parse import quote
 
+_IGNORED_SYSTEM_NAMES = {
+    ".ds_store",
+    "thumbs.db",
+    "desktop.ini",
+    "ehthumbs.db",
+    "__macosx",
+    ".spotlight-v100",
+    ".temporaryitems",
+    ".trashes",
+    ".fseventsd",
+}
+
 
 def is_within_root(root: Path, path: Path) -> bool:
     """True if path resolves under root."""
@@ -21,6 +33,15 @@ def safe_path(root: Path, rel: str) -> Path:
     return resolved
 
 
+def is_ignored_system_file(path: Path | str) -> bool:
+    """True for OS metadata files that should not be stored or shown."""
+    name = Path(path).name
+    if not name:
+        return False
+    lowered = name.lower()
+    return lowered in _IGNORED_SYSTEM_NAMES or name.startswith("._")
+
+
 def list_dir(path: Path) -> list[dict]:
     """Return sorted directory entries as dicts suitable for templates.
 
@@ -33,6 +54,8 @@ def list_dir(path: Path) -> list[dict]:
         for child in sorted(
             path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())
         ):
+            if is_ignored_system_file(child):
+                continue
             try:
                 stat = child.stat()
                 is_dir = child.is_dir()

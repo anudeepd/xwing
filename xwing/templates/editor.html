@@ -23,10 +23,10 @@
 </div>
 <div class="editor-shell">
   <div class="editor-toolbar">
-    <a class="btn" href="{{ dir_url_path }}">← back</a>
+    <a class="btn" id="editor-back-link" href="{{ dir_url_path }}">← back</a>
     <span class="filename">{{ filename }}</span>
     <span class="filepath">{{ file_path }}</span>
-    <span class="save-status" id="save-status"></span>
+    <span class="save-status" id="save-status" role="status" aria-live="polite" aria-atomic="true"></span>
     <a class="btn" href="{{ file_url_path }}" download title="Download raw file">download</a>
     <button class="btn btn-primary" id="save-btn" {% if not perms.write %}disabled title="Read-only access"{% endif %}>Save</button>
     {% if user != "anonymous" %}

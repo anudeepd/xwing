@@ -127,6 +127,17 @@ class TestUploadInit:
             )
             assert r.status_code == 400, f"{name} should be rejected"
 
+    def test_os_metadata_files_are_ignored(self, client, root, tmp_dir):
+        for name in (".DS_Store", "Thumbs.db", "desktop.ini", "._notes.txt"):
+            r = client.post(
+                "/_upload/init",
+                json={"filename": name, "total_chunks": 1, "dir": "/"},
+            )
+            assert r.status_code == 200
+            assert r.json() == {"ignored": True}
+            assert not (root / name).exists()
+        assert list(tmp_dir.iterdir()) == []
+
 
 class TestUploadLifecycle:
     def _init(self, client, filename="out.txt", total_chunks=2):

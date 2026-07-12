@@ -1,5 +1,8 @@
 "use strict";
 
+import { createDialogController, wireFileTableSelection } from "./app-core.js";
+import { createAuthSession, isLoginResponseUrl } from "./shared.js";
+
 const DEFAULT_CHUNK_SIZE = 8 * 1024 * 1024;  // 8 MB
 const TARGET_UPLOAD_CHUNKS = 128;
 const MAX_BROWSER_CHUNK_SIZE = 32 * 1024 * 1024;  // 32 MB
@@ -17,76 +20,14 @@ const AUTH_REDIRECT_DELAY_MS = 1500;
 const AUTH_IDLE_GRACE_MS = 1000;
 const AUTH_IDLE_TIMEOUT_SECONDS = parseInt(document.body.dataset.authIdleTimeout, 10) || 0;
 const AUTH_ACTIVITY_EVENTS = ["pointerdown", "keydown", "touchstart", "wheel"];
-let authRedirecting = false;
-
-function currentAuthRedirectTarget() {
-  return `${window.location.pathname || "/"}${window.location.search || ""}${window.location.hash || ""}`;
-}
-
-function loginUrlForCurrentPage() {
-  return `/_auth/login?redirect=${encodeURIComponent(currentAuthRedirectTarget())}`;
-}
-
-function isLoginResponseUrl(url) {
-  if (!url) return false;
-  try {
-    return new URL(url, window.location.href).pathname === "/_auth/login";
-  } catch {
-    return false;
-  }
-}
-
-function redirectToLogin() {
-  if (authRedirecting) return;
-  authRedirecting = true;
-  showAuthOverlay("Session expired", "Your session has ended. Redirecting to sign in...");
-  window.setTimeout(() => window.location.assign(loginUrlForCurrentPage()), AUTH_REDIRECT_DELAY_MS);
-}
-
-function showAuthOverlay(title, message) {
-  const overlay = document.getElementById("auth-overlay");
-  if (!overlay) return;
-  const titleEl = document.getElementById("auth-overlay-title");
-  const messageEl = document.getElementById("auth-overlay-message");
-  if (titleEl) titleEl.textContent = title;
-  if (messageEl) messageEl.textContent = message;
-  overlay.hidden = false;
-}
-
-function wireLogoutForm() {
-  const form = document.getElementById("logout-form");
-  if (!form) return;
-  form.addEventListener("submit", event => {
-    event.preventDefault();
-    if (authRedirecting) return;
-    authRedirecting = true;
-    showAuthOverlay("Signing out", "Ending your session...");
-    window.setTimeout(() => form.submit(), AUTH_REDIRECT_DELAY_MS);
-  });
-}
-
-function wireAuthIdleTimer() {
-  if (AUTH_IDLE_TIMEOUT_SECONDS <= 0) return;
-  const timeoutMs = AUTH_IDLE_TIMEOUT_SECONDS * 1000 + AUTH_IDLE_GRACE_MS;
-  let timer = null;
-  const schedule = () => {
-    if (timer !== null) window.clearTimeout(timer);
-    timer = window.setTimeout(redirectToLogin, timeoutMs);
-  };
-  for (const eventName of AUTH_ACTIVITY_EVENTS) {
-    window.addEventListener(eventName, schedule, { passive: true });
-  }
-  schedule();
-}
-
-async function authFetch(input, init) {
-  const res = await fetch(input, init);
-  if (res.status === 401 || isLoginResponseUrl(res.url)) {
-    redirectToLogin();
-    throw new Error("authentication required");
-  }
-  return res;
-}
+const auth = createAuthSession({
+  redirectDelayMs: AUTH_REDIRECT_DELAY_MS,
+  idleTimeoutSeconds: AUTH_IDLE_TIMEOUT_SECONDS,
+  idleGraceMs: AUTH_IDLE_GRACE_MS,
+  activityEvents: AUTH_ACTIVITY_EVENTS,
+});
+const authFetch = auth.authFetch;
+const dialogs = createDialogController();
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -99,7 +40,7 @@ function httpStatusError(status, message = `HTTP ${status}`) {
 }
 
 function isRetryableUploadError(error) {
-  if (authRedirecting) return false;
+  if (auth.isRedirecting()) return false;
   if (RETRYABLE_UPLOAD_STATUSES.has(error?.status)) return true;
   return error?.message === "network error" || error?.message === "timeout";
 }
@@ -119,8 +60,8 @@ async function withUploadRetries(action, { label, ui } = {}) {
   }
 }
 
-function warnReadOnly(action) {
-  alert(`Read-only access: ${action} is disabled for your user.`);
+async function warnReadOnly(action) {
+  await dialogs.alert("Read-only access", `${action} is disabled for your user.`);
 }
 
 function getConcurrency() {
@@ -175,8 +116,8 @@ function nextPaint() {
 }
 
 // ── Date formatting ────────────────────────────────────────────────────────────
-wireLogoutForm();
-wireAuthIdleTimer();
+auth.wireLogoutForm();
+auth.wireAuthIdleTimer();
 
 document.querySelectorAll("[data-mtime]").forEach(td => {
   const ts = parseFloat(td.dataset.mtime);
@@ -190,11 +131,75 @@ document.querySelectorAll("[data-mtime]").forEach(td => {
 
 // ── Selection + bulk actions ─────────────────────────────────────────────────
 const selectAll = document.getElementById("select-all");
-let selectableRows = [...document.querySelectorAll(".selectable-entry")];
+const fileTable = document.querySelector(".file-table");
+const tableWrap = document.querySelector(".table-wrap");
+const clearSelectionBtn = document.getElementById("clear-selection-btn");
 const zipSelectedBtn = document.getElementById("zip-selected-btn");
 const deleteSelectedBtn = document.getElementById("delete-selected-btn");
-const selectedPaths = new Set();
-let lastSelectedIndex = null;
+const selectionCount = document.getElementById("selection-count");
+const filesRegion = document.getElementById("files-region");
+const itemCount = document.querySelector(".item-count");
+let tableSelection = null;
+
+function selectableEntryCount() {
+  return document.querySelectorAll(".selectable-entry").length;
+}
+
+function updateItemCount() {
+  if (!itemCount) return;
+  const count = selectableEntryCount();
+  itemCount.textContent = `${count} item${count === 1 ? "" : "s"}`;
+}
+
+function renderEmptyFolderState() {
+  const tbody = document.querySelector(".file-table tbody");
+  if (!tbody || selectableEntryCount() > 0 || tbody.querySelector(".empty-state")) return;
+
+  const row = document.createElement("tr");
+  row.className = "empty-row";
+  const cell = document.createElement("td");
+  cell.colSpan = 6;
+  cell.className = "empty";
+
+  const empty = document.createElement("div");
+  empty.className = "empty-state";
+  empty.setAttribute("role", "status");
+  empty.setAttribute("aria-label", "This folder is empty");
+
+  const icon = document.createElement("div");
+  icon.className = "empty-state-icon";
+  icon.setAttribute("aria-hidden", "true");
+  icon.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 7h18v14H3z"/><path d="M3 7l3-4h6l3 4"/><path d="M9 14h6"/></svg>';
+
+  const title = document.createElement("h2");
+  title.textContent = "This folder is empty";
+  const copy = document.createElement("p");
+  copy.textContent = CAN_WRITE
+    ? "Upload files or create a folder to get started."
+    : "You have read-only access here.";
+
+  empty.append(icon, title, copy);
+  if (CAN_WRITE) {
+    const actions = document.createElement("div");
+    actions.className = "empty-state-actions";
+    const upload = document.createElement("button");
+    upload.className = "btn btn-primary";
+    upload.type = "button";
+    upload.dataset.emptyAction = "upload";
+    upload.textContent = "Upload files";
+    const mkdir = document.createElement("button");
+    mkdir.className = "btn";
+    mkdir.type = "button";
+    mkdir.dataset.emptyAction = "mkdir";
+    mkdir.textContent = "New folder";
+    actions.append(upload, mkdir);
+    empty.appendChild(actions);
+  }
+
+  cell.appendChild(empty);
+  row.appendChild(cell);
+  tbody.appendChild(row);
+}
 
 // ── Sorting ──────────────────────────────────────────────────────────────────
 const SORT_KEYS = ["name", "size", "mtime"];
@@ -268,10 +273,6 @@ function compareRows(a, b, sortEntries) {
   return collator.compare(a.dataset.sortName || "", b.dataset.sortName || "");
 }
 
-function refreshSelectableRows() {
-  selectableRows = [...document.querySelectorAll(".selectable-entry")];
-}
-
 function updateSortUi(sortEntries) {
   sortHeaders.forEach(btn => {
     const index = sortEntries.findIndex(entry => entry.key === btn.dataset.sortKey);
@@ -294,7 +295,7 @@ function applySort(sortEntries) {
   if (!tbody) return;
   const rows = [...tbody.querySelectorAll(".selectable-entry")].sort((a, b) => compareRows(a, b, sortEntries));
   rows.forEach(row => tbody.appendChild(row));
-  refreshSelectableRows();
+  tableSelection?.refreshRows();
   updateSortUi(sortEntries);
 }
 
@@ -318,7 +319,7 @@ sortHeaders.forEach(btn => {
       currentSort = currentSort.filter(entry => entry.key !== key);
     }
     writeSortPreference(currentSort);
-    clearSelection();
+    tableSelection?.clearSelection();
     applySort(currentSort);
   });
 });
@@ -326,104 +327,45 @@ sortHeaders.forEach(btn => {
 resetSortBtn.addEventListener("click", () => {
   currentSort = [...DEFAULT_SORT];
   clearSortPreference();
-  clearSelection();
+  tableSelection?.clearSelection();
   applySort(currentSort);
 });
 
-function rowPath(row) {
-  return row.dataset.path;
-}
-
-function setRowSelected(row, selected) {
-  const path = rowPath(row);
-  if (!path) return;
-  row.classList.toggle("selected", selected);
-  const checkbox = row.querySelector(".entry-select");
-  if (checkbox) checkbox.checked = selected;
-  if (selected) selectedPaths.add(path);
-  else selectedPaths.delete(path);
-}
-
-function updateBulkActions() {
-  const count = selectedPaths.size;
-  zipSelectedBtn.disabled = count === 0;
-  zipSelectedBtn.textContent = count ? `Download zip (${count})` : "Download zip";
-  zipSelectedBtn.title = count ? "Download selected files and folders as zip" : "Select files or folders first";
-
-  if (CAN_DELETE) {
-    deleteSelectedBtn.disabled = count === 0;
-    deleteSelectedBtn.textContent = count ? `Delete selected (${count})` : "Delete selected";
-    deleteSelectedBtn.title = count ? "Delete selected files and folders" : "Select files or folders first";
+async function restoreDelete(transactionId) {
+  const res = await authFetch(`/api/restore/${transactionId}`, { method: "POST" });
+  if (!res.ok) {
+    dialogs.toast("Could not restore deleted items.", "error");
+    return;
   }
-
-  if (selectAll) {
-    selectAll.checked = count > 0 && count === selectableRows.length;
-    selectAll.indeterminate = count > 0 && count < selectableRows.length;
-  }
+  const data = await res.json();
+  dialogs.toast(`${data.restored || 0} item${data.restored === 1 ? "" : "s"} restored. Refreshing...`, "success");
+  setTimeout(() => location.reload(), 500);
 }
 
-function clearSelection() {
-  selectableRows.forEach(row => setRowSelected(row, false));
-  lastSelectedIndex = null;
-  updateBulkActions();
-}
-
-function selectRange(toIndex, selected) {
-  const fromIndex = lastSelectedIndex === null ? toIndex : lastSelectedIndex;
-  const start = Math.min(fromIndex, toIndex);
-  const end = Math.max(fromIndex, toIndex);
-  for (let i = start; i <= end; i++) setRowSelected(selectableRows[i], selected);
-}
-
-function handleRowSelection(row, event) {
-  const index = selectableRows.indexOf(row);
-  const checkbox = row.querySelector(".entry-select");
-  const target = event.target instanceof Element ? event.target : event.target.parentElement;
-  const nextSelected = checkbox ? checkbox.checked : !selectedPaths.has(rowPath(row));
-
-  if (event.shiftKey) {
-    selectRange(index, nextSelected);
-  } else if (event.metaKey || event.ctrlKey || target?.classList.contains("entry-select")) {
-    setRowSelected(row, nextSelected);
-  } else {
-    const wasOnlySelected = selectedPaths.size === 1 && selectedPaths.has(rowPath(row));
-    clearSelection();
-    setRowSelected(row, !wasOnlySelected);
-  }
-  lastSelectedIndex = index;
-  updateBulkActions();
-}
-
-selectableRows.forEach(row => {
-  const checkbox = row.querySelector(".entry-select");
-  checkbox.addEventListener("click", event => {
-    event.stopPropagation();
-    handleRowSelection(row, event);
-  });
-  row.addEventListener("click", event => {
-    const target = event.target instanceof Element ? event.target : event.target.parentElement;
-    if (target && target.closest("a, button, input")) return;
-    handleRowSelection(row, event);
-  });
-});
-
-if (selectAll) {
-  selectAll.addEventListener("change", () => {
-    selectableRows.forEach(row => setRowSelected(row, selectAll.checked));
-    lastSelectedIndex = null;
-    updateBulkActions();
-  });
+async function showUndoDeleteToast(res, paths) {
+  const data = await res.json();
+  const count = data.count || data.deleted || paths.length;
+  tableSelection?.removeRowsAndFocus(paths, filesRegion);
+  updateItemCount();
+  renderEmptyFolderState();
+  dialogs.toastWithAction(
+    `${count} item${count === 1 ? "" : "s"} deleted`,
+    "Undo",
+    () => restoreDelete(data.transaction_id),
+    "undo",
+    7000,
+  );
 }
 
 zipSelectedBtn.addEventListener("click", async () => {
-  if (!selectedPaths.size) return;
+  if (!tableSelection?.selectedPaths.size) return;
   const res = await authFetch("/_bulk/zip", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ base: CURRENT_PATH, paths: [...selectedPaths] }),
+    body: JSON.stringify({ base: CURRENT_PATH, paths: [...tableSelection.selectedPaths] }),
   });
   if (!res.ok) {
-    alert("Zip download failed: " + res.status);
+    await dialogs.alert("Zip download failed", `Server returned ${res.status}.`);
     return;
   }
   const blob = await res.blob();
@@ -436,23 +378,43 @@ deleteSelectedBtn.addEventListener("click", async () => {
     warnReadOnly("delete");
     return;
   }
-  if (!selectedPaths.size) return;
-  const names = selectableRows
-    .filter(row => selectedPaths.has(rowPath(row)))
+  if (!tableSelection?.selectedPaths.size) return;
+  const names = tableSelection.selectedRows()
     .map(row => row.dataset.name);
   const preview = names.slice(0, 6).join("\n");
   const extra = names.length > 6 ? `\n…and ${names.length - 6} more` : "";
-  if (!confirm(`Delete ${names.length} selected item${names.length === 1 ? "" : "s"}?\n\n${preview}${extra}`)) return;
+  const confirmed = await dialogs.confirm(
+    `Delete ${names.length} selected item${names.length === 1 ? "" : "s"}?`,
+    `${preview}${extra}`,
+    "Delete",
+  );
+  if (!confirmed) return;
   const res = await authFetch("/_bulk/delete", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ paths: [...selectedPaths] }),
+    body: JSON.stringify({ paths: [...tableSelection.selectedPaths] }),
   });
-  if (res.ok) location.reload();
-  else alert("Delete failed: " + res.status);
+  if (res.ok) await showUndoDeleteToast(res, [...tableSelection.selectedPaths]);
+  else await dialogs.alert("Delete failed", `Server returned ${res.status}.`);
 });
 
-updateBulkActions();
+tableSelection = wireFileTableSelection({
+  table: fileTable,
+  selectAll,
+  clearSelectionBtn,
+  zipSelectedBtn,
+  deleteSelectedBtn,
+  selectionCount,
+  tableWrap,
+  canDelete: CAN_DELETE,
+  onOpen(link) {
+    link.click();
+  },
+  onDelete(row) {
+    const button = row.querySelector(".btn-delete:not(:disabled)");
+    button?.click();
+  },
+});
 
 // ── Delete ─────────────────────────────────────────────────────────────────────
 document.querySelectorAll(".btn-delete").forEach(btn => {
@@ -463,10 +425,10 @@ document.querySelectorAll(".btn-delete").forEach(btn => {
     }
     const path = btn.dataset.path;
     const name = path.replace(/\/$/, "").split("/").pop();
-    if (!confirm(`Delete "${name}"?`)) return;
+    if (!await dialogs.confirm("Delete item?", `Delete "${name}"?`, "Delete")) return;
     const res = await authFetch(path, { method: "DELETE" });
-    if (res.ok) location.reload();
-    else alert("Delete failed: " + res.status);
+    if (res.ok) await showUndoDeleteToast(res, [path]);
+    else await dialogs.alert("Delete failed", `Server returned ${res.status}.`);
   });
 });
 
@@ -476,12 +438,12 @@ document.getElementById("mkdir-btn").addEventListener("click", async () => {
     warnReadOnly("folder creation");
     return;
   }
-  const name = prompt("Folder name:");
+  const name = await dialogs.prompt("New folder", "Create a folder in the current directory.", "Folder name");
   if (!name) return;
   const path = appendPath(CURRENT_PATH, name);
   const res = await authFetch(path, { method: "MKCOL" });
   if (res.ok || res.status === 201) location.reload();
-  else alert("Could not create folder: " + res.status);
+  else await dialogs.alert("Could not create folder", `Server returned ${res.status}.`);
 });
 
 // ── Upload panel ───────────────────────────────────────────────────────────────
@@ -491,15 +453,28 @@ let pendingReload = false;
 
 document.getElementById("close-panel").addEventListener("click", () => {
   panel.classList.add("hidden");
+  document.body.classList.remove("upload-panel-open");
   uploadList.innerHTML = "";
+  renderUploadEmptyState();
   if (pendingReload) location.reload();
 });
 
+function renderUploadEmptyState() {
+  if (uploadList.children.length) return;
+  const empty = document.createElement("div");
+  empty.className = "upload-panel-empty";
+  empty.textContent = "No active uploads";
+  uploadList.appendChild(empty);
+}
+
 function showPanel() {
   panel.classList.remove("hidden");
+  document.body.classList.add("upload-panel-open");
+  renderUploadEmptyState();
 }
 
 function addUploadItem(name) {
+  uploadList.querySelector(".upload-panel-empty")?.remove();
   const item = document.createElement("div");
   item.className = "upload-item";
 
@@ -518,6 +493,9 @@ function addUploadItem(name) {
 
   const status = document.createElement("div");
   status.className = "upload-status";
+  status.setAttribute("role", "status");
+  status.setAttribute("aria-live", "polite");
+  status.setAttribute("aria-atomic", "true");
   status.textContent = "Preparing upload...";
 
   item.append(nameEl, progressWrap, status);
@@ -534,11 +512,11 @@ function addUploadItem(name) {
     setProcessing(on) {
       item.classList.toggle("processing", on);
     },
-    setDone() {
+    setDone(msg = "Done") {
       item.classList.remove("processing");
       item.classList.add("done");
       progressBar.style.width = "100%";
-      status.textContent = "Done";
+      status.textContent = msg;
     },
     setError(msg) {
       item.classList.remove("processing");
@@ -564,7 +542,12 @@ async function prepareFolderRoot(name) {
     return { uploadRoot: finalRoot, finalRoot, staged: false };
   }
 
-  if (!confirm(`Replace existing folder "${name}"?`)) {
+  const replace = await dialogs.confirm(
+    "Replace existing folder?",
+    `A folder named "${name}" already exists. Upload into a staging folder and replace it when complete?`,
+    "Replace",
+  );
+  if (!replace) {
     return null;
   }
 
@@ -587,10 +570,10 @@ async function finishFolderRoot(root) {
   try {
     await authFetch(root.uploadRoot, { method: "DELETE" });
   } catch {
-    if (authRedirecting) return false;
+    if (auth.isRedirecting()) return false;
     // Best-effort cleanup; leave the staging folder visible if delete fails.
   }
-  alert("Could not replace folder: " + res.status);
+  await dialogs.alert("Could not replace folder", `Server returned ${res.status}.`);
   return false;
 }
 
@@ -648,7 +631,7 @@ function putBlob(url, blob, callbacks = {}) {
       settled = true;
       clearTimers();
       if (xhr.status === 401 || isLoginResponseUrl(xhr.responseURL)) {
-        redirectToLogin();
+        auth.redirectToLogin();
         reject(new Error("authentication required"));
       } else if (xhr.status >= 200 && xhr.status < 300) {
         resolve(xhr);
@@ -689,9 +672,14 @@ async function uploadFile(file, destDir) {
       if (!initRes.ok) throw httpStatusError(initRes.status, "init failed " + initRes.status);
       return initRes;
     }, { label: "Upload session", ui });
-    ({ session_id: sessionId } = await res.json());
+    const init = await res.json();
+    if (init.ignored) {
+      ui.setDone("Skipped system file");
+      return false;
+    }
+    ({ session_id: sessionId } = init);
   } catch (e) {
-    if (authRedirecting) return false;
+    if (auth.isRedirecting()) return false;
     ui.setError(e.message);
     return false;
   }
@@ -759,7 +747,7 @@ async function uploadFile(file, destDir) {
     }
     await Promise.all(workers);
   } catch (e) {
-    if (authRedirecting) return false;
+    if (auth.isRedirecting()) return false;
     ui.setError(e.message);
     return false;
   }
@@ -772,7 +760,7 @@ async function uploadFile(file, destDir) {
       return res;
     }, { label: "Finalizing upload", ui });
   } catch (e) {
-    if (authRedirecting) return false;
+    if (auth.isRedirecting()) return false;
     ui.setError(e.message);
     return false;
   }
@@ -832,6 +820,7 @@ async function uploadPairs(pairs, { reload = true } = {}) {
 
   if (anySuccess && reload) {
     pendingReload = true;
+    dialogs.toast("Upload complete. Refreshing file list...", "success");
     setTimeout(() => location.reload(), 600);
   }
   return anySuccess;
@@ -875,6 +864,7 @@ async function uploadFolderInput(files) {
   const ok = await uploadPairs(pairs, { reload: false });
   if (ok && await finishFolderRoot(root)) {
     pendingReload = true;
+    dialogs.toast("Folder upload complete. Refreshing file list...", "success");
     setTimeout(() => location.reload(), 600);
   }
 }
@@ -912,6 +902,7 @@ async function uploadDataTransfer(dt) {
   }
   if ((ok || folderRoots.length) && finished) {
     pendingReload = true;
+    dialogs.toast("Upload complete. Refreshing file list...", "success");
     setTimeout(() => location.reload(), 600);
   }
 }
@@ -933,6 +924,18 @@ document.getElementById("upload-folder-btn").addEventListener("click", () => {
     return;
   }
   folderInput.click();
+});
+
+document.addEventListener("click", event => {
+  const button = event.target instanceof Element
+    ? event.target.closest("[data-empty-action]")
+    : null;
+  if (!button) return;
+  if (button.dataset.emptyAction === "upload") {
+    document.getElementById("upload-btn").click();
+  } else if (button.dataset.emptyAction === "mkdir") {
+    document.getElementById("mkdir-btn").click();
+  }
 });
 
 fileInput.addEventListener("change", () => {

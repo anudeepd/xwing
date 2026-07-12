@@ -1,6 +1,6 @@
 import pytest
 
-from xwing.files import human_size, is_editable, safe_path
+from xwing.files import human_size, is_editable, is_ignored_system_file, safe_path
 
 
 class TestSafePath:
@@ -56,6 +56,16 @@ class TestHumanSize:
 
     def test_gigabytes(self):
         assert human_size(1024**3) == "1.0 GB"
+
+
+class TestIgnoredSystemFiles:
+    def test_ignores_os_metadata_names(self):
+        for name in (".DS_Store", "Thumbs.db", "desktop.ini", "._notes.txt", "__MACOSX"):
+            assert is_ignored_system_file(name)
+
+    def test_does_not_ignore_normal_dotfiles(self):
+        for name in (".gitignore", ".npmrc", "notes.txt"):
+            assert not is_ignored_system_file(name)
 
 
 class TestIsEditable:

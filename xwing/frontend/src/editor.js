@@ -1,5 +1,8 @@
 "use strict";
 
+import { createDialogController } from "./app-core.js";
+import { createAuthSession } from "./shared.js";
+
 const FILE_PATH = document.body.dataset.filePath || "/";
 const FILE_EXT = document.body.dataset.fileExt || "";
 const CAN_WRITE = document.body.dataset.canWrite === "true";
@@ -9,7 +12,16 @@ const AUTH_REDIRECT_DELAY_MS = 1500;
 const AUTH_IDLE_GRACE_MS = 1000;
 const AUTH_IDLE_TIMEOUT_SECONDS = parseInt(document.body.dataset.authIdleTimeout, 10) || 0;
 const AUTH_ACTIVITY_EVENTS = ["pointerdown", "keydown", "touchstart", "wheel"];
-let authRedirecting = false;
+const auth = createAuthSession({
+  redirectDelayMs: AUTH_REDIRECT_DELAY_MS,
+  idleTimeoutSeconds: AUTH_IDLE_TIMEOUT_SECONDS,
+  idleGraceMs: AUTH_IDLE_GRACE_MS,
+  activityEvents: AUTH_ACTIVITY_EVENTS,
+});
+const authFetch = auth.authFetch;
+const dialogs = createDialogController();
+const backLink = document.getElementById("editor-back-link");
+const logoutForm = document.getElementById("logout-form");
 
 // ── Language detection ─────────────────────────────────────────────────────────
 const { EditorView, EditorState, basicSetup, keymap, indentWithTab, oneDark, langs } = window.CM;
@@ -51,6 +63,7 @@ function detectLang(ext) {
 const langExtension = detectLang(FILE_EXT);
 let savedContent = CONTENT;
 let dirty = false;
+let allowNavigation = false;
 const writeExtensions = CAN_WRITE
   ? []
   : [
@@ -88,77 +101,20 @@ function setStatus(cls, msg) {
   saveStatus.textContent = msg;
 }
 
-function currentAuthRedirectTarget() {
-  return `${window.location.pathname || "/"}${window.location.search || ""}${window.location.hash || ""}`;
+async function confirmDiscardChanges() {
+  if (!dirty) return true;
+  return await dialogs.confirm(
+    "Discard unsaved changes?",
+    "This file has unsaved edits. Leave without saving?",
+    "Discard changes",
+  );
 }
 
-function loginUrlForCurrentPage() {
-  return `/_auth/login?redirect=${encodeURIComponent(currentAuthRedirectTarget())}`;
-}
-
-function isLoginResponseUrl(url) {
-  if (!url) return false;
-  try {
-    return new URL(url, window.location.href).pathname === "/_auth/login";
-  } catch {
-    return false;
-  }
-}
-
-function redirectToLogin() {
-  if (authRedirecting) return;
-  authRedirecting = true;
-  showAuthOverlay("Session expired", "Your session has ended. Redirecting to sign in...");
-  window.setTimeout(() => window.location.assign(loginUrlForCurrentPage()), AUTH_REDIRECT_DELAY_MS);
-}
-
-function showAuthOverlay(title, message) {
-  const overlay = document.getElementById("auth-overlay");
-  if (!overlay) return;
-  const titleEl = document.getElementById("auth-overlay-title");
-  const messageEl = document.getElementById("auth-overlay-message");
-  if (titleEl) titleEl.textContent = title;
-  if (messageEl) messageEl.textContent = message;
-  overlay.hidden = false;
-}
-
-function wireLogoutForm() {
-  const form = document.getElementById("logout-form");
-  if (!form) return;
-  form.addEventListener("submit", event => {
-    event.preventDefault();
-    if (authRedirecting) return;
-    authRedirecting = true;
-    showAuthOverlay("Signing out", "Ending your session...");
-    window.setTimeout(() => form.submit(), AUTH_REDIRECT_DELAY_MS);
-  });
-}
-
-wireLogoutForm();
-
-function wireAuthIdleTimer() {
-  if (AUTH_IDLE_TIMEOUT_SECONDS <= 0) return;
-  const timeoutMs = AUTH_IDLE_TIMEOUT_SECONDS * 1000 + AUTH_IDLE_GRACE_MS;
-  let timer = null;
-  const schedule = () => {
-    if (timer !== null) window.clearTimeout(timer);
-    timer = window.setTimeout(redirectToLogin, timeoutMs);
-  };
-  for (const eventName of AUTH_ACTIVITY_EVENTS) {
-    window.addEventListener(eventName, schedule, { passive: true });
-  }
-  schedule();
-}
-
-wireAuthIdleTimer();
-
-async function authFetch(input, init) {
-  const res = await fetch(input, init);
-  if (res.status === 401 || isLoginResponseUrl(res.url)) {
-    redirectToLogin();
-    throw new Error("authentication required");
-  }
-  return res;
+async function leaveEditor(href) {
+  if (!href) return;
+  if (!await confirmDiscardChanges()) return;
+  allowNavigation = true;
+  window.location.assign(href);
 }
 
 async function save() {
@@ -177,16 +133,34 @@ async function save() {
     if (!res.ok) throw new Error(res.status);
     savedContent = content;
     dirty = false;
+    allowNavigation = false;
     setStatus("saved", "saved");
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => setStatus("", ""), 3000);
   } catch (e) {
-    if (authRedirecting) return;
+    if (auth.isRedirecting()) return;
     setStatus("error", "save failed: " + e.message);
   }
 }
 
 document.getElementById("save-btn").addEventListener("click", save);
+
+backLink?.addEventListener("click", event => {
+  event.preventDefault();
+  leaveEditor(backLink.href);
+});
+
+logoutForm?.addEventListener("submit", async event => {
+  if (!dirty) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  if (!await confirmDiscardChanges()) return;
+  allowNavigation = true;
+  logoutForm.submit();
+}, true);
+
+auth.wireLogoutForm();
+auth.wireAuthIdleTimer();
 
 // Ctrl+S / Cmd+S
 document.addEventListener("keydown", e => {
@@ -194,11 +168,23 @@ document.addEventListener("keydown", e => {
     e.preventDefault();
     save();
   }
+  if (
+    e.key === "Escape" &&
+    !e.defaultPrevented &&
+    !e.ctrlKey &&
+    !e.metaKey &&
+    !e.altKey &&
+    !e.shiftKey &&
+    backLink
+  ) {
+    e.preventDefault();
+    leaveEditor(backLink.href);
+  }
 });
 
 // ── Unsaved changes guard ──────────────────────────────────────────────────────
 window.addEventListener("beforeunload", e => {
-  if (dirty && !authRedirecting) {
+  if (dirty && !allowNavigation && !auth.isRedirecting()) {
     e.preventDefault();
     e.returnValue = "";
   }

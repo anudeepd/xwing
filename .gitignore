@@ -7,6 +7,10 @@ dist/
 build/
 
 # Frontend bundle build tooling (node_modules kept local, bundles committed)
+# Generated assets: edit source in xwing/frontend/src/, rebuild, do not commit output
+xwing/static/assets/*
+node_modules/
+package-lock.json
 scripts/node_modules/
 scripts/package-lock.json
 
@@ -21,4 +25,6 @@ scripts/package-lock.json
 CLAUDE.md
 AGENTS.md
 PLAN.md
+DESIGN.md
 .gstack/
+.gstack-review/

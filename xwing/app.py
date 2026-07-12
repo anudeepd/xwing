@@ -7,6 +7,7 @@ import secrets
 import shutil
 import tempfile
 import time
+import uuid
 import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -22,7 +23,14 @@ from fastapi.templating import Jinja2Templates
 from .auth import get_user, require_perm
 from . import audit_store
 from .config import Settings
-from .files import human_size, is_editable, is_within_root, list_dir, safe_path
+from .files import (
+    human_size,
+    is_editable,
+    is_ignored_system_file,
+    is_within_root,
+    list_dir,
+    safe_path,
+)
 from .upload import cleanup_stale_sessions, create_upload_router
 from .webdav import (
     copy_response,
@@ -137,6 +145,10 @@ def create_app(settings: Settings) -> FastAPI:
         task.cancel()
 
     app = FastAPI(lifespan=lifespan)
+    # In-memory undo transactions — lost on server restart. This is intentional:
+    # the 7s undo window is short enough that restart-induced loss is acceptable,
+    # and persisting trash transactions would require a DB migration for marginal gain.
+    delete_transactions: dict[str, dict] = {}
 
     def _skip_generic_audit(request: Request) -> bool:
         if request.url.path.startswith("/_auth/"):
@@ -144,6 +156,8 @@ def create_app(settings: Settings) -> FastAPI:
         if request.url.path.startswith("/_upload/"):
             return True
         if request.url.path == "/_bulk/delete":
+            return True
+        if request.url.path.startswith("/api/restore/"):
             return True
         return request.method.upper() in {"PUT", "DELETE", "MKCOL", "COPY", "MOVE"}
 
@@ -345,6 +359,13 @@ def create_app(settings: Settings) -> FastAPI:
             rel = Path(fspath.name)
         return any(part == ".env" or part.startswith(".env.") for part in rel.parts)
 
+    def _is_ignored_system_path(fspath: Path) -> bool:
+        try:
+            rel = fspath.resolve().relative_to(settings.root_dir.resolve())
+        except ValueError:
+            rel = Path(fspath.name)
+        return any(is_ignored_system_file(part) for part in rel.parts)
+
     def _reject_sensitive_path(fspath: Path) -> None:
         if _is_sensitive_path(fspath):
             raise HTTPException(status_code=403, detail="Forbidden: sensitive file")
@@ -352,11 +373,116 @@ def create_app(settings: Settings) -> FastAPI:
     def _is_root_path(fspath: Path) -> bool:
         return fspath.resolve() == settings.root_dir.resolve()
 
+    def _trash_dir() -> Path:
+        return settings.root_dir / ".xwing-trash"
+
+    def _is_trash_path(fspath: Path) -> bool:
+        try:
+            fspath.resolve().relative_to(_trash_dir().resolve())
+            return True
+        except ValueError:
+            return fspath.resolve() == _trash_dir().resolve()
+
+    def _is_internal_path(fspath: Path) -> bool:
+        resolved = fspath.resolve()
+        internal_paths = [
+            settings.tmp_dir.resolve(),
+            *(
+                path.resolve()
+                for path in (settings.users_config, settings.ldap_config, settings.audit_db)
+                if path is not None
+            ),
+        ]
+        if any(resolved == path for path in internal_paths):
+            return True
+        try:
+            resolved.relative_to(settings.tmp_dir.resolve())
+            return True
+        except ValueError:
+            return _is_trash_path(fspath)
+
+    def _visible_entries(fspath: Path) -> list[dict]:
+        entries = []
+        for entry in list_dir(fspath):
+            child = (fspath / entry["name"]).resolve()
+            if _is_internal_path(child):
+                continue
+            entries.append(entry)
+        return entries
+
+    def _top_level_paths(paths: list[Path]) -> list[Path]:
+        selected = {path.resolve() for path in paths}
+        result: list[Path] = []
+        for path in sorted(paths, key=lambda p: len(p.parts)):
+            resolved = path.resolve()
+            if any(parent in selected for parent in resolved.parents):
+                continue
+            result.append(path)
+        return result
+
+    def _trash_name(fspath: Path, transaction_id: str, index: int) -> str:
+        safe_name = fspath.name.replace("/", "_") or "item"
+        return f"{int(time.time())}-{transaction_id[:8]}-{index}-{safe_name}"
+
+    def _restore_candidate(original_path: Path, kind: str) -> Path:
+        if not original_path.exists():
+            return original_path
+        stem = original_path.stem
+        suffix = original_path.suffix
+        parent = original_path.parent
+        if kind == "directory" or not suffix:
+            candidate = parent / f"{original_path.name} (restored)"
+        else:
+            candidate = parent / f"{stem} (restored){suffix}"
+        if not candidate.exists():
+            return candidate
+        for index in range(1, 10_000):
+            if kind == "directory" or not suffix:
+                candidate = parent / f"{original_path.name} (restored-{index})"
+            else:
+                candidate = parent / f"{stem} (restored-{index}){suffix}"
+            if not candidate.exists():
+                return candidate
+        raise HTTPException(status_code=409, detail="Could not find restore target")
+
+    async def _soft_delete_paths(paths: list[Path], user: str) -> dict:
+        txid = uuid.uuid4().hex
+        trash_dir = _trash_dir()
+        await anyio.to_thread.run_sync(lambda: trash_dir.mkdir(parents=True, exist_ok=True))
+        paths_to_delete = _top_level_paths(paths)
+        for fspath in paths_to_delete:
+            if not fspath.exists():
+                raise HTTPException(status_code=404, detail="Selected path not found")
+            if _is_root_path(fspath):
+                raise HTTPException(status_code=403, detail="Cannot delete root")
+            _reject_sensitive_path(fspath)
+            if _is_internal_path(fspath):
+                raise HTTPException(status_code=403, detail="Cannot delete internal paths")
+        items = []
+        for index, fspath in enumerate(paths_to_delete):
+            trash_path = trash_dir / _trash_name(fspath, txid, index)
+            await anyio.to_thread.run_sync(shutil.move, str(fspath), str(trash_path))
+            items.append(
+                {
+                    "original": fspath,
+                    "trash": trash_path,
+                    "kind": "directory" if trash_path.is_dir() else "file",
+                }
+            )
+        delete_transactions[txid] = {
+            "user": user,
+            "created": time.time(),
+            "items": items,
+        }
+        return {"transaction_id": txid, "count": len(items), "items": items}
+
     # ── Method handlers ───────────────────────────────────────────────────────
 
     async def _handle_put(fspath: Path, request: Request, user: str) -> Response:
         started = time.monotonic()
         require_perm(user, "write", settings)
+        if _is_ignored_system_path(fspath):
+            return Response(status_code=204)
         _reject_sensitive_path(fspath)
 
         if fspath.is_dir():
@@ -420,22 +546,34 @@ def create_app(settings: Settings) -> FastAPI:
         require_perm(user, "delete", settings)
         if _is_root_path(fspath):
             raise HTTPException(status_code=403, detail="Cannot delete root")
+        if _is_ignored_system_path(fspath):
+            if fspath.exists():
+                if fspath.is_dir():
+                    await anyio.to_thread.run_sync(shutil.rmtree, fspath)  # type: ignore[reportAttributeAccessIssue]
+                else:
+                    await anyio.to_thread.run_sync(fspath.unlink)  # type: ignore[reportAttributeAccessIssue]
+            return Response(status_code=204)
         _reject_sensitive_path(fspath)
 
         if not fspath.exists():
             raise HTTPException(status_code=404)
-        deleted_kind = "directory" if fspath.is_dir() else "file"
         rel_path = _to_rel_path(fspath)
-        if fspath.is_dir():
-            await anyio.to_thread.run_sync(shutil.rmtree, fspath)  # type: ignore[reportAttributeAccessIssue]
-        else:
-            await anyio.to_thread.run_sync(fspath.unlink)  # type: ignore[reportAttributeAccessIssue]
-        response = Response(status_code=204)
+        deleted = await _soft_delete_paths([fspath], user)
+        response = JSONResponse(
+            {
+                "ok": True,
+                "transaction_id": deleted["transaction_id"],
+                "count": deleted["count"],
+            }
+        )
         await _record_semantic_audit(
             user=user,
             operation="delete",
             path=rel_path,
-            details=json.dumps({"kind": deleted_kind}, ensure_ascii=False),
+            details=json.dumps(
+                {"count": deleted["count"], "transaction_id": deleted["transaction_id"]},
+                ensure_ascii=False,
+            ),
             status_code=response.status_code,
             started=started,
         )
@@ -443,6 +581,9 @@ def create_app(settings: Settings) -> FastAPI:
 
     async def _handle_get(fspath: Path, request: Request, user: str) -> Response:
         if not fspath.exists():
+            raise HTTPException(status_code=404)
+
+        if _is_ignored_system_path(fspath):
             raise HTTPException(status_code=404)
 
         _reject_sensitive_path(fspath)
@@ -467,7 +608,7 @@ def create_app(settings: Settings) -> FastAPI:
             return propfind_response(request, fspath, settings.root_dir)
 
         try:
-            entries = list_dir(fspath)
+            entries = _visible_entries(fspath)
         except PermissionError:
             raise HTTPException(status_code=403, detail="Permission denied")
 
@@ -484,6 +625,7 @@ def create_app(settings: Settings) -> FastAPI:
             "index.html",
             {
                 "entries": entries,
+                "entry_count": len(entries),
                 "current_path": rel_path if rel_path.endswith("/") else rel_path + "/",
                 "current_url_path": url_path,
                 "breadcrumbs": breadcrumbs,
@@ -531,6 +673,8 @@ def create_app(settings: Settings) -> FastAPI:
                         child.is_file()
                         and is_within_root(root, child)
                         and not _is_sensitive_path(child)
+                        and not _is_internal_path(child)
+                        and not _is_ignored_system_path(child)
                     ):
                         zf.write(child, child.relative_to(fspath))
             return buf.getvalue()
@@ -573,9 +717,13 @@ def create_app(settings: Settings) -> FastAPI:
             if _is_root_path(fspath):
                 raise HTTPException(status_code=403, detail="Cannot select root")
             _reject_sensitive_path(fspath)
+            if _is_ignored_system_path(fspath):
+                continue
             if fspath not in seen:
                 seen.add(fspath)
                 paths.append(fspath)
+        if not paths:
+            raise HTTPException(status_code=400, detail="No selectable paths")
         return paths
 
     def _zip_selected(paths: list[Path], base_path: Path) -> bytes:
@@ -593,6 +741,8 @@ def create_app(settings: Settings) -> FastAPI:
                 not file_path.is_file()
                 or not is_within_root(settings.root_dir, file_path)
                 or _is_sensitive_path(file_path)
+                or _is_internal_path(file_path)
+                or _is_ignored_system_path(file_path)
             ):
                 return
             name = arcname(file_path).as_posix()
@@ -647,21 +797,67 @@ def create_app(settings: Settings) -> FastAPI:
         require_perm(user, "delete", settings)
         body = await _bulk_body(request)
         paths = _resolve_bulk_paths(body.get("paths"))
-        rel_paths = [_to_rel_path(fspath) for fspath in paths]
-
-        for fspath in sorted(paths, key=lambda p: len(p.parts), reverse=True):
-            if not fspath.exists():
-                raise HTTPException(status_code=404, detail="Selected path not found")
-            if fspath.is_dir():
-                await anyio.to_thread.run_sync(shutil.rmtree, fspath)  # type: ignore[reportAttributeAccessIssue]
-            else:
-                await anyio.to_thread.run_sync(fspath.unlink)  # type: ignore[reportAttributeAccessIssue]
-        response = JSONResponse({"deleted": len(paths)})
+        rel_paths = [_to_rel_path(fspath) for fspath in _top_level_paths(paths)]
+        deleted = await _soft_delete_paths(paths, user)
+        response = JSONResponse(
+            {
+                "ok": True,
+                "transaction_id": deleted["transaction_id"],
+                "count": deleted["count"],
+                "deleted": deleted["count"],
+            }
+        )
         await _record_semantic_audit(
             user=user,
             operation="bulk_delete",
             path="/_bulk/delete",
-            details=json.dumps({"count": len(paths), "paths": rel_paths}, ensure_ascii=False),
+            details=json.dumps(
+                {
+                    "count": deleted["count"],
+                    "paths": rel_paths,
+                    "transaction_id": deleted["transaction_id"],
+                },
+                ensure_ascii=False,
+            ),
+            status_code=response.status_code,
+            started=started,
+        )
+        return response
+
+    @app.post("/api/restore/{transaction_id}", include_in_schema=False)
+    async def restore_delete(transaction_id: str, request: Request):
+        started = time.monotonic()
+        user = get_user(request, settings)
+        require_perm(user, "write", settings)
+        transaction = delete_transactions.get(transaction_id)
+        if not transaction:
+            raise HTTPException(status_code=404, detail="Delete transaction not found")
+        if transaction["user"] != user:
+            raise HTTPException(status_code=403, detail="Cannot restore another user's delete")
+
+        restored = 0
+        restored_paths = []
+        for item in transaction["items"]:
+            trash_path: Path = item["trash"]
+            original_path: Path = item["original"]
+            if not trash_path.exists():
+                continue
+            target = _restore_candidate(original_path, item["kind"])
+            target.parent.mkdir(parents=True, exist_ok=True)
+            await anyio.to_thread.run_sync(shutil.move, str(trash_path), str(target))
+            restored += 1
+            restored_paths.append(_to_rel_path(target))
+
+        delete_transactions.pop(transaction_id, None)
+        response = JSONResponse({"ok": True, "restored": restored, "paths": restored_paths})
+        await _record_semantic_audit(
+            user=user,
+            operation="restore",
+            path=f"/api/restore/{transaction_id}",
+            details=json.dumps(
+                {"restored": restored, "paths": restored_paths},
+                ensure_ascii=False,
+            ),
             status_code=response.status_code,
             started=started,
         )
@@ -710,11 +906,15 @@ def create_app(settings: Settings) -> FastAPI:
         if method == "PROPFIND":
             if not fspath.exists():
                 raise HTTPException(status_code=404)
+            if _is_ignored_system_path(fspath):
+                raise HTTPException(status_code=404)
             _reject_sensitive_path(fspath)
             return propfind_response(request, fspath, settings.root_dir)
 
         if method == "MKCOL":
             require_perm(user, "write", settings)
+            if _is_ignored_system_path(fspath):
+                return Response(status_code=201)
             _reject_sensitive_path(fspath)
             response = mkcol_response(fspath)
             await _record_semantic_audit(
@@ -730,6 +930,8 @@ def create_app(settings: Settings) -> FastAPI:
         if method == "COPY":
             require_perm(user, "write", settings)
             dest = dest_from_header(request, settings.root_dir)
+            if _is_ignored_system_path(fspath) or _is_ignored_system_path(dest):
+                return Response(status_code=201)
             _reject_sensitive_path(fspath)
             _reject_sensitive_path(dest)
             overwrite = request.headers.get("overwrite", "T").upper() != "F"
@@ -753,6 +955,8 @@ def create_app(settings: Settings) -> FastAPI:
             dest = dest_from_header(request, settings.root_dir)
             if _is_root_path(fspath):
                 raise HTTPException(status_code=403, detail="Cannot move root")
+            if _is_ignored_system_path(fspath) or _is_ignored_system_path(dest):
+                return Response(status_code=204)
             _reject_sensitive_path(fspath)
             _reject_sensitive_path(dest)
             overwrite = request.headers.get("overwrite", "T").upper() != "F"
