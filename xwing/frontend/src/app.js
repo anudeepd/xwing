@@ -414,6 +414,9 @@ tableSelection = wireFileTableSelection({
     const button = row.querySelector(".btn-delete:not(:disabled)");
     button?.click();
   },
+  onDeleteSelected() {
+    deleteSelectedBtn.click();
+  },
 });
 
 // ── Delete ─────────────────────────────────────────────────────────────────────

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 
 import { createDialogController, wireFileTableSelection } from "../../xwing/frontend/src/app-core.js";
 import { createAuthSession, loginUrlForCurrentPage } from "../../xwing/frontend/src/shared.js";
@@ -200,10 +201,12 @@ describe("delegated file table selection", () => {
       <button id="delete-selected-btn" disabled>Delete selected</button>
       <button id="clear-selection-btn" disabled>Clear</button>
       <span id="selection-count" aria-hidden="true">0 selected</span>
-      <input type="checkbox" id="select-all" />
       <main id="files-region" tabindex="-1"></main>
       <div class="table-wrap">
         <table class="file-table">
+          <thead>
+            <tr><th><input type="checkbox" id="select-all" /></th></tr>
+          </thead>
           <tbody>
             <tr class="entry selectable-entry" data-path="/a.txt" data-name="a.txt">
               <td><input class="entry-select" type="checkbox" /></td>
@@ -363,6 +366,50 @@ describe("delegated file table selection", () => {
     expect(deleteRow).toHaveBeenCalledWith(firstRow);
   });
 
+  it("deletes the full selection when Delete is pressed in selection mode", () => {
+    const deleteRow = vi.fn();
+    const deleteSelection = vi.fn();
+    const controller = wireFileTableSelection({
+      documentRef: document,
+      table: document.querySelector(".file-table"),
+      selectAll: document.getElementById("select-all"),
+      zipSelectedBtn: document.getElementById("zip-selected-btn"),
+      deleteSelectedBtn: document.getElementById("delete-selected-btn"),
+      canDelete: true,
+      onDelete: deleteRow,
+      onDeleteSelected: deleteSelection,
+    });
+    const rows = document.querySelectorAll(".selectable-entry");
+
+    rows[0].dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
+    rows[1].dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true }));
+    rows[0].dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true }));
+
+    expect([...controller.selectedPaths]).toEqual(["/a.txt", "/b.txt"]);
+    expect(deleteSelection).toHaveBeenCalledOnce();
+    expect(deleteRow).not.toHaveBeenCalled();
+  });
+
+  it("deletes the full selection when Delete is pressed on select-all", () => {
+    const deleteSelection = vi.fn();
+    const controller = wireFileTableSelection({
+      documentRef: document,
+      table: document.querySelector(".file-table"),
+      selectAll: document.getElementById("select-all"),
+      zipSelectedBtn: document.getElementById("zip-selected-btn"),
+      deleteSelectedBtn: document.getElementById("delete-selected-btn"),
+      canDelete: true,
+      onDeleteSelected: deleteSelection,
+    });
+    const selectAll = document.getElementById("select-all");
+
+    selectAll.click();
+    selectAll.dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true }));
+
+    expect(controller.selectedPaths.size).toBe(2);
+    expect(deleteSelection).toHaveBeenCalledOnce();
+  });
+
   it("clears selection with Escape after a toolbar delete dialog is dismissed", async () => {
     const dialogs = createDialogController({ documentRef: document });
     const controller = wireFileTableSelection({
@@ -390,5 +437,19 @@ describe("delegated file table selection", () => {
     deleteSelectedBtn.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     expect(controller.selectedPaths.size).toBe(0);
     expect(deleteSelectedBtn.disabled).toBe(true);
+  });
+});
+
+describe("responsive file browser styles", () => {
+  it("wraps every toolbar group on narrow viewports", () => {
+    const stylesheet = readFileSync("../xwing/frontend/src/style.css", "utf8");
+
+    expect(stylesheet).toContain("@media (max-width: 700px)");
+    expect(stylesheet).toContain(`.toolbar-primary,
+  .toolbar-selection,
+  .toolbar-meta {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+  }`);
   });
 });

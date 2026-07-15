@@ -370,6 +370,29 @@ body.upload-panel-open .drop-zone { padding-bottom: 380px; }
 }
 .concurrency-wrap select:focus { outline: 1px solid var(--accent); }
 
+@media (max-width: 700px) {
+  .shell {
+    padding: 0 12px;
+  }
+  .toolbar {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+  .toolbar-primary,
+  .toolbar-selection,
+  .toolbar-meta {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+  }
+  .toolbar-meta {
+    margin-left: 0;
+    justify-content: flex-start;
+  }
+  .toolbar .toolbar-sep {
+    display: none;
+  }
+}
+
 /* ── File table ─────────────────────────────────────────────────────────────── */
 .table-wrap {
   overflow-x: auto;

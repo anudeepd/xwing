@@ -219,6 +219,7 @@ export function wireFileTableSelection({
   canDelete,
   onOpen,
   onDelete,
+  onDeleteSelected,
 } = {}) {
   const selectedPaths = new Set();
   let selectableRows = [];
@@ -353,7 +354,12 @@ export function wireFileTableSelection({
     const target = event.target instanceof Element ? event.target : event.target.parentElement;
     const row = target?.closest(".selectable-entry");
     if (!row) {
-      if (event.key === "Escape") clearSelection();
+      if (event.key === "Delete" && canDelete && selectedPaths.size && onDeleteSelected) {
+        event.preventDefault();
+        onDeleteSelected();
+      } else if (event.key === "Escape") {
+        clearSelection();
+      }
       return;
     }
     if (event.key === " ") {
@@ -365,7 +371,8 @@ export function wireFileTableSelection({
       if (link) onOpen?.(link);
     } else if (event.key === "Delete" && canDelete) {
       event.preventDefault();
-      onDelete?.(row);
+      if (selectedPaths.size && onDeleteSelected) onDeleteSelected();
+      else onDelete?.(row);
     } else if (event.key === "Escape") {
       event.preventDefault();
       clearSelection();
