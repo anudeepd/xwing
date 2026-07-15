@@ -1,18 +1,14 @@
 {
-  "name": "scripts",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "name": "xwing-frontend",
+  "version": "0.3.22",
+  "type": "commonjs",
+  "private": true,
   "scripts": {
     "build": "node bundle-editor.mjs && node build-frontend.mjs",
     "build:app": "node build-frontend.mjs",
     "build:editor": "node bundle-editor.mjs",
     "test": "vitest run --environment jsdom"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "commonjs",
   "devDependencies": {
     "@codemirror/lang-css": "^6.3.1",
     "@codemirror/lang-html": "^6.4.11",

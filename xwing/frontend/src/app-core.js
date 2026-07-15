@@ -37,10 +37,24 @@ export function createDialogController({ documentRef = document } = {}) {
         event.preventDefault();
         event.stopPropagation();
         close(kind === "alert" ? true : null);
+        return;
+      }
+      if (event.key === "Tab") {
+        const focusable = [...dialog.querySelectorAll("button:not([disabled]), input:not([disabled])")];
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (!first || !last) return;
+        if (event.shiftKey && (documentRef.activeElement === first || !dialog.contains(documentRef.activeElement))) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && documentRef.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
       }
     });
 
-    const dialog = documentRef.createElement("div");
+    const dialog = documentRef.createElement("form");
     dialog.className = "xwing-dialog";
     dialog.setAttribute("role", "dialog");
     dialog.setAttribute("aria-modal", "true");
@@ -81,9 +95,12 @@ export function createDialogController({ documentRef = document } = {}) {
 
     const confirm = documentRef.createElement("button");
     confirm.className = kind === "danger" ? "btn btn-danger" : "btn btn-primary";
-    confirm.type = "button";
+    confirm.type = "submit";
     confirm.textContent = confirmText;
-    confirm.addEventListener("click", () => close(input ? input.value.trim() : true));
+    dialog.addEventListener("submit", event => {
+      event.preventDefault();
+      close(input ? input.value.trim() : true);
+    });
 
     if (kind === "alert") actions.append(confirm);
     else actions.append(cancel, confirm);

@@ -47,6 +47,44 @@ describe("shared auth helpers", () => {
     expect(document.getElementById("auth-overlay-title").textContent).toBe("Session expired");
     expect(assign).toHaveBeenCalledWith("/_auth/login?redirect=%2Fprivate");
   });
+
+  it("expires instead of resetting when background timer delivery is delayed", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const session = createAuthSession({
+      documentRef: document,
+      windowRef: window,
+      idleTimeoutSeconds: 2,
+      redirectDelayMs: 10_000,
+    });
+
+    const cleanup = session.wireAuthIdleTimer();
+    vi.setSystemTime(3_001);
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "A" }));
+
+    expect(session.isRedirecting()).toBe(true);
+    cleanup();
+    vi.useRealTimers();
+  });
+
+  it("checks an overdue auth deadline as soon as the page regains focus", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const session = createAuthSession({
+      documentRef: document,
+      windowRef: window,
+      idleTimeoutSeconds: 2,
+      redirectDelayMs: 10_000,
+    });
+
+    const cleanup = session.wireAuthIdleTimer();
+    vi.setSystemTime(3_001);
+    window.dispatchEvent(new Event("focus"));
+
+    expect(session.isRedirecting()).toBe(true);
+    cleanup();
+    vi.useRealTimers();
+  });
 });
 
 describe("xwing dialogs", () => {

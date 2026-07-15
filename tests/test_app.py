@@ -260,6 +260,8 @@ class TestAuth:
         assert '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">' in template
         assert '<style nonce="{{ csrf_nonce }}">' in template
         assert '<input type="hidden" name="csrf_token" value="{{ csrf_token }}">' in template
+        assert 'id="password-toggle" aria-label="Show password"' in template
+        assert "password.type = visible ? 'password' : 'text';" in template
         assert 'style="' not in template
 
     def test_login_template_keeps_ldapgate_shape_with_brand_safe_deltas(self):
@@ -537,6 +539,10 @@ class TestAuth:
         assert '/static/assets/editor.js' in editor.text
         assert '/static/app.js' not in listing.text
         assert '/static/editor.js' not in editor.text
+
+    def test_frontend_prevents_document_overscroll_bounce(self):
+        stylesheet = (Path(__file__).parents[1] / "xwing" / "frontend" / "src" / "style.css").read_text()
+        assert "html, body {\n  height: 100%;\n  overscroll-behavior: none;\n}" in stylesheet
 
 
 class TestPut:

@@ -62,17 +62,55 @@ export function createAuthSession({
   }
 
   function wireAuthIdleTimer() {
-    if (idleTimeoutSeconds <= 0) return;
+    if (idleTimeoutSeconds <= 0) return () => {};
     const timeoutMs = idleTimeoutSeconds * 1000 + idleGraceMs;
     let timer = null;
-    const schedule = () => {
+    let deadline = Date.now() + timeoutMs;
+    let expired = false;
+
+    const expire = () => {
+      if (expired) return;
+      expired = true;
       if (timer !== null) windowRef.clearTimeout(timer);
-      timer = windowRef.setTimeout(redirectToLogin, timeoutMs);
+      timer = null;
+      redirectToLogin();
+    };
+    const armTimer = () => {
+      if (timer !== null) windowRef.clearTimeout(timer);
+      timer = windowRef.setTimeout(expire, Math.max(0, deadline - Date.now()));
+    };
+    const recordActivity = () => {
+      if (expired) return;
+      const now = Date.now();
+      if (now >= deadline) {
+        expire();
+        return;
+      }
+      deadline = now + timeoutMs;
+      armTimer();
+    };
+    const checkDeadline = () => {
+      if (!expired && Date.now() >= deadline) expire();
     };
     for (const eventName of activityEvents) {
-      windowRef.addEventListener(eventName, schedule, { passive: true });
+      windowRef.addEventListener(eventName, recordActivity, { passive: true });
     }
-    schedule();
+    for (const eventName of ["focus", "pageshow"]) {
+      windowRef.addEventListener(eventName, checkDeadline, { passive: true });
+    }
+    documentRef.addEventListener("visibilitychange", checkDeadline, { passive: true });
+    armTimer();
+
+    return () => {
+      if (timer !== null) windowRef.clearTimeout(timer);
+      for (const eventName of activityEvents) {
+        windowRef.removeEventListener(eventName, recordActivity);
+      }
+      for (const eventName of ["focus", "pageshow"]) {
+        windowRef.removeEventListener(eventName, checkDeadline);
+      }
+      documentRef.removeEventListener("visibilitychange", checkDeadline);
+    };
   }
 
   async function authFetch(input, init) {
