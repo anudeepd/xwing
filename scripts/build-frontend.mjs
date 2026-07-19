@@ -12,13 +12,17 @@ rmSync(outDir, { recursive: true, force: true });
 mkdirSync(outDir, { recursive: true });
 
 await build({
-  entryPoints: [resolve(srcDir, "app.js"), resolve(srcDir, "editor.js")],
+  entryPoints: [resolve(srcDir, "app.tsx"), resolve(srcDir, "editor.tsx")],
   bundle: true,
   minify: true,
   format: "iife",
   target: ["es2020"],
+  jsx: "automatic",
+  nodePaths: [resolve(projectRoot, "scripts/node_modules")],
   outdir: outDir,
   entryNames: "[name]",
+  assetNames: "fonts/[name]-[hash]",
+  loader: { ".woff": "file", ".woff2": "file" },
   logLevel: "info",
 });
 
@@ -28,5 +32,7 @@ await build({
   minify: true,
   external: ["/static/fonts/*"],
   outfile: resolve(outDir, "style.css"),
+  assetNames: "fonts/[name]-[hash]",
+  loader: { ".woff": "file", ".woff2": "file" },
   logLevel: "info",
 });

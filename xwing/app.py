@@ -19,6 +19,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 
 from .auth import get_user, require_perm
 from . import audit_store
@@ -68,6 +69,52 @@ APP_CSP = (
     "font-src 'self' data:"
 )
 APP_SHELL_CACHE_CONTROL = "no-cache, must-revalidate"
+DIRECTORY_MEDIA_TYPE = "application/vnd.xwing.directory+json"
+
+
+class BreadcrumbPayload(BaseModel):
+    name: str
+    path: str
+
+
+class UserPayload(BaseModel):
+    name: str
+    authenticated: bool
+
+
+class PermissionsPayload(BaseModel):
+    read: bool
+    write: bool
+    delete: bool
+
+
+class FilePayload(BaseModel):
+    name: str
+    path: str
+    kind: str
+    size: int | None
+    modified: str | None
+    editable: bool
+
+
+class UploadPayload(BaseModel):
+    chunkSize: int
+    parallelDefault: int = 4
+
+
+class XwingBootstrapV1(BaseModel):
+    version: int = 1
+    path: str
+    breadcrumbs: list[BreadcrumbPayload]
+    user: UserPayload
+    permissions: PermissionsPayload
+    files: list[FilePayload]
+    upload: UploadPayload
+
+
+def _model_dict(model: BaseModel) -> dict:
+    dump = getattr(model, "model_dump", None)
+    return dump(mode="json") if dump else model.dict()
 
 
 def timestamped_selection_zip_name(now: datetime | None = None) -> str:
@@ -146,7 +193,7 @@ def create_app(settings: Settings) -> FastAPI:
 
     app = FastAPI(lifespan=lifespan)
     # In-memory undo transactions — lost on server restart. This is intentional:
-    # the 7s undo window is short enough that restart-induced loss is acceptable,
+    # the 15s undo window is short enough that restart-induced loss is acceptable,
     # and persisting trash transactions would require a DB migration for marginal gain.
     delete_transactions: dict[str, dict] = {}
 
@@ -604,11 +651,22 @@ def create_app(settings: Settings) -> FastAPI:
             return await _zip_response(fspath, settings.root_dir)
 
         accept = request.headers.get("accept", "")
-        if request.method == "GET" and "text/html" not in accept:
+        accepted_types = {
+            item.split(";", 1)[0].strip().lower()
+            for item in accept.split(",")
+            if item.strip()
+        }
+        wants_directory_json = DIRECTORY_MEDIA_TYPE in accepted_types
+        if (
+            request.method == "GET"
+            and not wants_directory_json
+            and "text/html" not in accepted_types
+            and "*/*" not in accepted_types
+        ):
             return propfind_response(request, fspath, settings.root_dir)
 
         try:
-            entries = _visible_entries(fspath)
+            entries = await anyio.to_thread.run_sync(_visible_entries, fspath)
         except PermissionError:
             raise HTTPException(status_code=403, detail="Permission denied")
 
@@ -620,7 +678,47 @@ def create_app(settings: Settings) -> FastAPI:
             encoded = "/" + "/".join(quote(p, safe="") for p in cumulative_parts) + "/"
             breadcrumbs.append({"name": part, "path": encoded, "url_path": encoded})
 
-        return templates.TemplateResponse(
+        perms = settings.perms_for(user)
+        normalized_path = "/" + rel_path.strip("/") if rel_path.strip("/") else "/"
+        payload = XwingBootstrapV1(
+            path=normalized_path,
+            breadcrumbs=[
+                BreadcrumbPayload(name=crumb["name"], path=crumb["url_path"])
+                for crumb in breadcrumbs
+            ],
+            user=UserPayload(name=user, authenticated=user != "anonymous"),
+            permissions=PermissionsPayload(
+                read=perms.read, write=perms.write, delete=perms.delete
+            ),
+            files=[
+                FilePayload(
+                    name=entry["name"],
+                    path=(
+                        url_path
+                        + entry["url_name"]
+                        + ("/" if entry["is_dir"] else "")
+                    ),
+                    kind="directory" if entry["is_dir"] else "file",
+                    size=None if entry["is_dir"] else entry["size"],
+                    modified=datetime.fromtimestamp(
+                        entry["mtime"], tz=timezone.utc
+                    ).isoformat()
+                    if entry["mtime"]
+                    else None,
+                    editable=entry["editable"],
+                )
+                for entry in entries
+            ],
+            upload=UploadPayload(chunkSize=settings.max_chunk_bytes),
+        )
+        payload_dict = _model_dict(payload)
+
+        if wants_directory_json:
+            response = JSONResponse(payload_dict, media_type=DIRECTORY_MEDIA_TYPE)
+            response.headers["Vary"] = "Accept"
+            return response
+
+        response = templates.TemplateResponse(
             request,
             "index.html",
             {
@@ -630,11 +728,14 @@ def create_app(settings: Settings) -> FastAPI:
                 "current_url_path": url_path,
                 "breadcrumbs": breadcrumbs,
                 "user": user,
-                "perms": settings.perms_for(user),
+                "perms": perms,
                 "max_chunk_bytes": settings.max_chunk_bytes,
                 "auth_idle_timeout": ldap_idle_timeout,
+                "bootstrap": payload_dict,
             },
         )
+        response.headers["Vary"] = "Accept"
+        return response
 
     async def _handle_edit(fspath: Path, request: Request, user: str) -> Response:
         rel_path = _to_rel_path(fspath)
@@ -644,6 +745,19 @@ def create_app(settings: Settings) -> FastAPI:
         if dir_path == "//":
             dir_path = "/"
         dir_url_path = _to_url_path(fspath.parent, trailing_slash=True)
+        perms = settings.perms_for(user)
+        editor_bootstrap = {
+            "path": url_path,
+            "directory": dir_url_path,
+            "filename": fspath.name,
+            "displayPath": rel_path,
+            "extension": fspath.suffix.lstrip(".").lower(),
+            "content": content,
+            "user": {"name": user, "authenticated": user != "anonymous"},
+            "canWrite": perms.write,
+            "cspNonce": request.state.csp_style_nonce or "",
+            "authIdleTimeout": ldap_idle_timeout,
+        }
         return templates.TemplateResponse(
             request,
             "editor.html",
@@ -656,9 +770,10 @@ def create_app(settings: Settings) -> FastAPI:
                 "content": content,
                 "ext": fspath.suffix.lstrip(".").lower(),
                 "user": user,
-                "perms": settings.perms_for(user),
+                "perms": perms,
                 "csp_style_nonce": request.state.csp_style_nonce,
                 "auth_idle_timeout": ldap_idle_timeout,
+                "editor_bootstrap": editor_bootstrap,
             },
         )
 

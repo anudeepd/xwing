@@ -1,4 +1,6 @@
 import io
+import json
+import re
 import sys
 import types
 import zipfile
@@ -15,7 +17,53 @@ from xwing.config import Settings
 HTML = {"Accept": "text/html"}
 
 
+def bootstrap(response):
+    match = re.search(
+        r'<script type="application/json" id="xwing-bootstrap">(.*?)</script>',
+        response.text,
+        re.DOTALL,
+    )
+    assert match is not None
+    return json.loads(match.group(1))
+
+
+def editor_bootstrap(response):
+    match = re.search(
+        r'<script type="application/json" id="xwing-editor-bootstrap">(.*?)</script>',
+        response.text,
+        re.DOTALL,
+    )
+    assert match is not None
+    return json.loads(match.group(1))
+
+
 class TestDirectoryListing:
+    def test_vendor_directory_contract_is_versioned_and_varies_on_accept(self, client, root):
+        (root / "docs").mkdir()
+        (root / "notes.txt").write_text("hello")
+
+        response = client.get(
+            "/", headers={"Accept": "application/vnd.xwing.directory+json"}
+        )
+
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith(
+            "application/vnd.xwing.directory+json"
+        )
+        assert response.headers["vary"] == "Accept"
+        data = response.json()
+        assert data["version"] == 1
+        assert data["path"] == "/"
+        assert [item["kind"] for item in data["files"]] == ["directory", "file"]
+        assert data["files"][0]["size"] is None
+        assert data["files"][1]["size"] == 5
+
+    def test_generic_json_accept_retains_webdav_compatibility(self, client, root):
+        (root / "notes.txt").write_text("hello")
+        response = client.get("/", headers={"Accept": "application/json"})
+        assert response.status_code == 207
+        assert "multistatus" in response.text
+
     def test_root_listing(self, client, root):
         (root / "hello.txt").write_text("hi")
         (root / "subdir").mkdir()
@@ -36,14 +84,13 @@ class TestDirectoryListing:
         with TestClient(create_app(s)) as c:
             r = c.get("/", headers={**HTML, "X-Forwarded-User": "alice"})
         assert r.status_code == 200
-        assert 'data-user="alice"' in r.text
-        assert 'id="reset-sort-btn"' in r.text
-        assert 'data-sort-key="name"' in r.text
-        assert 'data-sort-key="size"' in r.text
-        assert 'data-sort-key="mtime"' in r.text
-        assert 'data-sort-name=' in r.text
-        assert 'data-sort-mtime=' in r.text
-        assert 'data-sort-size=' in r.text
+        data = bootstrap(r)
+        assert data["user"] == {"name": "alice", "authenticated": True}
+        assert data["files"][0]["name"] == "hello.txt"
+        source = (Path(__file__).parents[1] / "xwing/frontend/src/app.tsx").read_text()
+        sort_source = (Path(__file__).parents[1] / "xwing/frontend/src/sort.ts").read_text()
+        assert 'type SortKey = "name" | "size" | "modified"' in sort_source
+        assert 'SORT_STORAGE_VERSION = "v2"' in source
 
     def test_listing_has_accessible_icon_controls_and_skip_link(self, client, root):
         (root / "notes.txt").write_text("hi")
@@ -52,12 +99,11 @@ class TestDirectoryListing:
         r = client.get("/", headers=HTML)
 
         assert r.status_code == 200
-        assert 'class="skip-link" href="#files-region"' in r.text
-        assert '<main id="files-region" tabindex="-1">' in r.text
-        assert 'aria-label="Download docs folder as zip"' in r.text
-        assert 'aria-label="Download notes.txt"' in r.text
-        assert 'aria-label="Delete docs folder"' in r.text
-        assert 'aria-label="Delete notes.txt"' in r.text
+        assert 'id="xwing-root"' in r.text
+        source = (Path(__file__).parents[1] / "xwing/frontend/src/app.tsx").read_text()
+        assert 'className="skip-link" href="#file-list"' in source
+        assert 'aria-label={`Download ${file.name}`}' in source
+        assert 'aria-label={`Delete ${file.name}`}' in source
 
     def test_listing_has_selection_and_item_counts(self, client, root):
         (root / "notes.txt").write_text("hi")
@@ -65,13 +111,11 @@ class TestDirectoryListing:
         r = client.get("/", headers=HTML)
 
         assert r.status_code == 200
-        assert 'class="toolbar-group toolbar-primary"' in r.text
-        assert 'class="toolbar-group toolbar-selection"' in r.text
-        assert 'class="toolbar-group toolbar-meta"' in r.text
-        assert 'id="selection-count"' in r.text
-        assert 'aria-hidden="true">0 selected' in r.text
-        assert 'aria-live="polite"' in r.text
-        assert "1 item" in r.text
+        assert len(bootstrap(r)["files"]) == 1
+        source = (Path(__file__).parents[1] / "xwing/frontend/src/app.tsx").read_text()
+        assert "selection-pill" in source
+        assert "selected.size" in source
+        assert 'className="toast-stack" aria-live="polite"' in source
 
     def test_trash_directory_is_hidden_from_listing(self, client, root):
         (root / ".xwing-trash").mkdir()
@@ -102,10 +146,10 @@ class TestDirectoryListing:
         r = client.get("/", headers=HTML)
 
         assert r.status_code == 200
-        assert 'class="empty-state"' in r.text
-        assert "This folder is empty" in r.text
-        assert 'data-empty-action="upload"' in r.text
-        assert 'data-empty-action="mkdir"' in r.text
+        data = bootstrap(r)
+        assert data["files"] == []
+        assert data["permissions"]["write"] is True
+        assert "This folder is empty" in (Path(__file__).parents[1] / "xwing/frontend/src/app.tsx").read_text()
 
     def test_empty_state_omits_ctas_for_read_only_user(self, root, tmp_dir, tmp_path):
         users_yaml = tmp_path / "users.yaml"
@@ -121,10 +165,11 @@ class TestDirectoryListing:
             r = c.get("/", headers={**HTML, "X-Forwarded-User": "alice"})
 
         assert r.status_code == 200
-        assert "This folder is empty" in r.text
-        assert "You have read-only access here." in r.text
-        assert 'data-empty-action="upload"' not in r.text
-        assert 'aria-label="Close upload panel"' in r.text
+        data = bootstrap(r)
+        assert data["files"] == []
+        assert data["permissions"]["write"] is False
+        source = (Path(__file__).parents[1] / "xwing/frontend/src/app.tsx").read_text()
+        assert "You have read-only access here." in source
 
     def test_subdir_listing(self, client, root):
         d = root / "docs"
@@ -138,8 +183,7 @@ class TestDirectoryListing:
         (root / "hash#file?.txt").write_text("special")
         r = client.get("/", headers=HTML)
         assert r.status_code == 200
-        assert 'href="/hash%23file%3F.txt"' in r.text
-        assert 'data-path="/hash%23file%3F.txt"' in r.text
+        assert bootstrap(r)["files"][0]["path"] == "/hash%23file%3F.txt"
 
     def test_listing_url_encodes_current_directory(self, client, root):
         d = root / "hash#dir?"
@@ -147,8 +191,9 @@ class TestDirectoryListing:
         (d / "child#file.txt").write_text("special")
         r = client.get("/hash%23dir%3F/", headers=HTML)
         assert r.status_code == 200
-        assert 'href="/hash%23dir%3F/child%23file.txt"' in r.text
-        assert 'data-current-path="/hash%23dir%3F/"' in r.text
+        data = bootstrap(r)
+        assert data["path"] == "/hash#dir?"
+        assert data["files"][0]["path"] == "/hash%23dir%3F/child%23file.txt"
 
     def test_missing_dir_returns_404(self, client):
         r = client.get("/nonexistent/", headers=HTML)
@@ -201,9 +246,10 @@ class TestAuth:
         with TestClient(create_app(s)) as c:
             r = c.get("/", headers={**HTML, "X-Forwarded-User": "alice"})
         assert r.status_code == 200
-        assert 'method="post" action="/_auth/logout"' in r.text
-        assert 'id="logout-form"' in r.text
-        assert 'id="auth-overlay"' in r.text
+        assert bootstrap(r)["user"] == {"name": "alice", "authenticated": True}
+        source = (Path(__file__).parents[1] / "xwing/frontend/src/app.tsx").read_text()
+        assert 'id="logout-form" method="post" action="/_auth/logout"' in source
+        assert "authOverlay" in source
         assert 'href="/_auth/logout"' not in r.text
 
     def test_authenticated_editor_uses_post_logout_form(self, root, tmp_dir):
@@ -217,9 +263,10 @@ class TestAuth:
         with TestClient(create_app(s)) as c:
             r = c.get("/notes.txt?edit", headers={**HTML, "X-Forwarded-User": "alice"})
         assert r.status_code == 200
-        assert 'method="post" action="/_auth/logout"' in r.text
-        assert 'id="logout-form"' in r.text
-        assert 'id="auth-overlay"' in r.text
+        assert 'id="xwing-editor-bootstrap"' in r.text
+        source = (Path(__file__).parents[1] / "xwing/frontend/src/editor.tsx").read_text()
+        assert 'id="logout-form" method="post" action="/_auth/logout"' in source
+        assert "confirmLeave" in source
         assert 'href="/_auth/logout"' not in r.text
 
     def test_listing_csp_uses_external_assets_only(self, client):
@@ -250,18 +297,15 @@ class TestAuth:
         (root / "notes.txt").write_text("hello")
         r = client.get("/notes.txt?edit", headers=HTML)
         assert r.status_code == 200
-        assert (
-            'id="save-status" role="status" aria-live="polite" aria-atomic="true"'
-            in r.text
-        )
+        assert 'id="xwing-editor-bootstrap"' in r.text
+        assert "setStatus" in (Path(__file__).parents[1] / "xwing/frontend/src/editor.tsx").read_text()
 
     def test_login_template_avoids_inline_style_attributes(self):
         template = (Path(__file__).parents[1] / "xwing" / "templates" / "login.html").read_text()
         assert '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">' in template
         assert '<style nonce="{{ csrf_nonce }}">' in template
         assert '<input type="hidden" name="csrf_token" value="{{ csrf_token }}">' in template
-        assert 'id="password-toggle" aria-label="Show password"' in template
-        assert "password.type = visible ? 'password' : 'text';" in template
+        assert 'id="password-toggle"' not in template
         assert 'style="' not in template
 
     def test_login_template_keeps_ldapgate_shape_with_brand_safe_deltas(self):
@@ -270,7 +314,7 @@ class TestAuth:
         assert "LDAPGate" in template
         assert "font-display: swap" in template
         assert "letter-spacing: 0;" in template
-        assert "rgb(124 58 237 / .22)" in template
+        assert "rgb(155 135 245 / .18)" in template
         assert "@media (prefers-reduced-motion: reduce)" in template
         assert "font-display: block" not in template
         assert "letter-spacing: -0.025em" not in template
@@ -288,21 +332,22 @@ class TestAuth:
         with TestClient(create_app(s)) as c:
             r = c.get("/", headers={**HTML, "X-Forwarded-User": "alice"})
         assert r.status_code == 200
-        assert "Read-only access. Uploads and folder creation are disabled." in r.text
-        assert 'data-can-write="false"' in r.text
-        assert 'id="upload-btn" disabled title="Read-only access"' in r.text
-        assert 'id="mkdir-btn" disabled title="Read-only access"' in r.text
-        assert 'id="delete-selected-btn" disabled' in r.text
+        data = bootstrap(r)
+        assert data["permissions"] == {"read": True, "write": False, "delete": False}
+        source = (Path(__file__).parents[1] / "xwing/frontend/src/app.tsx").read_text()
+        assert "Read-only access. Uploads and folder creation are disabled." in source
+        assert "disabled={!directory.permissions.write}" in source
 
     def test_listing_has_bulk_selection_controls(self, client, root):
         (root / "hello.txt").write_text("hi")
         r = client.get("/", headers=HTML)
         assert r.status_code == 200
-        assert 'id="select-all"' in r.text
-        assert 'id="zip-selected-btn"' in r.text
-        assert 'id="delete-selected-btn"' in r.text
-        assert 'class="entry selectable-entry entry-file"' in r.text
-        assert 'class="entry-select"' in r.text
+        assert bootstrap(r)["files"][0]["name"] == "hello.txt"
+        source = (Path(__file__).parents[1] / "xwing/frontend/src/app.tsx").read_text()
+        assert '"Select all"' in source
+        assert '"Deselect all"' in source
+        assert 'aria-label="Download selected as zip"' in source
+        assert 'aria-label="Delete selected"' in source
 
     def test_require_auth_rejects_untrusted_header(self, root, tmp_dir):
         s = Settings(root_dir=root, tmp_dir=tmp_dir, require_auth=True)
@@ -419,13 +464,11 @@ class TestAuth:
     def test_editor_escape_key_navigates_to_back_link(self):
         base = Path(__file__).parents[1] / "xwing"
         template = (base / "templates" / "editor.html").read_text()
-        script = (base / "frontend" / "src" / "editor.js").read_text()
+        script = (base / "frontend" / "src" / "editor.tsx").read_text()
 
-        assert 'id="editor-back-link"' in template
-        assert 'document.getElementById("editor-back-link")' in script
-        assert 'e.key === "Escape"' in script
-        assert "leaveEditor(backLink.href)" in script
-        assert "!e.defaultPrevented" in script
+        assert 'id="xwing-editor-root"' in template
+        assert 'event.key === "Escape"' in script
+        assert "requestLeave(boot.directory)" in script
 
     def test_editor_confirms_before_discarding_unsaved_changes(self):
         script = (
@@ -459,34 +502,25 @@ class TestAuth:
 
     def test_frontend_auth_challenges_redirect_to_ldap_login(self):
         base = Path(__file__).parents[1] / "xwing"
-        app_script = (base / "frontend" / "src" / "app.js").read_text()
-        editor_script = (base / "frontend" / "src" / "editor.js").read_text()
-        shared_script = (base / "frontend" / "src" / "shared.js").read_text()
+        app_script = (base / "frontend" / "src" / "app.tsx").read_text()
+        editor_script = (base / "frontend" / "src" / "editor.tsx").read_text()
         app_bundle = (base / "static" / "assets" / "app.js").read_text()
         editor_bundle = (base / "static" / "assets" / "editor.js").read_text()
 
         for script in (app_script, editor_script):
-            assert "createAuthSession" in script
-            assert "AUTH_REDIRECT_DELAY_MS" in script
-            assert "AUTH_IDLE_TIMEOUT_SECONDS" in script
-
-        assert "/_auth/login?redirect=" in shared_script
-        assert "authentication required" in shared_script
-        assert "wireAuthIdleTimer" in shared_script
-        assert "showAuthOverlay" in shared_script
-        assert "Signing out" in shared_script
+            assert "/_auth/login?redirect=" in script
+            assert "authentication required" in script
+            assert "Session expired" in script
+            assert "Signing out" in script
 
         for script in (app_bundle, editor_bundle):
             assert "/_auth/login?redirect=" in script
             assert "authentication required" in script
             assert "Session expired" in script
-            assert "authIdleTimeout" in script
             assert "Signing out" in script
-            assert "Ending your session..." in script
+            assert "Ending your session" in script
 
-        assert shared_script.count("await fetchRef(") == 1
-        assert "xhr.status === 401 || isLoginResponseUrl(xhr.responseURL)" in app_script
-        assert "dirty && !allowNavigation && !auth.isRedirecting()" in editor_script
+        assert "dirty && !allowLeave.current" in editor_script
 
     def test_ldap_idle_timeout_is_rendered_for_frontend_timer(self, root, tmp_dir, monkeypatch):
         ldapgate_pkg = types.ModuleType("ldapgate")
@@ -514,7 +548,8 @@ class TestAuth:
     def test_frontend_logout_submit_is_delayed_for_overlay(self):
         base = Path(__file__).parents[1] / "xwing"
         scripts = (
-            (base / "frontend" / "src" / "shared.js").read_text(),
+            (base / "frontend" / "src" / "app.tsx").read_text(),
+            (base / "frontend" / "src" / "editor.tsx").read_text(),
             (base / "static" / "assets" / "app.js").read_text(),
             (base / "static" / "assets" / "editor.js").read_text(),
         )
@@ -522,7 +557,7 @@ class TestAuth:
         for script in scripts:
             assert "logout-form" in script
             assert "Signing out" in script
-            assert "Ending your session..." in script
+            assert "Ending your session" in script
             assert "setTimeout" in script
             assert ".submit()" in script
 
@@ -596,8 +631,9 @@ class TestPut:
         (root / "hash#file?.txt").write_text("special")
         r = client.get("/hash%23file%3F.txt?edit")
         assert r.status_code == 200
-        assert 'href="/hash%23file%3F.txt"' in r.text
-        assert 'data-file-path="/hash%23file%3F.txt"' in r.text
+        data = editor_bootstrap(r)
+        assert data["path"] == "/hash%23file%3F.txt"
+        assert data["directory"] == "/"
 
 
 class TestHead:

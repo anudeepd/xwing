@@ -151,6 +151,9 @@ class Settings(BaseModel):
 
     @model_validator(mode="after")
     def _init(self) -> "Settings":
+        # Keep path comparisons stable even when callers (including the CLI)
+        # provide a relative serving root.
+        self.root_dir = self.root_dir.expanduser().resolve()
         if self.users_config is not None:
             self._user_config = UserConfig(self.users_config)
             self._config_mtime = self.users_config.stat().st_mtime

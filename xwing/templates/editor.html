@@ -1,50 +1,17 @@
-<!DOCTYPE html>
-<html lang="en">
+<!doctype html>
+<html lang="en" data-theme="dark">
 <head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <meta name="theme-color" content="#080b12"/>
   <title>{{ filename }} — X-wing</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg"/>
   <link rel="stylesheet" href="/static/assets/style.css"/>
 </head>
-<body data-file-path="{{ file_url_path }}"
-      data-file-ext="{{ ext }}"
-      data-can-write="{{ 'true' if perms.write else 'false' }}"
-      data-auth-idle-timeout="{{ auth_idle_timeout }}"
-      data-csp-style-nonce="{{ csp_style_nonce or '' }}">
-<div class="auth-overlay" id="auth-overlay" hidden>
-  <div class="auth-overlay-card" role="status" aria-live="polite">
-    <div class="auth-pulse" aria-hidden="true"><span></span></div>
-    <div>
-      <h2 id="auth-overlay-title">Session expired</h2>
-      <p id="auth-overlay-message">Your session has ended. Redirecting to sign in...</p>
-    </div>
-  </div>
-</div>
-<div class="editor-shell">
-  <div class="editor-toolbar">
-    <a class="btn" id="editor-back-link" href="{{ dir_url_path }}">← back</a>
-    <span class="filename">{{ filename }}</span>
-    <span class="filepath">{{ file_path }}</span>
-    <span class="save-status" id="save-status" role="status" aria-live="polite" aria-atomic="true"></span>
-    <a class="btn" href="{{ file_url_path }}" download title="Download raw file">download</a>
-    <button class="btn btn-primary" id="save-btn" {% if not perms.write %}disabled title="Read-only access"{% endif %}>Save</button>
-    {% if user != "anonymous" %}
-    <form class="logout-form" method="post" action="/_auth/logout" id="logout-form">
-      <button class="logout-btn" type="submit">logout</button>
-    </form>
-    {% endif %}
-  </div>
-  {% if not perms.write %}
-  <div class="readonly-notice editor-readonly" role="status">
-    Read-only access. Saving changes is disabled.
-  </div>
-  {% endif %}
-  <div class="editor-wrap" id="editor-wrap"></div>
-</div>
-
-<textarea id="editor-content" hidden>{{ content }}</textarea>
-<script src="/static/codemirror-bundle.js"></script>
-<script src="/static/assets/editor.js"></script>
+<body data-file-path="{{ file_url_path }}" data-file-ext="{{ ext }}" data-can-write="{{ 'true' if perms.write else 'false' }}" data-auth-idle-timeout="{{ auth_idle_timeout }}" data-csp-style-nonce="{{ csp_style_nonce or '' }}">
+  <div id="xwing-editor-root"><div class="boot-loading" role="status">Opening editor…</div></div>
+  <script type="application/json" id="xwing-editor-bootstrap">{{ editor_bootstrap | tojson }}</script>
+  <script src="/static/codemirror-bundle.js"></script>
+  <script src="/static/assets/editor.js" defer></script>
 </body>
 </html>

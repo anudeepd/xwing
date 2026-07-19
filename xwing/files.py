@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from urllib.parse import quote
 
@@ -51,14 +52,19 @@ def list_dir(path: Path) -> list[dict]:
     """
     try:
         entries = []
-        for child in sorted(
-            path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower())
-        ):
-            if is_ignored_system_file(child):
+        # DirEntry caches metadata supplied by the directory scan. Keeping the
+        # complete snapshot in this synchronous function also makes it safe to
+        # run the whole operation in a worker thread from the request handler.
+        with os.scandir(path) as scan:
+            children = list(scan)
+        children.sort(key=lambda entry: (not entry.is_dir(), entry.name.lower()))
+        for child in children:
+            if is_ignored_system_file(child.name):
                 continue
             try:
                 stat = child.stat()
                 is_dir = child.is_dir()
+                child_path = Path(child.path)
                 entries.append(
                     {
                         "name": child.name,
@@ -68,8 +74,7 @@ def list_dir(path: Path) -> list[dict]:
                         "size_human": "" if is_dir else human_size(stat.st_size),
                         "mtime": stat.st_mtime,
                         "editable": (not is_dir)
-                        and stat.st_size <= _EDITABLE_MAX
-                        and is_editable(child),
+                        and is_editable(child_path, size=stat.st_size),
                     }
                 )
             except PermissionError:
@@ -78,7 +83,7 @@ def list_dir(path: Path) -> list[dict]:
                     {
                         "name": child.name,
                         "url_name": quote(child.name, safe=""),
-                        "is_dir": child.is_dir() if child.exists() else False,
+                        "is_dir": child.is_dir(),
                         "size": 0,
                         "size_human": "",
                         "mtime": 0,
@@ -128,11 +133,11 @@ _EDITABLE_EXTS = {
 _EDITABLE_MAX = 2 * 1024 * 1024  # 2 MB
 
 
-def is_editable(path: Path) -> bool:
+def is_editable(path: Path, *, size: int | None = None) -> bool:
     """True if the file should be opened in the browser editor."""
     if path.name == ".env" or path.name.startswith(".env."):
         return False
-    if path.stat().st_size > _EDITABLE_MAX:
+    if (path.stat().st_size if size is None else size) > _EDITABLE_MAX:
         return False
     if path.suffix.lower() in _EDITABLE_EXTS:
         return True

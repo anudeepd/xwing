@@ -6,7 +6,7 @@ import pytest
 
 from xwing.app import create_app
 from xwing.config import Settings, DEFAULT_SESSION_TTL_SECONDS
-from xwing.upload import _SESSION_LOCKS, _cleanup_stale_async
+from xwing.upload import _CHUNK_LOCKS, _SESSION_LOCKS, _chunk_lock, _cleanup_stale_async
 from fastapi.testclient import TestClient
 
 
@@ -140,6 +140,13 @@ class TestUploadInit:
 
 
 class TestUploadLifecycle:
+    def test_chunk_lock_is_scoped_to_session_and_index(self):
+        same = _chunk_lock("a" * 32, 2)
+        assert _chunk_lock("a" * 32, 2) is same
+        assert _chunk_lock("a" * 32, 3) is not same
+        assert _chunk_lock("b" * 32, 2) is not same
+        _CHUNK_LOCKS.clear()
+
     def _init(self, client, filename="out.txt", total_chunks=2):
         r = client.post(
             "/_upload/init",

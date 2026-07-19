@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 _SESSION_FILE = "session.json"
 _SESSION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _SESSION_LOCKS: dict[str, asyncio.Lock] = {}
+_CHUNK_LOCKS: dict[tuple[str, int], asyncio.Lock] = {}
 _SESSION_CACHE: dict[str, dict] = {}
 
 
@@ -31,6 +32,15 @@ def _session_lock(session_id: str) -> asyncio.Lock:
     if lock is None:
         lock = asyncio.Lock()
         _SESSION_LOCKS[session_id] = lock
+    return lock
+
+
+def _chunk_lock(session_id: str, chunk_index: int) -> asyncio.Lock:
+    key = (session_id, chunk_index)
+    lock = _CHUNK_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _CHUNK_LOCKS[key] = lock
     return lock
 
 
@@ -98,6 +108,8 @@ def _delete_direct_temp(session: dict | None, root: Path) -> None:
 
 def _drop_session_lock(session_id: str) -> None:
     _SESSION_LOCKS.pop(session_id, None)
+    for key in [key for key in _CHUNK_LOCKS if key[0] == session_id]:
+        _CHUNK_LOCKS.pop(key, None)
     _SESSION_CACHE.pop(session_id, None)
 
 
@@ -285,6 +297,15 @@ def create_upload_router(settings: Settings) -> APIRouter:
         require_perm(user, "write", settings)
         _validate_session_id(session_id)
 
+        # State machine: validate -> stream -> validate size -> commit metadata.
+        # One lock spans the whole attempt for this chunk so concurrent retries
+        # cannot overwrite the same direct-file offset or race metadata commits.
+        async with _chunk_lock(session_id, chunk_index):
+            return await _write_chunk(session_id, chunk_index, request, user)
+
+    async def _write_chunk(
+        session_id: str, chunk_index: int, request: Request, user: str
+    ) -> Response:
         session_dir = settings.tmp_dir / session_id  # type: ignore[operator]
         chunk_path = session_dir / f"{chunk_index}.part"
         pending_path = session_dir / f".{chunk_index}.{uuid.uuid4().hex}.part.tmp"
@@ -293,9 +314,7 @@ def create_upload_router(settings: Settings) -> APIRouter:
         direct_chunk_size = None
         async with _session_lock(session_id):
             session = await _load_session(settings.tmp_dir, session_id)  # type: ignore[union-attr]
-            _validate_session_owner_and_chunk(
-                session, user=user, chunk_index=chunk_index
-            )
+            _validate_session_owner_and_chunk(session, user=user, chunk_index=chunk_index)
             assert session is not None
             if "chunk_size" in session and "temp_file" in session:
                 direct_chunk_size = int(session["chunk_size"])
