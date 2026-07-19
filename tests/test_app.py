@@ -305,12 +305,23 @@ class TestAuth:
         assert '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">' in template
         assert '<style nonce="{{ csrf_nonce }}">' in template
         assert '<input type="hidden" name="csrf_token" value="{{ csrf_token }}">' in template
+        assert "xwing-card-in" in template
+        assert "xwing-error-up" in template
+        assert "xwing:login:username" in template
+        assert "Signing in" in template
+        assert "security-lock" in template
+        assert "max-width: 380px;" in template
+        assert "min-height: 40px;" in template
+        assert "line-height: 1.25rem;" in template
+        assert ".submit-label { min-width: 4.75rem; }" in template
+        assert "appearance: none;" in template
+        assert "-webkit-appearance: none;" in template
         assert 'id="password-toggle"' not in template
         assert 'style="' not in template
 
     def test_login_template_keeps_ldapgate_shape_with_brand_safe_deltas(self):
         template = (Path(__file__).parents[1] / "xwing" / "templates" / "login.html").read_text()
-        assert "Powered by" in template
+        assert "Secured by" in template
         assert "LDAPGate" in template
         assert "font-display: swap" in template
         assert "letter-spacing: 0;" in template

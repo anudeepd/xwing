@@ -27,6 +27,12 @@
       -webkit-font-smoothing: antialiased;
     }
 
+    .login-shell {
+      position: relative;
+      width: 100%;
+      max-width: 380px;
+    }
+
     .card {
       background: #0d111b;
       border: 1px solid #232c3d;
@@ -35,6 +41,7 @@
       padding: 2.5rem 2rem;
       width: 100%;
       max-width: 380px;
+      animation: xwing-card-in 0.45s cubic-bezier(.16, 1, .3, 1) both;
     }
 
     /* ── Logo ── */
@@ -56,6 +63,14 @@
     .brand-logo { flex-shrink: 0; }
 
     /* ── Error ── */
+    .feedback-slot {
+      position: absolute;
+      inset-inline: 0;
+      top: -3.6rem;
+      min-height: 2.8rem;
+      pointer-events: none;
+    }
+
     .error {
       background: #1c0505;
       border: 1px solid #7f1d1d;
@@ -63,13 +78,14 @@
       border-radius: 8px;
       padding: 0.7rem 0.875rem;
       font-size: 0.8125rem;
-      margin-bottom: 1.5rem;
       display: flex;
-      align-items: flex-start;
+      align-items: center;
       gap: 0.5rem;
+      box-shadow: 0 14px 30px -18px rgb(0 0 0 / .85);
+      animation: xwing-error-up 0.4s cubic-bezier(.16, 1, .3, 1) 0.08s both;
     }
 
-    .error-icon { flex-shrink: 0; margin-top: 1px; }
+    .error-icon { flex-shrink: 0; }
 
     /* ── Fields ── */
     .field { margin-bottom: 1.125rem; }
@@ -92,10 +108,13 @@
       color: #e7eaf0;
       font-family: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       font-size: 0.875rem;
+      line-height: 1.25rem;
+      min-height: 40px;
       padding: 0.625rem 0.75rem;
       border-radius: 8px;
       outline: none;
       transition: border-color 0.15s, box-shadow 0.15s;
+      appearance: none;
       -webkit-appearance: none;
     }
 
@@ -119,7 +138,10 @@
       font-family: inherit;
       font-size: 0.875rem;
       font-weight: 600;
+      line-height: 1.25rem;
+      min-height: 40px;
       padding: 0.65rem 1rem;
+      border: none;
       border-radius: 8px;
       cursor: pointer;
       transition: background 0.15s, transform 0.1s;
@@ -129,7 +151,7 @@
       gap: 0.5rem;
     }
 
-    button[type="submit"]:hover:not(:disabled) { background: #826ee1; border-color: #a08df2; }
+    button[type="submit"]:hover:not(:disabled) { background: #826ee1; }
     button[type="submit"]:active:not(:disabled) { transform: scale(0.99); }
 
     button[type="submit"]:focus-visible {
@@ -150,22 +172,59 @@
     }
 
     button[type="submit"].loading .spinner { display: block; }
+    .submit-label { min-width: 4.75rem; }
     @keyframes spin { to { transform: rotate(360deg); } }
+
+    @keyframes xwing-card-in {
+      from {
+        opacity: 0;
+        transform: translateY(14px) scale(.985);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+      }
+    }
+
+    @keyframes xwing-error-up {
+      from {
+        opacity: 0;
+        transform: translateY(12px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
     @media (prefers-reduced-motion: reduce) {
-      *,
-      *::before,
-      *::after {
-        animation-duration: 0.01ms !important;
-        animation-iteration-count: 1 !important;
-        transition-duration: 0.01ms !important;
+      .card,
+      .error,
+      .spinner {
+        animation: none;
+      }
+
+      button[type="submit"] {
+        transition: none;
       }
     }
     .powered-by {
       margin-top: 1.5rem;
-      text-align: center;
       font-size: 0.72rem;
+      line-height: 1;
       color: #606b7f;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.375rem;
     }
+    .security-lock {
+      width: 14px;
+      height: 14px;
+      flex-shrink: 0;
+      color: currentColor;
+    }
+    .powered-by span { white-space: nowrap; }
     .powered-by a {
       color: #8b95a8;
       text-decoration: none;
@@ -174,70 +233,116 @@
   </style>
 </head>
 <body>
-  <div class="card">
-    <div class="logo-wrap">
-      <svg class="brand-logo" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" width="36" height="36">
-        <rect x="6" y="6" width="188" height="188" rx="36" fill="#f5f3ff"/>
-        <polygon points="71,78 23,48 15,100 23,152 71,122"
-                 fill="none" stroke="#7c3aed" stroke-width="3" stroke-linejoin="round"/>
-        <polyline points="71,78 30,100 71,122"
-                  fill="none" stroke="#8b5cf6" stroke-width="1.5"
-                  stroke-linecap="round" stroke-linejoin="round"/>
-        <polygon points="129,78 177,48 185,100 177,152 129,122"
-                 fill="none" stroke="#7c3aed" stroke-width="3" stroke-linejoin="round"/>
-        <polyline points="129,78 170,100 129,122"
-                  fill="none" stroke="#8b5cf6" stroke-width="1.5"
-                  stroke-linecap="round" stroke-linejoin="round"/>
-        <line x1="71" y1="78"  x2="86" y2="86"  stroke="#7c3aed" stroke-width="2.5" stroke-linecap="round"/>
-        <line x1="71" y1="122" x2="86" y2="114" stroke="#7c3aed" stroke-width="2.5" stroke-linecap="round"/>
-        <line x1="129" y1="78"  x2="114" y2="86"  stroke="#7c3aed" stroke-width="2.5" stroke-linecap="round"/>
-        <line x1="129" y1="122" x2="114" y2="114" stroke="#7c3aed" stroke-width="2.5" stroke-linecap="round"/>
-        <circle cx="100" cy="100" r="20" fill="none" stroke="#7c3aed" stroke-width="3.5"/>
-        <circle cx="100" cy="100" r="13" fill="none" stroke="#8b5cf6" stroke-width="2.5"/>
-        <circle cx="100" cy="100" r="4.5" fill="#a78bfa"/>
-      </svg>
-      <span class="logo-text">X-wing</span>
-    </div>
-
+  <div class="login-shell">
     {% if error %}
-    <div class="error">
-      <svg class="error-icon" width="14" height="14" viewBox="0 0 15 15" fill="none">
-        <path d="M7.5 1a6.5 6.5 0 1 0 0 13A6.5 6.5 0 0 0 7.5 1ZM7 4.5a.5.5 0 0 1 1 0v4a.5.5 0 0 1-1 0v-4Zm.5 6.5a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5Z" fill="currentColor"/>
-      </svg>
-      {{ error }}
+    <div class="feedback-slot" aria-live="polite">
+      <div class="error">
+        <svg class="error-icon" width="14" height="14" viewBox="0 0 15 15" fill="none">
+          <path d="M7.5 1a6.5 6.5 0 1 0 0 13A6.5 6.5 0 0 0 7.5 1ZM7 4.5a.5.5 0 0 1 1 0v4a.5.5 0 0 1-1 0v-4Zm.5 6.5a.75.75 0 1 1 0-1.5.75.75 0 0 1 0 1.5Z" fill="currentColor"/>
+        </svg>
+        {{ error }}
+      </div>
     </div>
     {% endif %}
 
-    <form method="POST" action="{{ login_path }}" id="login-form">
-      {% if redirect %}<input type="hidden" name="redirect" value="{{ redirect }}">{% endif %}
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-
-      <div class="field">
-        <label for="username">Username</label>
-        <input type="text" id="username" name="username" autocomplete="username" autofocus required>
+    <div class="card">
+      <div class="logo-wrap">
+        <svg class="brand-logo" viewBox="0 0 200 200" xmlns="http://www.w3.org/2000/svg" width="36" height="36">
+          <rect x="6" y="6" width="188" height="188" rx="36" fill="#f5f3ff"/>
+          <polygon points="71,78 23,48 15,100 23,152 71,122"
+                   fill="none" stroke="#7c3aed" stroke-width="3" stroke-linejoin="round"/>
+          <polyline points="71,78 30,100 71,122"
+                    fill="none" stroke="#8b5cf6" stroke-width="1.5"
+                    stroke-linecap="round" stroke-linejoin="round"/>
+          <polygon points="129,78 177,48 185,100 177,152 129,122"
+                   fill="none" stroke="#7c3aed" stroke-width="3" stroke-linejoin="round"/>
+          <polyline points="129,78 170,100 129,122"
+                    fill="none" stroke="#8b5cf6" stroke-width="1.5"
+                    stroke-linecap="round" stroke-linejoin="round"/>
+          <line x1="71" y1="78"  x2="86" y2="86"  stroke="#7c3aed" stroke-width="2.5" stroke-linecap="round"/>
+          <line x1="71" y1="122" x2="86" y2="114" stroke="#7c3aed" stroke-width="2.5" stroke-linecap="round"/>
+          <line x1="129" y1="78"  x2="114" y2="86"  stroke="#7c3aed" stroke-width="2.5" stroke-linecap="round"/>
+          <line x1="129" y1="122" x2="114" y2="114" stroke="#7c3aed" stroke-width="2.5" stroke-linecap="round"/>
+          <circle cx="100" cy="100" r="20" fill="none" stroke="#7c3aed" stroke-width="3.5"/>
+          <circle cx="100" cy="100" r="13" fill="none" stroke="#8b5cf6" stroke-width="2.5"/>
+          <circle cx="100" cy="100" r="4.5" fill="#a78bfa"/>
+        </svg>
+        <span class="logo-text">X-wing</span>
       </div>
 
-      <div class="field">
-        <label for="password">Password</label>
-        <input type="password" id="password" name="password" autocomplete="current-password" required>
-      </div>
+      <form method="POST" action="{{ login_path }}" id="login-form">
+        {% if redirect %}<input type="hidden" name="redirect" value="{{ redirect }}">{% endif %}
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
-      <div class="submit-wrap">
-        <button type="submit" id="submit-btn">
-          <span class="spinner"></span>
-          Sign in
-        </button>
-      </div>
-    </form>
+        <div class="field">
+          <label for="username">Username</label>
+          <input type="text" id="username" name="username" autocomplete="username" autofocus required>
+        </div>
 
-    <div class="powered-by">Powered by <a href="https://github.com/anudeepd/ldapgate" tabindex="-1">LDAPGate</a></div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input type="password" id="password" name="password" autocomplete="current-password" required>
+        </div>
+
+        <div class="submit-wrap">
+          <button type="submit" id="submit-btn">
+            <span class="spinner" aria-hidden="true"></span>
+            <span class="submit-label">Sign in</span>
+          </button>
+        </div>
+      </form>
+
+      <div class="powered-by">
+        <svg class="security-lock" aria-hidden="true" width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="4.5" y="8" width="11" height="8" rx="2"/>
+          <path d="M7 8V5.75a3 3 0 0 1 6 0V8"/>
+        </svg>
+        <span>Secured by <a href="https://github.com/anudeepd/ldapgate" tabindex="-1">LDAPGate</a></span>
+      </div>
+    </div>
   </div>
 
   <script nonce="{{ csrf_nonce }}">
-    document.getElementById('login-form').addEventListener('submit', function() {
+    const loginForm = document.getElementById('login-form');
+    const username = document.getElementById('username');
+    const password = document.getElementById('password');
+    const storageKey = 'xwing:login:username';
+    const hasError = {{ 'true' if error else 'false' }};
+    let loginSubmitting = false;
+
+    if (hasError && username && !username.value) {
+      username.value = sessionStorage.getItem(storageKey) || '';
+    }
+
+    if (password) {
+      password.value = '';
+    }
+
+    if (username) {
+      username.addEventListener('input', function() {
+        sessionStorage.setItem(storageKey, username.value);
+      });
+    }
+
+    loginForm.addEventListener('submit', function(event) {
+      if (loginSubmitting) return;
+
+      event.preventDefault();
       const btn = document.getElementById('submit-btn');
+      const label = btn.querySelector('.submit-label');
+
+      sessionStorage.setItem(storageKey, username.value);
+      label.textContent = 'Signing in';
       btn.disabled = true;
+      btn.setAttribute('aria-busy', 'true');
       btn.classList.add('loading');
+
+      loginSubmitting = true;
+      requestAnimationFrame(function() {
+        requestAnimationFrame(function() {
+          HTMLFormElement.prototype.submit.call(loginForm);
+        });
+      });
     });
   </script>
 </body>
