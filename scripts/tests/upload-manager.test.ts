@@ -8,6 +8,14 @@ async function settle(): Promise<void> {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("UploadManager global scheduler", () => {
+  it("queues uploads when randomUUID is unavailable on HTTP", () => {
+    vi.stubGlobal("crypto", { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) });
+    const manager = new UploadManager(vi.fn(() => new Promise(() => {})) as typeof fetch, vi.fn(), vi.fn());
+
+    expect(() => manager.add([new File(["abc"], "http.txt")], "/", 3)).not.toThrow();
+    expect(manager.getSnapshot().items[0]).toMatchObject({ name: "http.txt", status: "queued" });
+  });
+
   it("preserves browser receivers for the native upload primitives", async () => {
     const fetcher = vi.fn(function (this: unknown, input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
       if (this !== globalThis) throw new TypeError("Illegal invocation");

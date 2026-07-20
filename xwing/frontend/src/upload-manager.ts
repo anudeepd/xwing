@@ -41,6 +41,15 @@ export interface UploadSnapshot {
 
 type Fetch = typeof fetch;
 
+function uploadId(): string {
+  const timestamp = Date.now().toString(36);
+  const randomUUID = globalThis.crypto?.randomUUID;
+  if (typeof randomUUID === "function") {
+    return `${timestamp}-${randomUUID.call(globalThis.crypto)}`;
+  }
+  return `${timestamp}-${Math.random().toString(36).slice(2)}`;
+}
+
 export class UploadManager {
   private readonly items = new Map<string, InternalItem>();
   private readonly listeners = new Set<() => void>();
@@ -72,7 +81,7 @@ export class UploadManager {
   add(files: Iterable<File>, destination: string, chunkSize: number): void {
     for (const file of files) {
       const relativePath = file.webkitRelativePath || file.name;
-      const id = `${Date.now().toString(36)}-${crypto.randomUUID()}`;
+      const id = uploadId();
       this.items.set(id, {
         id,
         name: file.name,
