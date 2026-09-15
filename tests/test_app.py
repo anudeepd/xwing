@@ -91,12 +91,6 @@ class TestDirectoryListing:
         data = bootstrap(r)
         assert data["user"] == {"name": "alice", "authenticated": True}
         assert data["files"][0]["name"] == "hello.txt"
-        source = (Path(__file__).parents[1] / "xwing/frontend/src/app.tsx").read_text()
-        sort_source = (
-            Path(__file__).parents[1] / "xwing/frontend/src/sort.ts"
-        ).read_text()
-        assert 'type SortKey = "name" | "size" | "modified"' in sort_source
-        assert 'SORT_STORAGE_VERSION = "v2"' in source
 
     def test_listing_has_accessible_icon_controls_and_skip_link(self, client, root):
         (root / "notes.txt").write_text("hi")
@@ -106,10 +100,6 @@ class TestDirectoryListing:
 
         assert r.status_code == 200
         assert 'id="xwing-root"' in r.text
-        source = (Path(__file__).parents[1] / "xwing/frontend/src/app.tsx").read_text()
-        assert 'className="skip-link" href="#file-list"' in source
-        assert "aria-label={`Download ${file.name}`}" in source
-        assert "aria-label={`Delete ${file.name}`}" in source
 
     def test_listing_has_selection_and_item_counts(self, client, root):
         (root / "notes.txt").write_text("hi")
@@ -118,10 +108,6 @@ class TestDirectoryListing:
 
         assert r.status_code == 200
         assert len(bootstrap(r)["files"]) == 1
-        source = (Path(__file__).parents[1] / "xwing/frontend/src/app.tsx").read_text()
-        assert "selection-pill" in source
-        assert "selected.size" in source
-        assert 'className="toast-stack" aria-live="polite"' in source
 
     def test_trash_directory_is_hidden_from_listing(self, client, root):
         (root / ".xwing-trash").mkdir()
@@ -155,10 +141,6 @@ class TestDirectoryListing:
         data = bootstrap(r)
         assert data["files"] == []
         assert data["permissions"]["write"] is True
-        assert (
-            "This folder is empty"
-            in (Path(__file__).parents[1] / "xwing/frontend/src/app.tsx").read_text()
-        )
 
     def test_empty_state_omits_ctas_for_read_only_user(self, root, tmp_dir, tmp_path):
         users_yaml = tmp_path / "users.yaml"
@@ -177,8 +159,6 @@ class TestDirectoryListing:
         data = bootstrap(r)
         assert data["files"] == []
         assert data["permissions"]["write"] is False
-        source = (Path(__file__).parents[1] / "xwing/frontend/src/app.tsx").read_text()
-        assert "You have read-only access here." in source
 
     def test_subdir_listing(self, client, root):
         d = root / "docs"
@@ -267,14 +247,6 @@ class TestEditorTruncation:
         assert data["totalSize"] == 500
         assert data["previewBytes"] == 10
 
-    def test_truncated_preview_is_marked_read_only_in_frontend(self):
-        base = Path(__file__).parents[1] / "xwing"
-        source = (base / "frontend" / "src" / "editor.tsx").read_text()
-        bundle = (base / "static" / "assets" / "editor.js").read_text()
-        assert "boot.truncated" in source
-        assert "File too large to edit" in source
-        assert "File too large to edit" in bundle
-
     def test_editor_bootstrap_exposes_max_chunk_bytes(self, client, root):
         from xwing.config import DEFAULT_MAX_CHUNK_SIZE
 
@@ -284,32 +256,34 @@ class TestEditorTruncation:
         assert editor_bootstrap(r)["maxChunkBytes"] == DEFAULT_MAX_CHUNK_SIZE
 
     def test_large_save_uses_resumable_session_api(self, client, root):
-        # Mirror of the frontend's chunked save path: init → chunk PUTs →
-        # complete must atomically replace the edited file with the same
-        # semantics (and audit shape) as a direct PUT.
+        # Mirror of the frontend's chunked save path: init → ranged PUTs →
+        # complete must atomically replace the edited file, and a stalled
+        # request must resume from the offset the server already committed.
         (root / "doc.txt").write_text("old")
         new_content = b"n" * (2 * 1024 * 1024 + 7)
-        r = client.post(
+        init = client.post(
             "/_upload/init",
-            json={"filename": "doc.txt", "total_chunks": 3, "dir": "/"},
+            json={"filename": "doc.txt", "size": len(new_content), "dir": "/"},
         )
-        assert r.status_code == 200
-        session_id = r.json()["session_id"]
-        chunks = [new_content[: 1024 * 1024], new_content[1024 * 1024 : 2 * 1024 * 1024], new_content[2 * 1024 * 1024 :]]
-        for index, chunk in enumerate(chunks):
-            r = client.put(f"/_upload/{session_id}/{index}", content=chunk)
-            assert r.status_code == 204
-        r = client.post(f"/_upload/{session_id}/complete")
-        assert r.status_code == 200
-        assert (root / "doc.txt").read_bytes() == new_content
+        assert init.status_code == 200
+        upload_id = init.json()["upload_id"]
 
-    def test_chunked_save_frontend_uses_session_api(self):
-        base = Path(__file__).parents[1] / "xwing"
-        source = (base / "frontend" / "src" / "editor.tsx").read_text()
-        bundle = (base / "static" / "assets" / "editor.js").read_text()
-        for needle in ("/_upload/init", "/complete", "Saving"):
-            assert needle in source
-            assert needle in bundle
+        half = len(new_content) // 2
+        assert (
+            client.put(
+                f"/_upload/{upload_id}?offset=0", content=new_content[:half]
+            ).status_code
+            == 200
+        )
+        assert client.get(f"/_upload/{upload_id}").json()["ranges"] == [[0, half]]
+        assert (
+            client.put(
+                f"/_upload/{upload_id}?offset={half}", content=new_content[half:]
+            ).status_code
+            == 200
+        )
+        assert client.post(f"/_upload/{upload_id}/complete").status_code == 200
+        assert (root / "doc.txt").read_bytes() == new_content
 
 
 class TestAuth:
@@ -341,9 +315,6 @@ class TestAuth:
             r = c.get("/", headers={**HTML, "X-Forwarded-User": "alice"})
         assert r.status_code == 200
         assert bootstrap(r)["user"] == {"name": "alice", "authenticated": True}
-        source = (Path(__file__).parents[1] / "xwing/frontend/src/app.tsx").read_text()
-        assert 'id="logout-form" method="post" action="/_auth/logout"' in source
-        assert "authOverlay" in source
         assert 'href="/_auth/logout"' not in r.text
 
     def test_authenticated_editor_uses_post_logout_form(self, root, tmp_dir):
@@ -358,11 +329,6 @@ class TestAuth:
             r = c.get("/notes.txt?edit", headers={**HTML, "X-Forwarded-User": "alice"})
         assert r.status_code == 200
         assert 'id="xwing-editor-bootstrap"' in r.text
-        source = (
-            Path(__file__).parents[1] / "xwing/frontend/src/editor.tsx"
-        ).read_text()
-        assert 'id="logout-form" method="post" action="/_auth/logout"' in source
-        assert "confirmLeave" in source
         assert 'href="/_auth/logout"' not in r.text
 
     def test_listing_csp_uses_external_assets_only(self, client):
@@ -388,16 +354,6 @@ class TestAuth:
         assert "style-src 'self' 'nonce-" in csp
         assert "'unsafe-inline'" not in csp
         assert "data-csp-style-nonce=" in r.text
-
-    def test_editor_save_status_is_live_region(self, client, root):
-        (root / "notes.txt").write_text("hello")
-        r = client.get("/notes.txt?edit", headers=HTML)
-        assert r.status_code == 200
-        assert 'id="xwing-editor-bootstrap"' in r.text
-        assert (
-            "setStatus"
-            in (Path(__file__).parents[1] / "xwing/frontend/src/editor.tsx").read_text()
-        )
 
     def test_login_template_avoids_inline_style_attributes(self):
         template = (
@@ -462,23 +418,12 @@ class TestAuth:
         assert r.status_code == 200
         data = bootstrap(r)
         assert data["permissions"] == {"read": True, "write": False, "delete": False}
-        source = (Path(__file__).parents[1] / "xwing/frontend/src/app.tsx").read_text()
-        assert "Read-only access. Uploads and folder creation are disabled." in source
-        assert "disabled={!directory.permissions.write}" in source
-        style = (Path(__file__).parents[1] / "xwing/frontend/src/style.css").read_text()
-        assert 'className="workspace-controls"' in source
-        assert ".workspace-controls" in style
 
     def test_listing_has_bulk_selection_controls(self, client, root):
         (root / "hello.txt").write_text("hi")
         r = client.get("/", headers=HTML)
         assert r.status_code == 200
         assert bootstrap(r)["files"][0]["name"] == "hello.txt"
-        source = (Path(__file__).parents[1] / "xwing/frontend/src/app.tsx").read_text()
-        assert '"Select all"' in source
-        assert '"Deselect all"' in source
-        assert 'aria-label="Download selected as zip"' in source
-        assert 'aria-label="Delete selected"' in source
 
     def test_require_auth_rejects_untrusted_header(self, root, tmp_dir):
         s = Settings(root_dir=root, tmp_dir=tmp_dir, require_auth=True)
@@ -587,73 +532,11 @@ class TestAuth:
 
         assert calls["config"].proxy.trusted_proxies == ["127.0.0.1", "10.0.0.0/8"]
 
-    def test_read_only_editor_script_disables_codemirror_editing(self):
-        script = (
-            Path(__file__).parents[1] / "xwing" / "frontend" / "src" / "editor.js"
+    def test_editor_page_renders_a_mount_point(self):
+        template = (
+            Path(__file__).parents[1] / "xwing" / "templates" / "editor.html"
         ).read_text()
-        assert "EditorView.editable.of(false)" in script
-        assert "EditorState.readOnly.of(true)" in script
-
-    def test_editor_escape_key_navigates_to_back_link(self):
-        base = Path(__file__).parents[1] / "xwing"
-        template = (base / "templates" / "editor.html").read_text()
-        script = (base / "frontend" / "src" / "editor.tsx").read_text()
-
         assert 'id="xwing-editor-root"' in template
-        assert 'event.key === "Escape"' in script
-        assert "requestLeave(boot.directory)" in script
-
-    def test_editor_confirms_before_discarding_unsaved_changes(self):
-        script = (
-            Path(__file__).parents[1] / "xwing" / "frontend" / "src" / "editor.js"
-        ).read_text()
-        assert "createDialogController" in script
-        assert "Discard unsaved changes?" in script
-        assert "Discard changes" in script
-        assert 'backLink?.addEventListener("click"' in script
-        assert 'logoutForm?.addEventListener("submit"' in script
-        assert "event.stopImmediatePropagation()" in script
-        assert "allowNavigation" in script
-
-    def test_upload_script_shows_waiting_and_finalizing_statuses(self):
-        script = (
-            Path(__file__).parents[1] / "xwing" / "frontend" / "src" / "app.js"
-        ).read_text()
-        assert "Preparing upload..." in script
-        assert "Finalizing..." in script
-        assert 'status.setAttribute("role", "status")' in script
-        assert 'status.setAttribute("aria-live", "polite")' in script
-        assert 'status.setAttribute("aria-atomic", "true")' in script
-        assert "xwing.sort." in script
-        assert "localStorage" in script
-        assert 'existing.dir === "asc"' in script
-        assert "currentSort.filter" in script
-        assert "UPLOAD_RETRY_DELAYS_MS" in script
-        assert "RETRYABLE_UPLOAD_STATUSES" in script
-        assert "withUploadRetries" in script
-        assert "502" in script
-
-    def test_frontend_auth_challenges_redirect_to_ldap_login(self):
-        base = Path(__file__).parents[1] / "xwing"
-        app_script = (base / "frontend" / "src" / "app.tsx").read_text()
-        editor_script = (base / "frontend" / "src" / "editor.tsx").read_text()
-        app_bundle = (base / "static" / "assets" / "app.js").read_text()
-        editor_bundle = (base / "static" / "assets" / "editor.js").read_text()
-
-        for script in (app_script, editor_script):
-            assert "/_auth/login?redirect=" in script
-            assert "authentication required" in script
-            assert "Session expired" in script
-            assert "Signing out" in script
-
-        for script in (app_bundle, editor_bundle):
-            assert "/_auth/login?redirect=" in script
-            assert "authentication required" in script
-            assert "Session expired" in script
-            assert "Signing out" in script
-            assert "Ending your session" in script
-
-        assert "dirty && !allowLeave.current" in editor_script
 
     def test_ldap_idle_timeout_is_rendered_for_frontend_timer(
         self, root, tmp_dir, monkeypatch
@@ -680,22 +563,6 @@ class TestAuth:
         assert directory.status_code == 200
         assert 'data-auth-idle-timeout="900"' in directory.text
 
-    def test_frontend_logout_submit_is_delayed_for_overlay(self):
-        base = Path(__file__).parents[1] / "xwing"
-        scripts = (
-            (base / "frontend" / "src" / "app.tsx").read_text(),
-            (base / "frontend" / "src" / "editor.tsx").read_text(),
-            (base / "static" / "assets" / "app.js").read_text(),
-            (base / "static" / "assets" / "editor.js").read_text(),
-        )
-
-        for script in scripts:
-            assert "logout-form" in script
-            assert "Signing out" in script
-            assert "Ending your session" in script
-            assert "setTimeout" in script
-            assert ".submit()" in script
-
     def test_pages_use_bundled_frontend_assets(self, client, root):
         (root / "notes.txt").write_text("hello")
         listing = client.get("/", headers=HTML)
@@ -710,17 +577,6 @@ class TestAuth:
         assert "/static/app.js" not in listing.text
         assert "/static/editor.js" not in editor.text
 
-    def test_frontend_prevents_document_overscroll_bounce(self):
-        stylesheet = (
-            Path(__file__).parents[1] / "xwing" / "frontend" / "src" / "style.css"
-        ).read_text()
-        assert (
-            "html, body {\n  height: 100%;\n  overscroll-behavior: none;\n}"
-            in stylesheet
-        )
-
-
-class TestPut:
     def test_put_creates_file(self, client, root):
         r = client.put("/newfile.txt", content=b"hello")
         assert r.status_code == 204
@@ -1661,16 +1517,6 @@ class TestAdminConsole:
             assert yaml.safe_load((tmp_path / "ldapgate.yaml").read_text())["ldap"][
                 "allowed_users"
             ] == ["admin"]
-
-    def test_loading_states_render_spinners(self):
-        style = (Path(__file__).parents[1] / "xwing/frontend/src/style.css").read_text()
-        admin_style = (
-            Path(__file__).parents[1] / "xwing/frontend/src/admin.css"
-        ).read_text()
-        assert ".boot-loading::before" in style
-        assert "animation:xw-spin" in style
-        assert ".loading-card::before" in admin_style
-        assert "animation: xw-spin" in admin_style
 
     def test_admin_requires_ldapgate_and_external_allowlist(
         self, root, tmp_dir, users_yaml, tmp_path

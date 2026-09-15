@@ -2,6 +2,8 @@ import os
 from pathlib import Path
 from urllib.parse import quote
 
+from .upload_engine import is_staging_name
+
 _IGNORED_SYSTEM_NAMES = {
     ".ds_store",
     "thumbs.db",
@@ -59,7 +61,7 @@ def list_dir(path: Path) -> list[dict]:
             children = list(scan)
         children.sort(key=lambda entry: (not entry.is_dir(), entry.name.lower()))
         for child in children:
-            if is_ignored_system_file(child.name):
+            if is_ignored_system_file(child.name) or is_staging_name(child.name):
                 continue
             try:
                 stat = child.stat()

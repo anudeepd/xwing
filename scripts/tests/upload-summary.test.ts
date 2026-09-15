@@ -42,6 +42,18 @@ describe("upload status copy", () => {
     expect(uploadSummaryKind(snapshot(item("completed")))).toBe("complete");
   });
 
+  it("reports a server-side wait without claiming the transfer failed", () => {
+    // What a DLP scanner holding the response looks like: the browser has sent
+    // the body and the server has not answered yet.
+    expect(uploadItemLabel({ ...item("uploading"), phase: "processing" })).toBe(
+      "Waiting for server…",
+    );
+    expect(uploadItemLabel({ ...item("uploading"), phase: "finalizing" })).toBe(
+      "Finalizing…",
+    );
+    expect(uploadItemLabel({ ...item("uploading"), phase: "uploading" })).toBe("Uploading…");
+  });
+
   it("turns internal states into user-facing item labels", () => {
     expect(uploadItemLabel(item("preparing"))).toBe("Preparing…");
     expect(uploadItemLabel(item("uploading"))).toBe("Uploading…");

@@ -141,28 +141,28 @@ def test_authenticated_chunked_upload_audits_final_path_not_session_hash(
     with TestClient(create_app(settings)) as client:
         init = client.post(
             "/_upload/init",
-            json={"filename": "final.txt", "total_chunks": 2, "dir": "/"},
+            json={"filename": "final.txt", "size": 11, "dir": "/"},
             headers=headers,
         )
         assert init.status_code == 200
-        session_id = init.json()["session_id"]
+        upload_id = init.json()["upload_id"]
         assert (
             client.put(
-                f"/_upload/{session_id}/0",
+                f"/_upload/{upload_id}?offset=0",
                 content=b"hello ",
                 headers=headers,
             ).status_code
-            == 204
+            == 200
         )
         assert (
             client.put(
-                f"/_upload/{session_id}/1",
+                f"/_upload/{upload_id}?offset=6",
                 content=b"world",
                 headers=headers,
             ).status_code
-            == 204
+            == 200
         )
-        response = client.post(f"/_upload/{session_id}/complete", headers=headers)
+        response = client.post(f"/_upload/{upload_id}/complete", headers=headers)
 
     assert response.status_code == 200
     events = audit_store.list_events(db_path, username="alice", limit=10)
@@ -171,8 +171,8 @@ def test_authenticated_chunked_upload_audits_final_path_not_session_hash(
     assert event["method"] == "upload"
     assert event["path"] == "/final.txt"
     assert not event["path"].startswith("/_upload/")
-    assert session_id not in event["path"]
-    assert json.loads(event["details"]) == {"bytes": 11, "chunks": 2}
+    assert upload_id not in event["path"]
+    assert json.loads(event["details"]) == {"bytes": 11}
 
 
 def test_authenticated_delete_is_semantically_audited(

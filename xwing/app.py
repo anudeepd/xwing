@@ -35,7 +35,13 @@ from .files import (
     list_dir,
     safe_path,
 )
-from .upload import cleanup_stale_sessions, create_upload_router
+from .upload import (
+    LocalFileSink,
+    build_upload_store,
+    cleanup_stale_sessions,
+    create_upload_router,
+)
+from .upload_engine import staging_name, stream_to_sink
 from .webdav import (
     copy_response,
     lock_response,
@@ -205,6 +211,7 @@ def create_app_reload() -> FastAPI:
 def create_app(settings: Settings) -> FastAPI:
     settings.tmp_dir.mkdir(parents=True, exist_ok=True)  # type: ignore[union-attr]
     directory_zip_semaphore = anyio.Semaphore(1)
+    upload_store = build_upload_store(settings)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -216,7 +223,7 @@ def create_app(settings: Settings) -> FastAPI:
                 settings.root_dir,
             )
         )
-        task = asyncio.create_task(cleanup_stale_sessions(settings))
+        task = asyncio.create_task(cleanup_stale_sessions(upload_store))
         yield
         task.cancel()
 
@@ -405,7 +412,7 @@ def create_app(settings: Settings) -> FastAPI:
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     templates.env.filters["human_size"] = human_size
 
-    app.include_router(create_upload_router(settings))
+    app.include_router(create_upload_router(settings, upload_store))
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     # ── Helpers ───────────────────────────────────────────────────────────────
@@ -615,46 +622,35 @@ def create_app(settings: Settings) -> FastAPI:
 
         # Check Content-Length early if provided
         content_length = request.headers.get("content-length")
+        expected_length = None
         if content_length:
             try:
-                if int(content_length) > settings.max_upload_bytes:
-                    raise HTTPException(
-                        status_code=413, detail="Upload exceeds size limit"
-                    )
+                expected_length = int(content_length)
             except ValueError:
-                pass  # Invalid header, fall through to stream-based check
+                expected_length = None
+            if expected_length is not None and expected_length > settings.max_upload_bytes:
+                raise HTTPException(status_code=413, detail="Upload exceeds size limit")
 
         fspath.parent.mkdir(parents=True, exist_ok=True)
-        temp_handle = tempfile.NamedTemporaryFile(
-            prefix=f".{fspath.name}.",
-            suffix=".tmp",
-            dir=fspath.parent,
-            delete=False,
+        sink = LocalFileSink(
+            fspath.parent / staging_name(fspath.name, uuid.uuid4().hex),
+            fspath,
         )
-        temp_file = Path(temp_handle.name)
-        temp_handle.close()
-        received_bytes = 0
         try:
-            async with await anyio.open_file(temp_file, "wb") as f:
-                async for chunk in request.stream():
-                    received_bytes += len(chunk)
-                    if received_bytes > settings.max_upload_bytes:
-                        raise HTTPException(status_code=413, detail="Upload too large")
-                    await f.write(chunk)
-            await anyio.to_thread.run_sync(temp_file.replace, fspath)  # type: ignore[reportAttributeAccessIssue]
+            received_bytes = await stream_to_sink(
+                request,
+                sink,
+                max_bytes=settings.max_upload_bytes,
+                expect_length=expected_length,
+            )
+            await sink.finalize()
         except HTTPException:
-            try:
-                await anyio.to_thread.run_sync(temp_file.unlink)  # type: ignore[reportAttributeAccessIssue]
-            except FileNotFoundError:
-                pass
+            await sink.abort()
             raise
         except OSError as e:
             # Disk full or I/O error
-            try:
-                await anyio.to_thread.run_sync(temp_file.unlink)  # type: ignore[reportAttributeAccessIssue]
-            except Exception:
-                pass
-            raise HTTPException(status_code=500, detail=f"Write failed: {e}")
+            await sink.abort()
+            raise HTTPException(status_code=500, detail=f"Write failed: {e}") from e
         response = Response(status_code=204)
         await _record_semantic_audit(
             user=user,

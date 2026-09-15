@@ -205,12 +205,12 @@ test("a completed browser upload refreshes the folder automatically", async ({ p
     const path = new URL(route.request().url()).pathname;
     if (path.startsWith("/_upload/")) {
       if (path === "/_upload/init") {
-        return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ session_id: "browser-upload" }) });
+        return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ upload_id: "browser-upload", chunk_size: 8 * 1024 * 1024, concurrency: 4, size: 18 }) });
       }
       if (path.endsWith("/complete")) {
-        return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ path: "/browser-upload.txt" }) });
+        return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ path: "browser-upload.txt", size: 18 }) });
       }
-      return route.fulfill({ status: 204 });
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ received: 18, ranges: [[0, 18]], next_offset: 18 }) });
     }
     const accept = route.request().headers().accept ?? "";
     if (route.request().method() !== "GET" || !accept.includes("application/vnd.xwing.directory+json")) {
@@ -395,4 +395,176 @@ test("approved visual states", async ({ page, browserName }) => {
   await page.setViewportSize({ width: 375, height: 800 });
   await page.goto("/");
   await expect(page).toHaveScreenshot("browser-mobile.png", { fullPage: true });
+});
+
+
+test("dropping files queues them, and an unreadable drop explains itself", async ({ page }) => {
+  await page.goto("/");
+  await page.route("**/_upload/**", async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/_upload/init") {
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ upload_id: "drop", chunk_size: 8 * 1024 * 1024, concurrency: 4, size: 12 }) });
+    }
+    if (path.endsWith("/complete")) {
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ path: "dropped.txt", size: 12 }) });
+    }
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ received: 12, ranges: [[0, 12]], next_offset: 12 }) });
+  });
+
+  // A drop carrying nothing is what a DLP extension leaves behind; the page
+  // has to say so instead of looking broken.
+  await page.locator(".xw-app").dispatchEvent("drop", {
+    bubbles: true,
+    cancelable: true,
+    dataTransfer: await page.evaluateHandle(() => new DataTransfer()),
+  });
+  await expect(page.getByRole("alert")).toContainText("That drop contained no files");
+
+  await page.locator(".xw-app").dispatchEvent("drop", {
+    bubbles: true,
+    cancelable: true,
+    dataTransfer: await page.evaluateHandle(() => {
+      const transfer = new DataTransfer();
+      transfer.items.add(new File(["dropped body"], "dropped.txt", { type: "text/plain" }));
+      return transfer;
+    }),
+  });
+
+  const upload = page.getByRole("complementary", { name: "Uploads" });
+  await expect(upload).toContainText("dropped.txt");
+  await expect(upload).toContainText("1 complete");
+});
+
+test("shows an in-flight overlay while the archive is built", async ({ page }) => {
+  await page.goto("/");
+
+  let release = () => {};
+  const held = new Promise<void>(resolve => {
+    release = resolve;
+  });
+  await page.route("**/_bulk/zip", async route => {
+    await held;
+    return route.fulfill({ status: 200, contentType: "application/zip", body: "PK\u0003\u0004zip" });
+  });
+  page.on("download", () => {});
+
+  await page.getByRole("checkbox", { name: "Select README.md" }).click();
+  await expect(page.getByText("1 selected", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Download selected as zip" }).click();
+
+  const overlay = page.getByRole("status").filter({ hasText: "Zipping 1 file" });
+  await expect(overlay).toBeVisible();
+  await expect(page.getByRole("button", { name: "Download selected as zip" })).toBeDisabled();
+
+  release();
+  await expect(overlay).toHaveCount(0);
+});
+
+test("listing controls are named and reachable, and the stylesheet keeps its guards", async ({ page }) => {
+  await page.goto("/");
+
+  // The skip link is off-screen until focused, then it must be usable.
+  const skip = page.getByRole("link", { name: "Skip to files" });
+  await skip.focus();
+  await expect(skip).toBeFocused();
+
+  await expect(page.getByRole("link", { name: "Download README.md" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Delete README.md" })).toBeVisible();
+
+  await page.getByRole("checkbox", { name: "Select all" }).click();
+  await expect(page.getByRole("checkbox", { name: "Deselect all" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Download selected as zip" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Delete selected" })).toBeVisible();
+
+  const css = await page.evaluate(() => {
+    const out: string[] = [];
+    for (const sheet of Array.from(document.styleSheets)) {
+      try {
+        for (const rule of Array.from(sheet.cssRules)) out.push(rule.cssText);
+      } catch {
+        // A stylesheet the page cannot read is skipped rather than hidden.
+      }
+    }
+    return out.join("\n");
+  });
+  // Without this the page rubber-bands when a drag overshoots it.
+  expect(css).toContain("overscroll-behavior: none");
+  expect(css).toMatch(/@keyframes xw-spin/);
+  expect(css).toContain(".boot-loading::before");
+});
+
+
+test("an empty folder invites the next step and sorting survives a reload", async ({ page }) => {
+  await page.goto("/");
+
+  await page.getByRole("button", { name: "Name, not sorted" }).click();
+  await expect(page.getByRole("button", { name: /^Name, ascending/ })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("button", { name: /^Name, ascending/ })).toBeVisible();
+
+  const folder = `e2e-empty-${Date.now()}`;
+  await page.getByRole("button", { name: "New folder" }).click();
+  const dialog = page.getByRole("dialog", { name: "New folder" });
+  await dialog.getByRole("textbox").fill(folder);
+  await dialog.getByRole("button", { name: "Create folder" }).click();
+
+  const row = page.getByRole("row", { name: new RegExp(`^${folder},`) });
+  await expect(row).toBeVisible();
+  await row.dblclick();
+
+  await expect(page.getByText("This folder is empty")).toBeVisible();
+  await expect(page.getByText("Upload files or create a folder to get started.")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Upload files" })).toBeEnabled();
+
+  await page.getByRole("link", { name: "workspace" }).click();
+  await page.getByRole("checkbox", { name: `Select ${folder}` }).click();
+  await page.getByRole("button", { name: "Delete selected" }).click();
+  const confirm = page.getByRole("dialog", { name: "Delete 1 item?" });
+  await confirm.getByRole("button", { name: "Delete" }).click();
+  await expect(page.getByRole("row", { name: new RegExp(`^${folder},`) })).toHaveCount(0);
+});
+
+test("the editor reports saves in a live region and Escape returns to the folder", async ({ page }) => {
+  await page.request.put("/e2e-editor.txt", { data: "start" });
+  try {
+    await page.goto("/e2e-editor.txt?edit");
+    const editor = page.getByRole("textbox");
+    await expect(editor).toContainText("start");
+    await editor.press("End");
+    await editor.type("\nmore");
+    await page.getByRole("button", { name: "Save" }).click();
+
+    await expect(page.getByRole("status")).toContainText("Saved");
+    await page.keyboard.press("Escape");
+    await expect(page).toHaveURL(/\/$/);
+  } finally {
+    await page.request.delete("/e2e-editor.txt");
+  }
+});
+
+
+test.describe("limited access server", () => {
+  test("read-only folders explain the limits instead of offering dead controls", async ({ page }) => {
+    await page.goto("http://127.0.0.1:8991/");
+
+    await expect(
+      page.getByText("Read-only access. Uploads and folder creation are disabled."),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Upload files" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "New folder" })).toBeDisabled();
+
+    await page.goto("http://127.0.0.1:8991/empty/");
+    await expect(page.getByText("This folder is empty")).toBeVisible();
+    await expect(page.getByText("You have read-only access here.")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Upload files" })).toBeDisabled();
+  });
+
+  test("a file too large to edit opens as a read-only preview", async ({ page }) => {
+    await page.goto("http://127.0.0.1:8991/oversized.txt?edit");
+
+    await expect(page.getByText(/File too large to edit here/)).toBeVisible();
+    await expect(page.getByRole("button", { name: "Save" })).toBeDisabled();
+    // Nothing in the editor accepts typing when the file is only previewed.
+    await expect(page.locator(".cm-content[contenteditable=true]")).toHaveCount(0);
+  });
 });

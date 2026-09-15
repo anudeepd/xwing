@@ -1,476 +1,284 @@
-import json
-import time
-from pathlib import Path
+"""Xwing-side behaviour of the chunked upload protocol.
+
+Protocol mechanics (range accounting, resume, TTL) are covered in
+``test_upload_engine.py``; this file covers what xwing adds on top: init policy,
+permission checks, session ownership and the on-disk result.
+"""
 
 import pytest
-
-from xwing.app import create_app
-from xwing.config import Settings, DEFAULT_SESSION_TTL_SECONDS
-from xwing.upload import _CHUNK_LOCKS, _SESSION_LOCKS, _chunk_lock, _cleanup_stale_async
 from fastapi.testclient import TestClient
 
+from xwing.app import create_app
+from xwing.config import Settings
+from xwing.upload import LocalFileSink
+from xwing.upload_engine import staging_name
 
-class TestUploadInit:
-    def test_valid_init(self, client, root):
-        r = client.post(
-            "/_upload/init",
-            json={"filename": "hello.txt", "total_chunks": 2, "dir": "/"},
+
+def upload(client, name, body, dir="/", headers=None):
+    """Drive one complete upload through the protocol and return the response."""
+    init = client.post(
+        "/_upload/init",
+        json={"filename": name, "size": len(body), "dir": dir},
+        headers=headers,
+    )
+    assert init.status_code == 200, init.text
+    payload = init.json()
+    if payload.get("ignored"):
+        return payload
+    upload_id = payload["upload_id"]
+    put = client.put(
+        f"/_upload/{upload_id}?offset=0", content=body, headers=headers
+    )
+    assert put.status_code == 200, put.text
+    done = client.post(f"/_upload/{upload_id}/complete", headers=headers)
+    assert done.status_code == 200, done.text
+    return done.json()
+
+
+class TestInitPolicy:
+    def test_filename_traversal_is_stripped(self, client, root):
+        result = upload(client, "../../evil.txt", b"payload")
+        assert result["path"] == "evil.txt"
+        assert (root / "evil.txt").read_bytes() == b"payload"
+
+    @pytest.mark.parametrize("name", ["/", ".", ".."])
+    def test_empty_and_directory_names_rejected(self, client, name):
+        response = client.post(
+            "/_upload/init", json={"filename": name, "size": 1, "dir": "/"}
         )
-        assert r.status_code == 200
-        assert "session_id" in r.json()
-
-    def test_invalid_json_rejected(self, client):
-        r = client.post(
-            "/_upload/init",
-            content=b"{not json",
-            headers={"Content-Type": "application/json"},
-        )
-        assert r.status_code == 400
-
-    def test_non_object_json_rejected(self, client):
-        r = client.post("/_upload/init", json=["not", "an", "object"])
-        assert r.status_code == 400
+        assert response.status_code == 400
 
     def test_non_string_filename_rejected(self, client):
-        r = client.post(
-            "/_upload/init", json={"filename": 123, "total_chunks": 1, "dir": "/"}
+        response = client.post(
+            "/_upload/init", json={"filename": 123, "size": 1, "dir": "/"}
         )
-        assert r.status_code == 400
+        assert response.status_code == 400
 
-    def test_filename_traversal_stripped(self, client, root, tmp_dir):
-        r = client.post(
+    @pytest.mark.parametrize("name", [".env", ".env.local", ".env."])
+    def test_env_files_rejected(self, client, name):
+        response = client.post(
+            "/_upload/init", json={"filename": name, "size": 1, "dir": "/"}
+        )
+        assert response.status_code == 400
+        assert "env" in response.json()["detail"].lower()
+
+    @pytest.mark.parametrize(
+        "name", [".DS_Store", "Thumbs.db", "desktop.ini", "._notes.txt"]
+    )
+    def test_os_metadata_files_are_ignored(self, client, root, name):
+        response = client.post(
+            "/_upload/init", json={"filename": name, "size": 1, "dir": "/"}
+        )
+        assert response.json() == {"ignored": True}
+        assert not (root / name).exists()
+
+    def test_missing_destination_rejected(self, client):
+        response = client.post(
             "/_upload/init",
-            json={"filename": "../../evil.txt", "total_chunks": 1, "dir": "/"},
+            json={"filename": "x.txt", "size": 1, "dir": "/nonexistent"},
         )
-        assert r.status_code == 200
-        sid = r.json()["session_id"]
-        # Stored filename should be just the basename - read directly from disk
-        session_file = tmp_dir / sid / "session.json"
-        session = json.loads(session_file.read_text())
-        assert session["filename"] == "evil.txt"
+        assert response.status_code == 404
 
-    def test_invalid_filename_empty(self, client):
-        r = client.post(
-            "/_upload/init", json={"filename": "/", "total_chunks": 1, "dir": "/"}
-        )
-        assert r.status_code == 400
-
-    def test_total_chunks_zero_rejected(self, client):
-        r = client.post(
-            "/_upload/init", json={"filename": "x.txt", "total_chunks": 0, "dir": "/"}
-        )
-        assert r.status_code == 400
-
-    def test_total_chunks_negative_rejected(self, client):
-        r = client.post(
-            "/_upload/init", json={"filename": "x.txt", "total_chunks": -1, "dir": "/"}
-        )
-        assert r.status_code == 400
-
-    def test_total_chunks_non_integer_rejected(self, client):
-        r = client.post(
-            "/_upload/init",
-            json={"filename": "x.txt", "total_chunks": "nope", "dir": "/"},
-        )
-        assert r.status_code == 400
-
-    def test_total_chunks_over_max_rejected(self, client):
-        r = client.post(
-            "/_upload/init",
-            json={"filename": "x.txt", "total_chunks": 10_001, "dir": "/"},
-        )
-        assert r.status_code == 400
-
-    def test_dest_not_found(self, client):
-        r = client.post(
-            "/_upload/init",
-            json={"filename": "x.txt", "total_chunks": 1, "dir": "/nonexistent"},
-        )
-        assert r.status_code == 404
-
-    def test_dest_is_file_rejected(self, client, root):
+    def test_destination_that_is_a_file_rejected(self, client, root):
         (root / "file.txt").write_text("existing")
-        r = client.post(
-            "/_upload/init",
-            json={"filename": "x.txt", "total_chunks": 1, "dir": "/file.txt"},
+        response = client.post(
+            "/_upload/init", json={"filename": "x.txt", "size": 1, "dir": "/file.txt"}
         )
-        assert r.status_code == 404
+        assert response.status_code == 404
 
-    def test_dest_non_string_rejected(self, client):
-        r = client.post(
+    def test_traversal_destination_rejected(self, client):
+        response = client.post(
             "/_upload/init",
-            json={"filename": "x.txt", "total_chunks": 1, "dir": 123},
+            json={"filename": "x.txt", "size": 1, "dir": "/../outside"},
         )
-        assert r.status_code == 400
+        assert response.status_code == 403
 
-    def test_encoded_dest_dir_is_decoded(self, client, root):
+    def test_encoded_destination_is_decoded(self, client, root):
         (root / "hash#dir?").mkdir()
-        r = client.post(
+        response = client.post(
             "/_upload/init",
-            json={"filename": "x.txt", "total_chunks": 1, "dir": "/hash%23dir%3F/"},
+            json={"filename": "x.txt", "size": 1, "dir": "/hash%23dir%3F/"},
         )
-        assert r.status_code == 200
-
-    def test_env_file_rejected(self, client):
-        r = client.post(
-            "/_upload/init",
-            json={"filename": ".env", "total_chunks": 1, "dir": "/"},
-        )
-        assert r.status_code == 400
-        assert "env" in r.json()["detail"].lower()
-
-    def test_env_variant_rejected(self, client):
-        for name in (".env.local", ".env.production", ".env."):
-            r = client.post(
-                "/_upload/init",
-                json={"filename": name, "total_chunks": 1, "dir": "/"},
-            )
-            assert r.status_code == 400, f"{name} should be rejected"
-
-    def test_os_metadata_files_are_ignored(self, client, root, tmp_dir):
-        for name in (".DS_Store", "Thumbs.db", "desktop.ini", "._notes.txt"):
-            r = client.post(
-                "/_upload/init",
-                json={"filename": name, "total_chunks": 1, "dir": "/"},
-            )
-            assert r.status_code == 200
-            assert r.json() == {"ignored": True}
-            assert not (root / name).exists()
-        assert list(tmp_dir.iterdir()) == []
+        assert response.status_code == 200
 
 
-class TestUploadLifecycle:
-    def test_chunk_lock_is_scoped_to_session_and_index(self):
-        same = _chunk_lock("a" * 32, 2)
-        assert _chunk_lock("a" * 32, 2) is same
-        assert _chunk_lock("a" * 32, 3) is not same
-        assert _chunk_lock("b" * 32, 2) is not same
-        _CHUNK_LOCKS.clear()
+class TestUploadResults:
+    def test_upload_replaces_the_file_atomically(self, client, root):
+        (root / "doc.txt").write_bytes(b"old contents")
+        result = upload(client, "doc.txt", b"new contents")
+        assert result["path"] == "doc.txt"
+        assert (root / "doc.txt").read_bytes() == b"new contents"
 
-    def _init(self, client, filename="out.txt", total_chunks=2):
-        r = client.post(
-            "/_upload/init",
-            json={"filename": filename, "total_chunks": total_chunks, "dir": "/"},
-        )
-        assert r.status_code == 200
-        return r.json()["session_id"]
+    def test_multi_gigabyte_shaped_upload_assembles_from_ranges(self, client, root):
+        # Two out-of-order ranged writes plus a resend of an already-committed
+        # range: exactly the pattern a stalled chunk produces in the browser.
+        size = 4096
+        init = client.post(
+            "/_upload/init", json={"filename": "big.bin", "size": size, "dir": "/"}
+        ).json()
+        upload_id = init["upload_id"]
+        assert init["size"] == size
 
-    def _init_direct(self, client, filename="out.txt", total_chunks=2, chunk_size=3):
-        r = client.post(
-            "/_upload/init",
-            json={
-                "filename": filename,
-                "total_chunks": total_chunks,
-                "chunk_size": chunk_size,
-                "dir": "/",
-            },
-        )
-        assert r.status_code == 200
-        return r.json()["session_id"]
+        second = b"b" * (size // 2)
+        first = b"a" * (size // 2)
+        assert client.put(
+            f"/_upload/{upload_id}?offset={size // 2}", content=second
+        ).status_code == 200
+        assert client.put(f"/_upload/{upload_id}?offset=0", content=first).status_code == 200
+        assert client.put(f"/_upload/{upload_id}?offset=0", content=first).status_code == 200
 
-    def test_full_upload_single_chunk(self, client, root):
-        sid = self._init(client, "single.txt", total_chunks=1)
-        client.put(f"/_upload/{sid}/0", content=b"hello world")
-        r = client.post(f"/_upload/{sid}/complete")
-        assert r.status_code == 200
-        assert (root / "single.txt").read_bytes() == b"hello world"
+        assert client.post(f"/_upload/{upload_id}/complete").status_code == 200
+        assert (root / "big.bin").read_bytes() == first + second
 
-    def test_full_upload_multiple_chunks(self, client, root):
-        sid = self._init(client, "multi.txt", total_chunks=3)
-        client.put(f"/_upload/{sid}/0", content=b"aaa")
-        client.put(f"/_upload/{sid}/1", content=b"bbb")
-        client.put(f"/_upload/{sid}/2", content=b"ccc")
-        r = client.post(f"/_upload/{sid}/complete")
-        assert r.status_code == 200
-        assert (root / "multi.txt").read_bytes() == b"aaabbbccc"
+    def test_cancelled_upload_leaves_no_staging_file(self, client, root):
+        upload_id = client.post(
+            "/_upload/init", json={"filename": "gone.bin", "size": 8, "dir": "/"}
+        ).json()["upload_id"]
+        client.put(f"/_upload/{upload_id}?offset=0", content=b"partial")
+        assert list(root.glob("*gone.bin*")), "staging file should exist mid-upload"
 
-    def test_direct_chunk_upload_writes_final_offsets(self, client, root, tmp_dir):
-        sid = self._init_direct(client, "direct.txt", total_chunks=3, chunk_size=3)
-        assert client.put(f"/_upload/{sid}/2", content=b"cc").status_code == 204
-        assert client.put(f"/_upload/{sid}/0", content=b"aaa").status_code == 204
-        assert client.put(f"/_upload/{sid}/1", content=b"bbb").status_code == 204
+        client.delete(f"/_upload/{upload_id}")
 
-        session = json.loads((tmp_dir / sid / "session.json").read_text())
-        temp_file = Path(session["temp_file"])
-        assert temp_file.exists()
-        assert not (tmp_dir / sid / "0.part").exists()
+        assert not (root / "gone.bin").exists()
+        assert not list(root.glob("*gone.bin*"))
 
-        r = client.post(f"/_upload/{sid}/complete")
-        assert r.status_code == 200
-        assert (root / "direct.txt").read_bytes() == b"aaabbbcc"
-        assert not temp_file.exists()
+    def test_staging_file_is_hidden_from_directory_listings(self, client, root):
+        upload_id = client.post(
+            "/_upload/init", json={"filename": "busy.bin", "size": 8, "dir": "/"}
+        ).json()["upload_id"]
+        client.put(f"/_upload/{upload_id}?offset=0", content=b"in flight")
 
-    def test_direct_chunk_retry_truncates_old_tail_on_complete(self, client, root):
-        sid = self._init_direct(
-            client, "retry-direct.txt", total_chunks=2, chunk_size=3
-        )
-        assert client.put(f"/_upload/{sid}/0", content=b"aaa").status_code == 204
-        assert client.put(f"/_upload/{sid}/1", content=b"bbb").status_code == 204
-        assert client.put(f"/_upload/{sid}/1", content=b"c").status_code == 204
-
-        r = client.post(f"/_upload/{sid}/complete")
-        assert r.status_code == 200
-        assert (root / "retry-direct.txt").read_bytes() == b"aaac"
-
-    def test_direct_non_final_chunk_must_match_chunk_size(self, client):
-        sid = self._init_direct(client, "bad-direct.txt", total_chunks=2, chunk_size=3)
-        r = client.put(f"/_upload/{sid}/0", content=b"aa")
-        assert r.status_code == 400
-        assert "Non-final chunk" in r.json()["detail"]
-
-    def test_complete_with_missing_chunk_fails(self, client, root):
-        sid = self._init(client, "partial.txt", total_chunks=2)
-        client.put(f"/_upload/{sid}/0", content=b"only first")
-        r = client.post(f"/_upload/{sid}/complete")
-        assert r.status_code == 400
-        assert "Missing chunks" in r.json()["detail"]
-
-    def test_session_cleaned_up_after_complete(self, client, root, tmp_dir):
-        sid = self._init(client, "cleanup.txt", total_chunks=1)
-        client.put(f"/_upload/{sid}/0", content=b"data")
-        r = client.post(f"/_upload/{sid}/complete")
-        assert r.status_code == 200
-        # Session file should be deleted
-        session_file = tmp_dir / sid / "session.json"
-        assert not session_file.exists()
-
-    def test_complete_failure_preserves_existing_destination(
-        self, client, root, tmp_dir
-    ):
-        (root / "existing.txt").write_text("keep me")
-        sid = self._init(client, "existing.txt", total_chunks=1)
-        client.put(f"/_upload/{sid}/0", content=b"new data")
-        (tmp_dir / sid / "0.part").unlink()
-        r = client.post(f"/_upload/{sid}/complete")
-        assert r.status_code == 500
-        assert (root / "existing.txt").read_text() == "keep me"
-        assert sid not in _SESSION_LOCKS
-
-    def test_invalid_chunk_index_rejected(self, client, root):
-        sid = self._init(client, "x.txt", total_chunks=2)
-        r = client.put(f"/_upload/{sid}/5", content=b"bad")
-        assert r.status_code == 400
-
-    def test_unknown_session_returns_404(self, client):
-        r = client.put("/_upload/deadbeef/0", content=b"data")
-        assert r.status_code == 404
-
-    def test_chunk_exceeds_max_upload_bytes(self, root, tmp_dir, users_yaml):
-        s = Settings(
-            root_dir=root, tmp_dir=tmp_dir, max_upload_bytes=10, users_config=users_yaml
-        )
-        with TestClient(create_app(s)) as c:
-            r = c.post(
-                "/_upload/init",
-                json={"filename": "x.txt", "total_chunks": 1, "dir": "/"},
-            )
-            sid = r.json()["session_id"]
-            r = c.put(f"/_upload/{sid}/0", content=b"x" * 100)
-        assert r.status_code == 413
-
-    def test_chunks_cannot_exceed_total_upload_bytes(self, root, tmp_dir, users_yaml):
-        s = Settings(
-            root_dir=root,
-            tmp_dir=tmp_dir,
-            max_upload_bytes=10,
-            max_chunk_bytes=10,
-            users_config=users_yaml,
-        )
-        with TestClient(create_app(s)) as c:
-            r = c.post(
-                "/_upload/init",
-                json={"filename": "x.txt", "total_chunks": 2, "dir": "/"},
-            )
-            sid = r.json()["session_id"]
-            assert c.put(f"/_upload/{sid}/0", content=b"123456").status_code == 204
-            r = c.put(f"/_upload/{sid}/1", content=b"abcdef")
-        assert r.status_code == 413
-
-    def test_retrying_chunk_replaces_metadata_without_double_counting(
-        self, client, root, tmp_dir
-    ):
-        sid = self._init(client, "retry.txt", total_chunks=2)
-        assert client.put(f"/_upload/{sid}/0", content=b"aa").status_code == 204
-        assert client.put(f"/_upload/{sid}/1", content=b"bbb").status_code == 204
-        assert client.put(f"/_upload/{sid}/0", content=b"c").status_code == 204
-
-        session = json.loads((tmp_dir / sid / "session.json").read_text())
-        assert session["total_bytes"] == 4
-        assert session["chunk_bytes"] == {"0": 1, "1": 3}
-        assert sorted(session["received"]) == [0, 1]
-
-        r = client.post(f"/_upload/{sid}/complete")
-        assert r.status_code == 200
-        assert (root / "retry.txt").read_bytes() == b"cbbb"
-
-    def test_invalid_session_id_rejected_before_filesystem_lookup(self, client):
-        r = client.put("/_upload/not-a-session/0", content=b"data")
-        assert r.status_code == 404
-
-    def test_chunk_requires_current_write_permission(self, root, tmp_dir, tmp_path):
-        users_yaml = tmp_path / "users.yaml"
-        users_yaml.write_text("users:\n  alice: rw\n")
-        s = Settings(
-            root_dir=root,
-            tmp_dir=tmp_dir,
-            require_auth=True,
-            users_config=users_yaml,
-            trusted_auth_proxies=["testclient"],
-        )
-        with TestClient(create_app(s)) as c:
-            r = c.post(
-                "/_upload/init",
-                json={"filename": "x.txt", "total_chunks": 1, "dir": "/"},
-                headers={"X-Forwarded-User": "alice"},
-            )
-            sid = r.json()["session_id"]
-            users_yaml.write_text("users:\n  alice: r\n")
-            r = c.put(
-                f"/_upload/{sid}/0",
-                content=b"data",
-                headers={"X-Forwarded-User": "alice"},
-            )
-        assert r.status_code == 403
+        assert list(root.iterdir()), "staging file should exist on disk"
+        listing = client.get("/")
+        assert "busy.bin" not in listing.text
 
 
 class TestUploadAuth:
     def test_init_blocked_when_require_auth(self, root, tmp_dir):
-        s = Settings(root_dir=root, tmp_dir=tmp_dir, require_auth=True)
-        with TestClient(create_app(s)) as c:
-            r = c.post(
-                "/_upload/init",
-                json={"filename": "x.txt", "total_chunks": 1, "dir": "/"},
+        settings = Settings(root_dir=root, tmp_dir=tmp_dir, require_auth=True)
+        with TestClient(create_app(settings)) as c:
+            response = c.post(
+                "/_upload/init", json={"filename": "x.txt", "size": 1, "dir": "/"}
             )
-        assert r.status_code == 403
+        assert response.status_code == 403
 
     def test_init_allowed_with_user_header(self, root, tmp_dir, users_yaml):
-        s = Settings(
+        settings = Settings(
             root_dir=root,
             tmp_dir=tmp_dir,
             require_auth=True,
             users_config=users_yaml,
             trusted_auth_proxies=["testclient"],
         )
-        with TestClient(create_app(s)) as c:
-            r = c.post(
+        with TestClient(create_app(settings)) as c:
+            response = c.post(
                 "/_upload/init",
-                json={"filename": "x.txt", "total_chunks": 1, "dir": "/"},
+                json={"filename": "x.txt", "size": 1, "dir": "/"},
                 headers={"X-Forwarded-User": "alice"},
             )
-        assert r.status_code == 200
+        assert response.status_code == 200
 
-    def test_chunk_blocked_when_require_auth(self, root, tmp_dir):
-        s = Settings(root_dir=root, tmp_dir=tmp_dir, require_auth=True)
-        with TestClient(create_app(s)) as c:
-            r = c.put("/_upload/fakesession/0", content=b"data")
-        assert r.status_code == 403
-
-    def test_complete_blocked_when_require_auth(self, root, tmp_dir):
-        s = Settings(root_dir=root, tmp_dir=tmp_dir, require_auth=True)
-        with TestClient(create_app(s)) as c:
-            r = c.post("/_upload/fakesession/complete")
-        assert r.status_code == 403
+    def test_write_blocked_when_require_auth(self, root, tmp_dir):
+        settings = Settings(root_dir=root, tmp_dir=tmp_dir, require_auth=True)
+        with TestClient(create_app(settings)) as c:
+            assert c.put("/_upload/" + "a" * 32 + "?offset=0", content=b"x").status_code == 403
+            assert c.post("/_upload/" + "a" * 32 + "/complete").status_code == 403
+            assert c.get("/_upload/" + "a" * 32).status_code == 403
 
 
-class TestUploadSessionIsolation:
-    def test_alice_cannot_write_to_bobs_session(self, root, tmp_dir, tmp_path):
+class TestSessionIsolation:
+    @pytest.fixture
+    def alice_only(self, root, tmp_dir, tmp_path):
         users_yaml = tmp_path / "users.yaml"
         users_yaml.write_text(
             "users:\n  alice:\n    read: true\n    write: true\n    delete: true\n"
         )
-        s = Settings(
+        settings = Settings(
             root_dir=root,
             tmp_dir=tmp_dir,
             require_auth=True,
             users_config=users_yaml,
             trusted_auth_proxies=["testclient"],
         )
-        with TestClient(create_app(s)) as c:
-            r = c.post(
-                "/_upload/init",
-                json={"filename": "x.txt", "total_chunks": 1, "dir": "/"},
-                headers={"X-Forwarded-User": "alice"},
-            )
-            sid = r.json()["session_id"]
-            r = c.put(
-                f"/_upload/{sid}/0",
-                content=b"attacker",
-                headers={"X-Forwarded-User": "bob"},
-            )
-            assert r.status_code == 403
+        with TestClient(create_app(settings)) as c:
+            yield c
 
-    def test_alice_cannot_complete_bobs_session(self, root, tmp_dir, tmp_path):
-        users_yaml = tmp_path / "users.yaml"
-        users_yaml.write_text(
-            "users:\n  alice:\n    read: true\n    write: true\n    delete: true\n"
+    def test_another_user_cannot_write_to_the_session(self, alice_only):
+        alice = {"X-Forwarded-User": "alice"}
+        bob = {"X-Forwarded-User": "bob"}
+        upload_id = alice_only.post(
+            "/_upload/init",
+            json={"filename": "x.txt", "size": 8, "dir": "/"},
+            headers=alice,
+        ).json()["upload_id"]
+
+        put = alice_only.put(
+            f"/_upload/{upload_id}?offset=0", content=b"attacker", headers=bob
         )
-        s = Settings(
+        assert put.status_code == 403
+
+    def test_another_user_cannot_complete_the_session(self, alice_only):
+        alice = {"X-Forwarded-User": "alice"}
+        bob = {"X-Forwarded-User": "bob"}
+        upload_id = alice_only.post(
+            "/_upload/init",
+            json={"filename": "x.txt", "size": 4, "dir": "/"},
+            headers=alice,
+        ).json()["upload_id"]
+        alice_only.put(f"/_upload/{upload_id}?offset=0", content=b"data", headers=alice)
+
+        done = alice_only.post(f"/_upload/{upload_id}/complete", headers=bob)
+        assert done.status_code == 403
+
+
+class TestStaleSessionCleanup:
+    @pytest.mark.asyncio
+    async def test_sweep_removes_staged_bytes_of_an_abandoned_upload(
+        self, settings, root
+    ):
+        from xwing.upload import build_upload_store
+        from xwing.upload_engine import UploadTarget
+
+        store = build_upload_store(settings)
+        sink = LocalFileSink(
+            root / staging_name("abandoned.bin", "a" * 32), root / "abandoned.bin"
+        )
+        session = await store.register(
+            UploadTarget(
+                session_id="a" * 32,
+                user=None,
+                directory=str(root),
+                filename="abandoned.bin",
+                size=1024,
+            ),
+            user=None,
+        )
+        session.sink = sink
+        await sink.write_at(0, b"half written")
+
+        assert list(root.glob("*abandoned.bin*"))
+        store.ttl_seconds = 0
+        assert await store.sweep() == 1
+        assert not list(root.glob("*abandoned.bin*"))
+
+
+class TestUploadAudit:
+    def test_completed_upload_audits_the_final_path(self, root, tmp_dir, users_yaml, tmp_path):
+        from xwing import audit_store
+
+        db_path = tmp_path / "audit.db"
+        settings = Settings(
             root_dir=root,
             tmp_dir=tmp_dir,
-            require_auth=True,
             users_config=users_yaml,
+            require_auth=True,
             trusted_auth_proxies=["testclient"],
+            audit_db=db_path,
         )
-        with TestClient(create_app(s)) as c:
-            r = c.post(
-                "/_upload/init",
-                json={"filename": "x.txt", "total_chunks": 1, "dir": "/"},
-                headers={"X-Forwarded-User": "alice"},
-            )
-            sid = r.json()["session_id"]
-            c.put(
-                f"/_upload/{sid}/0",
-                content=b"data",
-                headers={"X-Forwarded-User": "alice"},
-            )
-            r = c.post(
-                f"/_upload/{sid}/complete",
-                headers={"X-Forwarded-User": "bob"},
-            )
-            assert r.status_code == 403
+        headers = {"X-Forwarded-User": "alice"}
+        with TestClient(create_app(settings)) as c:
+            result = upload(c, "final.txt", b"hello", headers=headers)
+        assert result["path"] == "final.txt"
 
-
-class TestCleanupStale:
-    @pytest.mark.asyncio
-    async def test_stale_session_removed(self, settings, tmp_dir):
-        sid = "stalesession"
-        session_dir = tmp_dir / sid
-        session_dir.mkdir()
-        session_file = session_dir / "session.json"
-        session_file.write_text(
-            json.dumps(
-                {
-                    "session_id": sid,
-                    "dest_dir": str(settings.root_dir),
-                    "filename": "x.txt",
-                    "total_chunks": 1,
-                    "received": [0],
-                    "created_at": time.monotonic() - DEFAULT_SESSION_TTL_SECONDS - 1,
-                    "user": None,
-                }
-            )
-        )
-        await _cleanup_stale_async(settings)
-        assert not session_dir.exists()
-
-    @pytest.mark.asyncio
-    async def test_fresh_session_kept(self, settings, tmp_dir):
-        sid = "freshsession"
-        session_dir = tmp_dir / sid
-        session_dir.mkdir()
-        session_file = session_dir / "session.json"
-        session_file.write_text(
-            json.dumps(
-                {
-                    "session_id": sid,
-                    "dest_dir": str(settings.root_dir),
-                    "filename": "x.txt",
-                    "total_chunks": 1,
-                    "received": [0],
-                    "created_at": time.monotonic(),
-                    "user": None,
-                }
-            )
-        )
-        await _cleanup_stale_async(settings)
-        assert session_dir.exists()
+        events = audit_store.list_events(db_path, username="alice")
+        assert [event["path"] for event in events] == ["/final.txt"]

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { useModalFocus } from "./keyboard";
+import { UploadClient, UploadError, UploadState, uploadFile } from "./upload-engine";
 
 interface EditorBootstrap {
   path: string; directory: string; filename: string; displayPath: string;
@@ -35,22 +36,14 @@ declare global { interface Window { CM: CodeMirrorApi } }
 
 const AUTH_REDIRECT_DELAY_MS = 1500;
 
-// Saves that fit in one chunk go out as a single PUT, exactly like before.
-// Larger saves reuse the resumable `/_upload` session API (init → chunk PUTs →
-// complete) so a failed save retries one small chunk instead of the whole
-// document, and the status line can report real progress. Chunk sizing mirrors
-// the file browser's uploader: 8 MB pieces capped by the server limit.
+// Saves that fit in one chunk go out as a single PUT. Larger saves go through
+// the shared resumable upload engine (see `saveDocument`), which chunks at this
+// size and retries only the bytes the server has not accepted yet.
 const SAVE_CHUNK_BYTES = 8 * 1024 * 1024;
-const SAVE_RETRY_DELAYS_MS = [750, 1500, 3000];
-const RETRYABLE_SAVE_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 function saveChunkBytes(boot: EditorBootstrap): number {
   const serverMax = boot.maxChunkBytes > 0 ? boot.maxChunkBytes : SAVE_CHUNK_BYTES;
   return Math.max(1, Math.min(SAVE_CHUNK_BYTES, serverMax));
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => window.setTimeout(resolve, ms));
 }
 
 function Logo(): React.JSX.Element {
@@ -165,48 +158,30 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
     }
   };
 
-  /** PUT with retries on network errors and retryable statuses, mirroring the file uploader. */
-  const putWithSaveRetries = async (url: string, body: BodyInit, label: string): Promise<Response> => {
-    // Trailing `undefined` entry is the final attempt: no further sleep after it.
-    for (const delay of [...SAVE_RETRY_DELAYS_MS, undefined]) {
-      try {
-        const response = await fetch(url, { method: "PUT", body });
-        if (delay !== undefined && RETRYABLE_SAVE_STATUSES.has(response.status)) {
-          await sleep(delay);
-          continue;
-        }
-        return response;
-      } catch (error) {
-        if (delay === undefined) throw error;
-        await sleep(delay);
-      }
-    }
-    throw new Error(`${label} failed`);
-  };
-
-  /** Save a large document through a resumable upload session (atomic replace on complete). */
-  const saveChunked = async (blob: Blob, chunkSize: number): Promise<void> => {
-    const totalChunks = Math.max(1, Math.ceil(blob.size / chunkSize));
-    const initResponse = await fetch("/_upload/init", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: boot.filename, total_chunks: totalChunks, dir: boot.directory }),
+  /**
+   * Save a large document through the shared upload engine: `init` → ranged
+   * PUTs → `complete`, which replaces the file atomically. A failed request
+   * retries from whatever the server already holds instead of resending the
+   * whole document, and a DLP scan shows as "waiting for server" rather than a
+   * killed save.
+   */
+  const saveDocument = async (blob: Blob): Promise<void> => {
+    const client = new UploadClient({});
+    await uploadFile({
+      client,
+      file: blob,
+      filename: boot.filename,
+      destDir: boot.directory,
+      chunkSize: saveChunkBytes(boot),
+      callbacks: {
+        onProgress: (committed: number, total: number) => {
+          setStatus(`Saving… ${total > 0 ? Math.round((committed / total) * 100) : 0}%`);
+        },
+        onState: (state: string) => {
+          if (state === UploadState.PROCESSING) setStatus("Saving… waiting for server");
+        },
+      },
     });
-    requireAuthOk(initResponse);
-    if (!initResponse.ok) throw new Error(`Save failed (${initResponse.status})`);
-    const initData = (await initResponse.json()) as { session_id?: string };
-    if (!initData.session_id) throw new Error("Save failed (no upload session)");
-    const sessionId = initData.session_id;
-    for (let index = 0; index < totalChunks; index += 1) {
-      const chunk = blob.slice(index * chunkSize, Math.min(blob.size, (index + 1) * chunkSize));
-      const response = await putWithSaveRetries(`/_upload/${sessionId}/${index}`, chunk, `Chunk ${index + 1}/${totalChunks}`);
-      requireAuthOk(response);
-      if (!response.ok) throw new Error(`Save failed (${response.status})`);
-      setStatus(`Saving… ${Math.round(((index + 1) / totalChunks) * 100)}%`);
-    }
-    const completeResponse = await fetch(`/_upload/${sessionId}/complete`, { method: "POST" });
-    requireAuthOk(completeResponse);
-    if (!completeResponse.ok) throw new Error(`Save failed (${completeResponse.status})`);
   };
 
   const save = async (): Promise<void> => {
@@ -224,11 +199,19 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
         if (!response.ok) throw new Error(`Save failed (${response.status})`);
       } else {
         setStatus("Saving… 0%");
-        await saveChunked(blob, chunkSize);
+        await saveDocument(blob);
       }
       saved.current = content; setDirty(false); setStatus("Saved");
       window.setTimeout(() => setStatus(""), 2500);
-    } catch (error) { setStatus(error instanceof Error ? error.message : "Save failed"); }
+    } catch (error) {
+      if (error instanceof UploadError && (error.status === 401 || error.status === 403 || error.code === "BAD_RESPONSE")) {
+        setAuthOverlay("expired");
+        window.setTimeout(() => location.assign(loginUrl()), AUTH_REDIRECT_DELAY_MS);
+        setStatus("Sign-in required");
+        return;
+      }
+      setStatus(error instanceof Error ? error.message : "Save failed");
+    }
   };
 
   const navigateAway = (href: string): void => {
@@ -245,7 +228,7 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
   const leave = (): void => { if (!confirmLeave) return; allowLeave.current = true; if (confirmLeave === "__logout__") { setAuthOverlay("signout"); window.setTimeout(() => logoutForm.current?.submit(), AUTH_REDIRECT_DELAY_MS); } else navigateAway(confirmLeave); };
 
   return <div className={`editor-app ${pageLeaving ? "page-leaving" : ""}`}>
-    <header className="topbar editor-topbar"><div className="brand"><Logo/><span>X-wing</span><small>EDITOR</small></div><div className="editor-heading"><strong>{boot.filename}</strong><span>{status || (dirty ? "Unsaved changes" : boot.displayPath)}</span></div><div className="editor-actions"><a className="button" href={boot.path} download>Download</a><button className="button primary" disabled={!canEdit || !dirty} onClick={() => void save()}>Save</button>{boot.user.authenticated ? <div className="account-inline"><span>{boot.user.name}</span><form ref={logoutForm} id="logout-form" method="post" action="/_auth/logout" onSubmit={event => { event.preventDefault(); if (dirty) setConfirmLeave("__logout__"); else { setAuthOverlay("signout"); const form = event.currentTarget; window.setTimeout(() => form.submit(), AUTH_REDIRECT_DELAY_MS); } }}><button className="signout-button" type="submit">Sign out</button></form></div> : <span className="anonymous-label">anonymous</span>}</div></header>
+    <header className="topbar editor-topbar"><div className="brand"><Logo/><span>X-wing</span><small>EDITOR</small></div><div className="editor-heading"><strong>{boot.filename}</strong><span role="status" aria-live="polite">{status || (dirty ? "Unsaved changes" : boot.displayPath)}</span></div><div className="editor-actions"><a className="button" href={boot.path} download>Download</a><button className="button primary" disabled={!canEdit || !dirty} onClick={() => void save()}>Save</button>{boot.user.authenticated ? <div className="account-inline"><span>{boot.user.name}</span><form ref={logoutForm} id="logout-form" method="post" action="/_auth/logout" onSubmit={event => { event.preventDefault(); if (dirty) setConfirmLeave("__logout__"); else { setAuthOverlay("signout"); const form = event.currentTarget; window.setTimeout(() => form.submit(), AUTH_REDIRECT_DELAY_MS); } }}><button className="signout-button" type="submit">Sign out</button></form></div> : <span className="anonymous-label">anonymous</span>}</div></header>
     {(!boot.canWrite || boot.truncated) && <div className="editor-notices">
       {!boot.canWrite && <div className="readonly-notice">Read-only access. Saving changes is disabled.</div>}
       {boot.truncated && <div className="readonly-notice">Showing first {formatBytes(boot.previewBytes)} of {formatBytes(boot.totalSize)}. File too large to edit here — use Download for the full file.</div>}

@@ -6,6 +6,7 @@ import { nextSort, normalizeSortPreference, sortFiles } from "./sort";
 import type { SortEntry, SortKey } from "./sort";
 import { DIRECTORY_MEDIA_TYPE, encodePath, parseBootstrap } from "./types";
 import type { Parallelism, XwingBootstrapV1, XwingFile } from "./types";
+import { collectDroppedEntries } from "./drop-entries";
 import { UploadManager } from "./upload-manager";
 import { uploadItemLabel, uploadSummary, uploadSummaryKind } from "./upload-summary";
 
@@ -110,6 +111,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   const [accountOpen, setAccountOpen] = useState(false);
   const [dialog, setDialog] = useState<Dialog>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [zipPending, setZipPending] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [dropWaitState, setDropWaitState] = useState<DropWaitState>(null);
   const [arrivingNames, setArrivingNames] = useState<Set<string>>(() => new Set());
@@ -349,9 +351,20 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   };
 
   const downloadSelected = async (): Promise<void> => {
-    const response = await authFetch("/_bulk/zip", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paths: [...selected], base: directory.path }) });
-    if (!response.ok) { addToast(await responseError(response), "error"); return; }
-    downloadBlob(await response.blob(), contentDispositionFilename(response.headers.get("content-disposition")) || "xwing-selection.zip");
+    // One archive at a time: the pending count is the button's label, not a
+    // queue, so a second request would clear the first one's overlay.
+    if (zipPending > 0) return;
+    const paths = [...selected];
+    // The server builds the archive on demand, so a large selection leaves the
+    // toolbar waiting for a while; say so instead of looking inert.
+    setZipPending(paths.length);
+    try {
+      const response = await authFetch("/_bulk/zip", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paths, base: directory.path }) });
+      if (!response.ok) { addToast(await responseError(response), "error"); return; }
+      downloadBlob(await response.blob(), contentDispositionFilename(response.headers.get("content-disposition")) || "xwing-selection.zip");
+    } finally {
+      setZipPending(0);
+    }
   };
 
   const clearDropFeedback = useCallback((): void => {
@@ -410,13 +423,33 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     uploadManager.add(Array.from(list), directory.path, directory.upload.chunkSize);
   };
 
+  /**
+   * Dropping a folder hands us the folder itself, not its contents, so the
+   * drop is walked before anything is queued. `collectDroppedEntries` reads
+   * `dataTransfer.items` synchronously for that reason.
+   */
+  const queueDrop = async (dataTransfer: DataTransfer | null): Promise<void> => {
+    if (!directory.permissions.write) return;
+    const { entries, skipped } = await collectDroppedEntries(dataTransfer);
+    if (entries.length === 0) {
+      addToast(
+        skipped > 0
+          ? "Nothing could be read from that drop. Use the upload button instead."
+          : "That drop contained no files. Drag files or a folder, or use the upload button.",
+        "error",
+      );
+      return;
+    }
+    uploadManager.add(entries, directory.path, directory.upload.chunkSize);
+  };
+
   const transitioning = directoryState === "loading" || pageLeaving;
 
   return <div className={`xw-app ${pageLeaving ? "page-leaving" : ""}`}
     onDragEnter={event => { event.preventDefault(); if (!directory.permissions.write) return; dragDepth.current += 1; refreshDropFeedback(); }}
     onDragOver={event => { if (!directory.permissions.write) return; event.preventDefault(); refreshDropFeedback(); }}
     onDragLeave={event => { event.preventDefault(); dragDepth.current = Math.max(0, dragDepth.current - 1); if (!dragDepth.current) clearDropFeedback(); }}
-    onDrop={event => { event.preventDefault(); clearDropFeedback(); queueFiles(event.dataTransfer.files); }}>
+    onDrop={event => { event.preventDefault(); clearDropFeedback(); void queueDrop(event.dataTransfer); }}>
     <TransitionVeil active={transitioning} label="Switching" />
     <a className="skip-link" href="#file-list">Skip to files</a>
     <header className="topbar">
@@ -453,7 +486,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
         </div>
         <div className={`toolbar-group selection-actions ${selected.size ? "visible" : ""}`} aria-hidden={!selected.size}>
           <span className="selection-pill"><i/>{selected.size} selected</span>
-          <button className="button" aria-label="Download selected as zip" disabled={!selected.size} onClick={() => void downloadSelected()}><Icon name="download"/><span className="label">Download zip</span></button>
+          <button className="button" aria-label="Download selected as zip" disabled={!selected.size || zipPending > 0} aria-busy={zipPending > 0} onClick={() => void downloadSelected()}><Icon name="download"/><span className="label">Download zip</span></button>
           <button className="button danger" aria-label="Delete selected" disabled={!selected.size || !directory.permissions.delete} onClick={() => setDialog({ kind: "delete", paths: [...selected], pending: false })}><Icon name="trash"/><span className="label">Delete</span></button>
           <button className="button ghost" disabled={!selected.size} onClick={() => { const focusPath = lastSelected ?? selected.values().next().value ?? null; setSelected(new Set()); setLastSelected(null); focusFileRow(focusPath); }}>Clear</button>
         </div>
@@ -497,6 +530,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
       </section>
       {dragging && <div className="drop-target" role="status" aria-live="polite"><span className="drop-target-icon"><Icon name="upload"/></span><strong>Drop files here</strong><span>Upload to {directory.path}</span></div>}
       <UploadDock snapshot={upload}/>
+      {zipPending > 0 && <div className="zip-overlay" role="status" aria-live="polite"><div className="zip-overlay-card"><span className="zip-spinner" aria-hidden="true"/><span className="zip-overlay-text">Zipping {zipPending} file{zipPending === 1 ? "" : "s"}…</span></div></div>}
       <div className="toast-stack" aria-live="polite">{toasts.map(toast => <ToastView key={toast.id} toast={toast} onDismiss={() => dismissToast(toast.id)}/>)}</div>
     </main>
     {dialog && <DialogView dialog={dialog} setDialog={setDialog} onMkdir={() => void createFolder()} onDelete={() => void deletePaths()}/>} 

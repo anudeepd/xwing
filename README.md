@@ -93,23 +93,42 @@ WebDAV-capable client such as [WinSCP](https://winscp.net/).
 
 ### Resumable Upload (Chunked)
 
-For large files, use the chunked upload API:
+The protocol tracks **committed byte ranges**, not chunk indices, so a client
+may change its chunk size mid-upload and may retry any range: whatever the
+server already holds is credited and never re-sent.
 
 ```bash
-# 1. Init session
+# 1. Init session (size is the exact byte length)
 curl -X POST http://localhost:8989/_upload/init \
   -H "Content-Type: application/json" \
-  -d '{"filename": "big.iso", "total_chunks": 100, "dir": "/"}'
+  -d '{"filename": "big.iso", "size": 3221225472, "dir": "/"}'
+# -> {"upload_id": "...", "chunk_size": 8388608, "concurrency": 4, "size": 3221225472, ...}
 
-# 2. Upload each chunk
-curl -X PUT http://localhost:8989/_upload/<session_id>/<chunk_index> \
-  --data-binary @chunk.part
+# 2. Upload any byte range; the response reports what the server now holds
+curl -X PUT "http://localhost:8989/_upload/<upload_id>?offset=0" \
+  --data-binary @range.part
+# -> {"received": 8388608, "ranges": [[0, 8388608]], "next_offset": 8388608}
 
-# 3. Complete
-curl -X POST http://localhost:8989/_upload/<session_id>/complete
+# 3. Ask what is still missing (for a resume)
+curl "http://localhost:8989/_upload/<upload_id>"
+
+# 4. Publish the file (only succeeds when [0, size) is complete)
+curl -X POST http://localhost:8989/_upload/<upload_id>/complete
+
+# 5. Or abandon the upload and remove the staged bytes
+curl -X DELETE http://localhost:8989/_upload/<upload_id>
 ```
 
-Chunk size and session limits are configurable via `--max-chunk-mb`, `--max-chunks`, and `--session-ttl-minutes`.
+Staged bytes live beside the destination as `.<name>.upload-part-<upload_id>`
+and are hidden from directory listings; the destination only changes when
+`complete` succeeds. Abandoned sessions are reclaimed after
+`--session-ttl-minutes`. Limits: `--max-upload-gb`, `--max-chunk-mb`,
+`--max-chunks`, `--session-ttl-minutes`.
+
+The browser client is shared with Torrus (`xwing/frontend/src/upload-engine.js`)
+and abandons a request only after a period with no byte movement, so a DLP
+scanner holding a body shows as "waiting for server" instead of a failed
+upload.
 
 ## Access Control
 

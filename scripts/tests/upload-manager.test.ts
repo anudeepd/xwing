@@ -1,329 +1,286 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { SpeedTracker, UploadManager } from "../../xwing/frontend/src/upload-manager";
-
-interface ProgressLike {
-  loaded: number;
-  lengthComputable?: boolean;
-  total?: number;
-}
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { UploadManager } from "../../xwing/frontend/src/upload-manager";
 
 /**
- * Minimal controllable XMLHttpRequest stand-in. Chunk uploads go through
- * `new XMLHttpRequest()`; tests drive them via `dispatchProgress`/`finish`.
+ * The manager owns queueing, item state and the concurrency budget. Transfer
+ * mechanics live in the upload engine, which is mocked here so these tests
+ * exercise the scheduler without pretending to be a network.
  */
-class FakeXHR {
-  static all: FakeXHR[] = [];
-  static reset(): void {
-    FakeXHR.all = [];
-  }
+interface EngineCallbacks {
+  onState: (state: string) => void;
+  onProgress: (committed: number, total: number) => void;
+  onSession: (session: unknown) => void;
+  onRetry: (info: { attempt: number; code: string; message: string }) => void;
+}
 
-  status = 0;
-  method = "";
-  url = "";
-  sentBody: Blob | null = null;
-  aborted = false;
-  settled = false;
+interface EngineCallOptions {
+  destDir: string;
+  chunkSize: number;
+  concurrency: number;
+  session?: unknown;
+  callbacks: EngineCallbacks;
+}
 
-  private listeners = new Map<string, Array<(event?: unknown) => void>>();
-  private uploadListeners = new Map<string, Array<(event: ProgressLike) => void>>();
+interface PendingCall {
+  options: EngineCallOptions;
+  resolve: (value: unknown) => void;
+  reject: (error: unknown) => void;
+}
 
-  upload = {
-    addEventListener: (type: string, handler: (event: ProgressLike) => void) => {
-      const list = this.uploadListeners.get(type) ?? [];
-      list.push(handler);
-      this.uploadListeners.set(type, list);
-    },
-    dispatchProgress: (loaded: number) => {
-      for (const handler of this.uploadListeners.get("progress") ?? []) {
-        handler({ loaded, lengthComputable: true, total: this.sentBody?.size ?? 0 });
-      }
-    },
+const engine = vi.hoisted(() => {
+  return {
+    calls: [] as PendingCall[],
+    clientOptions: [] as Array<Record<string, unknown>>,
+    uploadFile: vi.fn(),
   };
+});
 
-  addEventListener(type: string, handler: (event?: unknown) => void): void {
-    const list = this.listeners.get(type) ?? [];
-    list.push(handler);
-    this.listeners.set(type, list);
-  }
-
-  open(method: string, url: string): void {
-    this.method = method;
-    this.url = url;
-  }
-
-  send(body: Blob): void {
-    this.sentBody = body;
-    FakeXHR.all.push(this);
-  }
-
-  abort(): void {
-    this.aborted = true;
-    this.dispatch("abort");
-  }
-
-  finish(status: number): void {
-    if (this.settled) return;
-    this.settled = true;
-    this.status = status;
-    this.dispatch("load");
-  }
-
-  private dispatch(type: string, event?: unknown): void {
-    for (const handler of this.listeners.get(type) ?? []) handler(event);
-  }
-}
-
-async function settle(): Promise<void> {
-  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
-}
-
-function fetchInitOk(fetcher: ReturnType<typeof vi.fn>): void {
-  fetcher.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const url = String(input);
-    if (url === "/_upload/init") {
-      const body = JSON.parse(String(init?.body)) as { filename: string };
-      return new Response(JSON.stringify({ session_id: `s-${body.filename}` }), { status: 200 });
+vi.mock("../../xwing/frontend/src/upload-engine", () => ({
+  UploadClient: class {
+    constructor(options: Record<string, unknown>) {
+      engine.clientOptions.push(options);
     }
-    if (url.endsWith("/complete")) return new Response(JSON.stringify({ path: "/done" }), { status: 200 });
-    return new Response(null, { status: 201 });
-  });
+  },
+  UploadState: {
+    PREPARING: "preparing",
+    UPLOADING: "uploading",
+    PROCESSING: "processing",
+    FINALIZING: "finalizing",
+    DONE: "done",
+    ERROR: "error",
+  },
+  SpeedTracker: class {
+    sample(): void {}
+    speed(): number {
+      return 0;
+    }
+  },
+  uploadFile: (options: EngineCallOptions) => engine.uploadFile(options),
+}));
+
+function deferred() {
+  return Promise.withResolvers<unknown>();
 }
 
-function managerWith(): UploadManager {
-  const fetcher = vi.fn();
-  fetchInitOk(fetcher);
-  vi.stubGlobal("XMLHttpRequest", FakeXHR);
-  // Schedule the rAF callback on a microtask so `this.frame` is reset to null
-  // after the assignment `this.frame = requestFrame(notify)` completes (real
-  // requestAnimationFrame never invokes its callback synchronously).
-  return new UploadManager(fetcher as typeof fetch, callback => { queueMicrotask(() => callback(0)); return 1; }, vi.fn());
+/** Engine call `index`, once the manager has reached it. */
+async function pendingCall(index: number) {
+  await vi.waitFor(() => expect(engine.calls).toHaveLength(index + 1));
+  return engine.calls[index]!;
 }
 
-afterEach(() => {
-  vi.unstubAllGlobals();
-  vi.restoreAllMocks();
-  FakeXHR.reset();
-});
+function okResponse(body: unknown = {}) {
+  return { ok: true, status: 200, json: async () => body } as unknown as Response;
+}
 
-describe("SpeedTracker", () => {
-  it("computes bytes per second across the sampled window", () => {
-    const now = vi.spyOn(Date, "now");
-    now.mockReturnValue(1_000);
-    const tracker = new SpeedTracker();
-    expect(tracker.speed()).toBe(0);
-    tracker.sample(0);
-    now.mockReturnValue(2_000);
-    tracker.sample(10_000);
-    expect(tracker.speed()).toBe(10_000);
-    now.mockReturnValue(3_000);
-    tracker.sample(25_000);
-    expect(tracker.speed()).toBe(12_500);
-  });
-
-  it("drops samples older than the sliding window", () => {
-    const now = vi.spyOn(Date, "now");
-    now.mockReturnValue(0);
-    const tracker = new SpeedTracker();
-    tracker.sample(0);
-    now.mockReturnValue(6_000);
-    tracker.sample(6_000);
-    now.mockReturnValue(7_000);
-    tracker.sample(10_000);
-    expect(tracker.speed()).toBe(4_000);
-  });
-
-  it("returns 0 after reset", () => {
-    const now = vi.spyOn(Date, "now");
-    now.mockReturnValue(1_000);
-    const tracker = new SpeedTracker();
-    tracker.sample(0);
-    now.mockReturnValue(2_000);
-    tracker.sample(1_000);
-    tracker.reset();
-    expect(tracker.speed()).toBe(0);
-  });
-});
-
-describe("UploadManager global scheduler", () => {
-  it("queues uploads when randomUUID is unavailable on HTTP", () => {
-    vi.stubGlobal("crypto", { getRandomValues: globalThis.crypto.getRandomValues.bind(globalThis.crypto) });
-    const manager = new UploadManager(vi.fn(() => new Promise(() => {})) as typeof fetch, vi.fn(), vi.fn());
-
-    expect(() => manager.add([new File(["abc"], "http.txt")], "/", 3)).not.toThrow();
-    expect(manager.getSnapshot().items[0]).toMatchObject({ name: "http.txt", status: "queued" });
-  });
-
-  it("preserves browser receivers for the native upload primitives", async () => {
-    const fetcher = vi.fn(function (this: unknown, input: RequestInfo | URL, _init?: RequestInit): Promise<Response> {
-      if (this !== globalThis) throw new TypeError("Illegal invocation");
-      const url = String(input);
-      if (url === "/_upload/init") return Promise.resolve(new Response(JSON.stringify({ session_id: "native-fetch" }), { status: 200 }));
-      if (url.endsWith("/complete")) return Promise.resolve(new Response(JSON.stringify({ path: "/native.txt" }), { status: 200 }));
-      return Promise.resolve(new Response(null, { status: 201 }));
-    });
-    const requestFrame = vi.fn(function (this: unknown, callback: FrameRequestCallback): number {
-      if (this !== globalThis) throw new TypeError("Illegal invocation");
+function managerWith(fetcher = vi.fn(async () => okResponse())) {
+  const manager = new UploadManager(
+    fetcher as unknown as typeof fetch,
+    callback => {
       queueMicrotask(() => callback(0));
       return 1;
+    },
+    vi.fn(),
+  );
+  return { manager, fetcher };
+}
+
+beforeEach(() => {
+  engine.calls = [];
+  engine.clientOptions = [];
+  engine.uploadFile.mockReset();
+  engine.uploadFile.mockImplementation((options: EngineCallOptions) => {
+    const call = deferred();
+    engine.calls.push({ options, resolve: call.resolve, reject: call.reject });
+    return call.promise;
+  });
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+describe("UploadManager scheduling", () => {
+  it("moves an item from queued to completed", async () => {
+    const { manager } = managerWith();
+    manager.add([new File(["hello"], "hello.txt")], "/docs", 1024);
+
+    expect(manager.getSnapshot().items[0]).toMatchObject({
+      name: "hello.txt",
+      status: "queued",
+      size: 5,
     });
-    const cancelFrame = vi.fn(function (this: unknown): void {
-      if (this !== globalThis) throw new TypeError("Illegal invocation");
+    const call = await pendingCall(0);
+    expect(call.options).toMatchObject({ destDir: "/docs", chunkSize: 1024 });
+
+    call.options.callbacks.onState("uploading");
+    call.options.callbacks.onProgress(3, 5);
+    await vi.waitFor(() =>
+      expect(manager.getSnapshot().items[0]).toMatchObject({ status: "uploading", uploaded: 3 }),
+    );
+
+    call.resolve({ ok: true, path: "hello.txt" });
+    await vi.waitFor(() =>
+      expect(manager.getSnapshot().items[0]).toMatchObject({
+        status: "completed",
+        uploaded: 5,
+      }),
+    );
+    expect(manager.hasActive()).toBe(false);
+  });
+
+  it("reports a DLP wait as a processing phase rather than a stall", async () => {
+    const { manager } = managerWith();
+    manager.add([new File(["hello"], "a.txt")], "/", 1024);
+    const call = await pendingCall(0);
+
+    call.options.callbacks.onState("processing");
+    await vi.waitFor(() =>
+      expect(manager.getSnapshot().items[0]).toMatchObject({
+        status: "uploading",
+        phase: "processing",
+      }),
+    );
+  });
+
+  it("creates folder ancestors before uploading", async () => {
+    const { manager, fetcher } = managerWith();
+    const file = new File(["hi"], "note.txt");
+    Object.defineProperty(file, "webkitRelativePath", { value: "trip/photos/note.txt" });
+
+    manager.add([file], "/root", 1024);
+    await pendingCall(0);
+
+    const created = fetcher.mock.calls.map(call => String(call[0]));
+    expect(created).toContain("/root/trip/");
+    expect(created).toContain("/root/trip/photos/");
+    expect(engine.calls[0]!.options.destDir).toBe("/root/trip/photos");
+  });
+
+  it("splits the parallel budget across the files running at once", async () => {
+    const { manager } = managerWith();
+    manager.setParallel(4);
+    manager.add(
+      [new File(["a"], "a.txt"), new File(["b"], "b.txt"), new File(["c"], "c.txt"), new File(["d"], "d.txt")],
+      "/",
+      1024,
+    );
+
+    await vi.waitFor(() => expect(engine.calls).toHaveLength(4));
+    expect(engine.calls.map(call => call.options.concurrency)).toEqual([1, 1, 1, 1]);
+  });
+
+  it("gives a lone file the whole parallel budget", async () => {
+    const { manager } = managerWith();
+    manager.setParallel(4);
+    manager.add([new File(["a"], "a.txt")], "/", 1024);
+
+    const call = await pendingCall(0);
+    expect(call.options.concurrency).toBe(4);
+  });
+
+  it("records the session so a retry resumes instead of restarting", async () => {
+    const { manager } = managerWith();
+    manager.add([new File(["hello"], "a.txt")], "/", 1024);
+    const call = await pendingCall(0);
+
+    call.options.callbacks.onSession({
+      uploadId: "abc123",
+      chunkSize: 1024,
+      concurrency: 1,
+      ranges: [[0, 4096]],
+      size: 8192,
     });
-    vi.stubGlobal("fetch", fetcher);
-    vi.stubGlobal("XMLHttpRequest", FakeXHR);
-    vi.stubGlobal("requestAnimationFrame", requestFrame);
-    vi.stubGlobal("cancelAnimationFrame", cancelFrame);
-    const manager = new UploadManager();
-
-    manager.add([new File(["works"], "native.txt")], "/", 5);
-    manager.setParallel(2);
-
-    await vi.waitFor(() => expect(FakeXHR.all).toHaveLength(1));
-    for (const xhr of FakeXHR.all) xhr.finish(204);
-    await vi.waitFor(() => expect(manager.getSnapshot().items[0]?.status).toBe("completed"));
-    expect(fetcher).toHaveBeenCalledWith("/_upload/init", expect.any(Object));
-    expect(requestFrame).toHaveBeenCalled();
-    expect(cancelFrame).toHaveBeenCalled();
-  });
-
-  it("never exceeds the selected global chunk cap and rotates files", async () => {
-    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-      const url = String(input);
-      if (url === "/_upload/init") {
-        const body = JSON.parse(String(init?.body)) as { filename: string };
-        return new Response(JSON.stringify({ session_id: `s-${body.filename}` }), { status: 200 });
-      }
-      if (url.endsWith("/complete")) return new Response(JSON.stringify({ path: "done" }), { status: 200 });
-      return new Response(null, { status: 201 });
-    });
-    vi.stubGlobal("XMLHttpRequest", FakeXHR);
-    const frames: FrameRequestCallback[] = [];
-    const manager = new UploadManager(fetcher as typeof fetch, callback => { frames.push(callback); return frames.length; }, vi.fn());
-    manager.setParallel(2);
-    manager.add([new File(["abcdef"], "a.txt"), new File(["ghijkl"], "b.txt")], "/", 2);
-
-    const active = () => FakeXHR.all.filter(xhr => !xhr.settled).length;
-    await vi.waitFor(() => expect(active()).toBe(2));
-    expect(FakeXHR.all).toHaveLength(2);
-    expect(new Set(FakeXHR.all.map(xhr => xhr.url.split("/")[2]))).toEqual(new Set(["s-a.txt", "s-b.txt"]));
-
-    let maximum = active();
-    while (FakeXHR.all.some(xhr => !xhr.settled)) {
-      for (const xhr of FakeXHR.all) {
-        if (!xhr.settled) {
-          xhr.finish(204);
-          await settle();
-        }
-      }
-      maximum = Math.max(maximum, active());
-    }
-    expect(maximum).toBe(2);
-  });
-
-  it("publishes terminal cancellation immediately", () => {
-    const frames: FrameRequestCallback[] = [];
-    const manager = new UploadManager(vi.fn(() => new Promise(() => {})) as typeof fetch, callback => { frames.push(callback); return frames.length; }, vi.fn());
-    manager.add([new File(["abc"], "a.txt")], "/", 2);
-    const item = manager.getSnapshot().items[0];
-    expect(item).toBeDefined();
-    manager.cancel(item!.id);
-    expect(manager.getSnapshot().items[0]?.status).toBe("cancelled");
-  });
-
-  it("dismisses successful uploads without hiding failures", async () => {
-    const manager = managerWith();
-    manager.setParallel(2);
-    manager.add([new File(["ok"], "successful.txt"), new File(["no"], "failed.txt")], "/", 2);
-
-    await vi.waitFor(() => expect(FakeXHR.all).toHaveLength(2));
-    for (const xhr of FakeXHR.all) {
-      xhr.finish(xhr.url.includes("failed") ? 400 : 204);
-    }
-    await vi.waitFor(() => expect(new Set(manager.getSnapshot().items.map(item => item.status))).toEqual(new Set(["completed", "failed"])));
-
-    manager.dismissSuccessful();
-
-    expect(manager.getSnapshot().items.map(item => item.status)).toEqual(["failed"]);
-  });
-
-  it("replays chunks after a failure so retry cannot skip data", async () => {
-    const manager = managerWith();
-    manager.setParallel(1);
-    manager.add([new File(["abcd"], "a.txt")], "/", 2);
-
-    await vi.waitFor(() => expect(FakeXHR.all).toHaveLength(1));
-    FakeXHR.all[0]!.finish(400);
+    call.reject(new Error("Upload stalled"));
     await vi.waitFor(() => expect(manager.getSnapshot().items[0]?.status).toBe("failed"));
+    expect(manager.getSnapshot().items[0]?.error).toBe("Upload stalled");
 
     const id = manager.getSnapshot().items[0]!.id;
     manager.retry(id);
-    await vi.waitFor(() => expect(FakeXHR.all).toHaveLength(2));
-    FakeXHR.all[1]!.finish(204);
-    await vi.waitFor(() => expect(FakeXHR.all).toHaveLength(3));
-    FakeXHR.all[2]!.finish(204);
-    await vi.waitFor(() => expect(manager.getSnapshot().items[0]?.status).toBe("completed"));
-    expect(FakeXHR.all.map(xhr => xhr.url.split("/").at(-1))).toEqual(["0", "0", "1"]);
-  });
-});
 
-describe("XHR upload progress", () => {
-  it("advances item.uploaded intra-chunk from progress events and exposes speed", async () => {
-    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
-    const manager = managerWith();
-    manager.setParallel(1);
-    manager.add([new File(["x".repeat(10_000)], "a.txt")], "/", 10_000);
-
-    await vi.waitFor(() => expect(FakeXHR.all).toHaveLength(1));
-    const xhr = FakeXHR.all[0]!;
-    xhr.upload.dispatchProgress(3_000);
-    await settle();
-    expect(manager.getSnapshot().items[0]?.uploaded).toBe(3_000);
-    now.mockReturnValue(2_000);
-    xhr.upload.dispatchProgress(6_000);
-    await settle();
-    expect(manager.getSnapshot().items[0]?.uploaded).toBe(6_000);
-    expect(manager.getSnapshot().items[0]?.speed).toBe(3_000);
-    xhr.finish(204);
+    const retried = await pendingCall(1);
+    expect(retried.options.session).toMatchObject({ uploadId: "abc123", ranges: [[0, 4096]] });
+    retried.resolve({ ok: true });
     await vi.waitFor(() => expect(manager.getSnapshot().items[0]?.status).toBe("completed"));
-    expect(manager.getSnapshot().items[0]?.uploaded).toBe(10_000);
   });
 
-  it("clamps displayed progress so it never regresses during an in-flight retry", async () => {
-    const manager = managerWith();
-    manager.setParallel(1);
-    manager.add([new File(["abcdefgh"], "a.txt")], "/", 4);
+  it("surfaces a retry to the UI", async () => {
+    const { manager } = managerWith();
+    manager.add([new File(["hello"], "a.txt")], "/", 1024);
+    const call = await pendingCall(0);
 
-    await vi.waitFor(() => expect(FakeXHR.all).toHaveLength(1));
-    FakeXHR.all[0]!.upload.dispatchProgress(3);
-    await settle();
-    expect(manager.getSnapshot().items[0]?.uploaded).toBe(3);
-    // Retryable failure: the re-sent chunk restarts from 0 loaded, so the
-    // displayed count is held at the last reported value until it catches up.
-    FakeXHR.all[0]!.finish(500);
-    await vi.waitFor(() => expect(FakeXHR.all).toHaveLength(2), { timeout: 3000 });
-    FakeXHR.all[1]!.upload.dispatchProgress(1);
-    await settle();
-    expect(manager.getSnapshot().items[0]?.uploaded).toBe(3);
-    FakeXHR.all[1]!.upload.dispatchProgress(4);
-    await settle();
-    expect(manager.getSnapshot().items[0]?.uploaded).toBe(4);
-    FakeXHR.all[1]!.finish(204);
-    await vi.waitFor(() => expect(FakeXHR.all).toHaveLength(3));
-    FakeXHR.all[2]!.finish(204);
-    await vi.waitFor(() => expect(manager.getSnapshot().items[0]?.status).toBe("completed"));
-    expect(manager.getSnapshot().items[0]?.uploaded).toBe(8);
+    call.options.callbacks.onRetry({ attempt: 2, code: "STALLED", message: "no data moved" });
+    expect(manager.getSnapshot().items[0]?.status).toBe("retrying");
+    expect(manager.hasActive()).toBe(true);
   });
 
-  it("aborts the in-flight XHR when the upload is cancelled", async () => {
-    const manager = managerWith();
-    manager.setParallel(1);
-    manager.add([new File(["abcdefgh"], "a.txt")], "/", 4);
+  it("marks an item cancelled when the caller cancels", async () => {
+    const { manager } = managerWith();
+    manager.add([new File(["hello"], "a.txt")], "/", 1024);
+    await pendingCall(0);
 
-    await vi.waitFor(() => expect(FakeXHR.all).toHaveLength(1));
-    const xhr = FakeXHR.all[0]!;
-    expect(xhr.aborted).toBe(false);
     manager.cancel(manager.getSnapshot().items[0]!.id);
-    expect(xhr.aborted).toBe(true);
     expect(manager.getSnapshot().items[0]?.status).toBe("cancelled");
+    expect(engine.clientOptions[0]?.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("dismisses completed items without hiding failures", async () => {
+    const { manager } = managerWith();
+    manager.add([new File(["ok"], "ok.txt"), new File(["no"], "no.txt")], "/", 1024);
+
+    await vi.waitFor(() => expect(engine.calls).toHaveLength(2));
+    engine.calls[0]!.resolve({ ok: true });
+    engine.calls[1]!.reject(new Error("nope"));
+    await vi.waitFor(() =>
+      expect(manager.getSnapshot().items.map(item => item.status).sort()).toEqual([
+        "completed",
+        "failed",
+      ]),
+    );
+
+    manager.dismissSuccessful();
+    expect(manager.getSnapshot().items.map(item => item.status)).toEqual(["failed"]);
+  });
+
+  it("uploads dropped entries under the folder they came from", async () => {
+    const { manager } = managerWith();
+    const viaInput = new File(["a"], "a.txt");
+    Object.defineProperty(viaInput, "webkitRelativePath", { value: "picked/a.txt" });
+
+    manager.add(
+      [
+        { file: new File(["b"], "b.txt"), relativePath: "trip/photos/b.txt" },
+        viaInput,
+        new File(["c"], "c.txt"),
+      ],
+      "/root",
+      1024,
+    );
+
+    await vi.waitFor(() => expect(engine.calls).toHaveLength(3));
+    expect(engine.calls.map(call => call.options.destDir).sort()).toEqual([
+      "/root",
+      "/root/picked",
+      "/root/trip/photos",
+    ]);
+  });
+
+  it("skips corrupted FileList entries instead of aborting the drop", async () => {
+    const { manager } = managerWith();
+    // A DLP extension can leave null slots in a dropped FileList.
+    manager.add([null as unknown as File, new File(["ok"], "ok.txt")], "/", 1024);
+
+    await vi.waitFor(() => expect(engine.calls).toHaveLength(1));
+    expect(manager.getSnapshot().items).toHaveLength(1);
+    expect(manager.getSnapshot().items[0]?.name).toBe("ok.txt");
+  });
+
+  it("groups uploads by status for the dock summary", async () => {
+    const { manager } = managerWith();
+    manager.add([new File(["x"], "x.txt")], "/", 1024);
+    await pendingCall(0);
+
+    const snapshot = manager.getSnapshot();
+    expect(snapshot.active).toBe(1);
+    expect(snapshot.parallel).toBe(4);
   });
 });
