@@ -109,6 +109,11 @@ class TestUploadResults:
         assert result["path"] == "doc.txt"
         assert (root / "doc.txt").read_bytes() == b"new contents"
 
+    def test_zero_byte_upload_publishes_an_empty_file(self, client, root):
+        result = upload(client, "empty.txt", b"")
+        assert result["size"] == 0
+        assert (root / "empty.txt").read_bytes() == b""
+
     def test_multi_gigabyte_shaped_upload_assembles_from_ranges(self, client, root):
         # Two out-of-order ranged writes plus a resend of an already-committed
         # range: exactly the pattern a stalled chunk produces in the browser.

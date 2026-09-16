@@ -45,7 +45,7 @@ Opens the file browser at `http://127.0.0.1:8989` and launches your default brow
 --port INTEGER             Bind port. [default: 8989]
 --open / --no-open         Open browser on startup. [default: open]
 --max-upload-gb FLOAT      Max upload size in GB. [default: 10]
---max-chunk-mb INTEGER     Max size per chunk in MB. [default: 100]
+--max-chunk-mb INTEGER     Upload window in MB. [default: 32]
 --max-chunks INTEGER       Max chunks per upload session. [default: 10000]
 --session-ttl-minutes INT  Upload session expiry in minutes. [default: 60]
 --require-auth             Require authentication header (403 if missing).
@@ -102,12 +102,12 @@ server already holds is credited and never re-sent.
 curl -X POST http://localhost:8989/_upload/init \
   -H "Content-Type: application/json" \
   -d '{"filename": "big.iso", "size": 3221225472, "dir": "/"}'
-# -> {"upload_id": "...", "chunk_size": 8388608, "concurrency": 4, "size": 3221225472, ...}
+# -> {"upload_id": "...", "chunk_size": 33554432, "concurrency": 4, "size": 3221225472, ...}
 
 # 2. Upload any byte range; the response reports what the server now holds
 curl -X PUT "http://localhost:8989/_upload/<upload_id>?offset=0" \
   --data-binary @range.part
-# -> {"received": 8388608, "ranges": [[0, 8388608]], "next_offset": 8388608}
+# -> {"received": 33554432, "ranges": [[0, 33554432]], "next_offset": 33554432}
 
 # 3. Ask what is still missing (for a resume)
 curl "http://localhost:8989/_upload/<upload_id>"

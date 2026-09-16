@@ -19,7 +19,10 @@ logger = logging.getLogger(__name__)
 
 # Chunked upload defaults
 DEFAULT_MAX_UPLOAD_BYTES = 10 * 1024 * 1024 * 1024  # 10 GB
-DEFAULT_MAX_CHUNK_SIZE = 128 * 1024 * 1024  # 128 MB per chunk
+# Upload window and editor save chunk. One window is one request, so this is
+# the knob that decides how many round trips (and how many proxy holds) a
+# multi-gigabyte upload pays for.
+DEFAULT_MAX_CHUNK_SIZE = 32 * 1024 * 1024  # 32 MB per chunk
 DEFAULT_MAX_CHUNKS = 10_000
 DEFAULT_SESSION_TTL_SECONDS = 3600  # 1 hour
 DEFAULT_CHUNK_READ_SIZE = 16 * 1024 * 1024  # 16 MB

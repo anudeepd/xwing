@@ -28,7 +28,6 @@ from .auth import get_user, require_perm
 from .config import Settings
 from .files import is_ignored_system_file, is_within_root, safe_path
 from .upload_engine import (
-    DEFAULT_CHUNK_SIZE,
     AuthContext,
     UploadSink,
     UploadStore,
@@ -98,7 +97,8 @@ class LocalFileSink:
     async def finalize(self) -> None:
         fd = self._take_descriptor()
         if fd is None:
-            raise OSError("upload sink was never written")
+            # An empty upload never wrote, so the staging file does not exist yet.
+            fd = await anyio.to_thread.run_sync(_open_staging, self._staged)
         await anyio.to_thread.run_sync(_fsync_and_close, fd)
         await anyio.to_thread.run_sync(self._staged.replace, self._destination)
 
@@ -121,7 +121,7 @@ def build_upload_store(settings: Settings) -> UploadStore:
     """Session table sized from application settings."""
     return UploadStore(
         ttl_seconds=settings.session_ttl_seconds,
-        chunk_size=min(DEFAULT_CHUNK_SIZE, settings.max_chunk_bytes),
+        chunk_size=settings.max_chunk_bytes,
         max_session_bytes=settings.max_upload_bytes,
     )
 

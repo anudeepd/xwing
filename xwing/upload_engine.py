@@ -38,7 +38,11 @@ logger = logging.getLogger(__name__)
 
 _SESSION_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
-DEFAULT_CHUNK_SIZE = 8 * 1024 * 1024
+# One request per window means every window pays the round trip, the proxy's
+# hold and the destination's write latency. A small window pays those many
+# times over, which is what made multi-gigabyte uploads crawl; 32 MiB keeps
+# the resume granularity fine without paying per-request cost per 8 MiB.
+DEFAULT_CHUNK_SIZE = 32 * 1024 * 1024
 MIN_CHUNK_SIZE = 1 * 1024 * 1024
 MAX_CHUNK_SIZE = 64 * 1024 * 1024
 DEFAULT_CONCURRENCY = 4
@@ -534,8 +538,17 @@ def create_upload_router(
             session.closing = True
             sink = session.sink
             if sink is None:
-                session.closing = False
-                raise HTTPException(status_code=400, detail="Upload session has no data")
+                if session.size:
+                    session.closing = False
+                    raise HTTPException(status_code=400, detail="Upload session has no data")
+                # A zero-byte upload never sends a window, so the sink is opened
+                # here purely to publish an empty file.
+                try:
+                    sink = await open_sink(session.target)
+                except HTTPException:
+                    session.closing = False
+                    raise
+                session.sink = sink
 
         try:
             await sink.finalize()

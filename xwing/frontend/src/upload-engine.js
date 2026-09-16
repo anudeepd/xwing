@@ -32,8 +32,10 @@ export const UploadState = {
 };
 
 export const DEFAULT_MIN_CHUNK_BYTES = 1 * 1024 * 1024;
-export const DEFAULT_MAX_CHUNK_BYTES = 32 * 1024 * 1024;
-export const DEFAULT_CHUNK_BYTES = 8 * 1024 * 1024;
+// Matches the server's own ceiling: a window is one request, so the client is
+// allowed to use the largest window the engine will advertise.
+export const DEFAULT_MAX_CHUNK_BYTES = 64 * 1024 * 1024;
+export const DEFAULT_CHUNK_BYTES = 32 * 1024 * 1024;
 export const DEFAULT_CONCURRENCY = 4;
 export const DEFAULT_IDLE_TIMEOUT_MS = 120_000;
 export const DEFAULT_RESPONSE_TIMEOUT_MS = 300_000;
