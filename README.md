@@ -45,7 +45,7 @@ Opens the file browser at `http://127.0.0.1:8989` and launches your default brow
 --port INTEGER             Bind port. [default: 8989]
 --open / --no-open         Open browser on startup. [default: open]
 --max-upload-gb FLOAT      Max upload size in GB. [default: 10]
---max-chunk-mb INTEGER     Upload window in MB. [default: 32]
+--max-chunk-mb INTEGER     Upload window in MB. [default: 64]
 --max-chunks INTEGER       Max chunks per upload session. [default: 10000]
 --session-ttl-minutes INT  Upload session expiry in minutes. [default: 60]
 --require-auth             Require authentication header (403 if missing).
