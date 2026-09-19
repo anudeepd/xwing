@@ -28,8 +28,12 @@ const uploadManager = new UploadManager();
 const PARALLEL_VALUES: Parallelism[] = [1, 2, 4, 8];
 const AUTH_REDIRECT_DELAY_MS = 1500;
 const SORT_STORAGE_VERSION = "v2";
+/** Matches the .toast.closing animation duration in style.css. */
+const TOAST_EXIT_MS = 180;
 const DRAG_OVERLAY_STALE_MS = 1500;
 const DROP_DELAYED_MS = 15000;
+/** How often the open folder is re-read so external changes show up on their own. */
+const AUTO_REFRESH_MS = 15000;
 const DELETE_KEYS: Record<string, true> = { Delete: true, Backspace: true };
 
 function sortStorageKey(user: string): string {
@@ -100,6 +104,11 @@ function useOutsideClose(ref: React.RefObject<HTMLElement | null>, close: () => 
   }, [close, ref]);
 }
 
+/** Cheap identity for a listing, so a background refresh only re-renders on a real change. */
+function listingFingerprint(directory: XwingBootstrapV1): string {
+  return directory.files.map(file => `${file.path}\u0000${file.kind}\u0000${file.size}\u0000${file.modified}`).join("\u0001");
+}
+
 function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   const [directory, setDirectory] = useState(initial);
   const [directoryState, setDirectoryState] = useState<"ready" | "loading" | "error">("ready");
@@ -132,6 +141,17 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   const arrivalTimer = useRef<number | null>(null);
   const currentDirectory = useRef(directory.path);
   currentDirectory.current = directory.path;
+  const navigationInFlight = useRef(false);
+  // True while the user is mid-action; auto refresh must never fight that work.
+  const paneBusy = dialog !== null
+    || dragging
+    || dropWaitState !== null
+    || zipPending > 0
+    || authOverlay !== null
+    || uploadManager.hasActive();
+  // Kept in a ref so the poll interval is not re-created on every upload tick.
+  const backgroundBusy = useRef(paneBusy);
+  useEffect(() => { backgroundBusy.current = paneBusy; });
   const upload = useSyncExternalStore(uploadManager.subscribe, uploadManager.getSnapshot);
 
   useOutsideClose(parallelRef, () => setParallelOpen(false));
@@ -180,40 +200,45 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   const navigate = async (path: string, historyMode: "push" | "replace" | "none" = "push"): Promise<void> => {
     const id = ++requestId.current;
     abort.current?.abort();
+    navigationInFlight.current = true;
     const animate = historyMode === "push" && !prefersReducedMotion();
-    if (animate) {
-      setPageLeaving(true);
-      await new Promise(resolve => window.setTimeout(resolve, 170));
-      if (id !== requestId.current) return;
-    } else setPageLeaving(false);
-    const controller = new AbortController();
-    abort.current = controller;
-    setDirectoryState("loading");
-    setDirectoryError("");
     try {
-      const target = encodePath(path);
-      const response = await authFetch(target, {
-        headers: { Accept: DIRECTORY_MEDIA_TYPE }, signal: controller.signal,
-      });
-      if (!response.ok) throw new Error(await responseError(response));
-      if (!response.headers.get("content-type")?.includes(DIRECTORY_MEDIA_TYPE)) throw new Error("The server returned an unexpected response");
-      const next = parseBootstrap(await response.json());
-      if (id !== requestId.current) return;
-      setDirectory(next);
-      setSelected(new Set());
-      setLastSelected(null);
-      setDirectoryState("ready");
-      document.title = `X-wing — ${next.path}`;
-      const url = encodePath(next.path === "/" ? "/" : `${next.path}/`);
-      if (historyMode === "push") history.pushState({ path: next.path }, "", url);
-      if (historyMode === "replace") history.replaceState({ path: next.path }, "", url);
-      if (animate) setPageLeaving(false);
-      focusFileRow(null, true);
-    } catch (error) {
-      if (controller.signal.aborted) return;
-      setDirectoryState("error");
-      setDirectoryError(errorMessage(error));
-      if (animate) setPageLeaving(false);
+      if (animate) {
+        setPageLeaving(true);
+        await new Promise(resolve => window.setTimeout(resolve, 170));
+        if (id !== requestId.current) return;
+      } else setPageLeaving(false);
+      const controller = new AbortController();
+      abort.current = controller;
+      setDirectoryState("loading");
+      setDirectoryError("");
+      try {
+        const target = encodePath(path);
+        const response = await authFetch(target, {
+          headers: { Accept: DIRECTORY_MEDIA_TYPE }, signal: controller.signal,
+        });
+        if (!response.ok) throw new Error(await responseError(response));
+        if (!response.headers.get("content-type")?.includes(DIRECTORY_MEDIA_TYPE)) throw new Error("The server returned an unexpected response");
+        const next = parseBootstrap(await response.json());
+        if (id !== requestId.current) return;
+        setDirectory(next);
+        setSelected(new Set());
+        setLastSelected(null);
+        setDirectoryState("ready");
+        document.title = `X-wing — ${next.path}`;
+        const url = encodePath(next.path === "/" ? "/" : `${next.path}/`);
+        if (historyMode === "push") history.pushState({ path: next.path }, "", url);
+        if (historyMode === "replace") history.replaceState({ path: next.path }, "", url);
+        if (animate) setPageLeaving(false);
+        focusFileRow(null, true);
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        setDirectoryState("error");
+        setDirectoryError(errorMessage(error));
+        if (animate) setPageLeaving(false);
+      }
+    } finally {
+      if (id === requestId.current) navigationInFlight.current = false;
     }
   };
 
@@ -274,6 +299,51 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   };
 
   const refresh = (): Promise<void> => navigate(directory.path, "none");
+
+  // Re-read the open folder without disturbing the view: no loading veil, no
+  // selection reset, no error surface, and no re-render when nothing changed.
+  const refreshListing = useCallback(async (): Promise<void> => {
+    if (navigationInFlight.current) return;
+    const path = currentDirectory.current;
+    const id = ++requestId.current;
+    const controller = new AbortController();
+    abort.current = controller;
+    try {
+      const response = await authFetch(encodePath(path), {
+        headers: { Accept: DIRECTORY_MEDIA_TYPE }, signal: controller.signal,
+      });
+      if (!response.ok) return;
+      if (!response.headers.get("content-type")?.includes(DIRECTORY_MEDIA_TYPE)) return;
+      const next = parseBootstrap(await response.json());
+      if (id !== requestId.current || currentDirectory.current !== path) return;
+      setDirectory(previous => listingFingerprint(previous) === listingFingerprint(next) ? previous : next);
+      // Entries can vanish while the user is looking at them; keep the
+      // selection and range anchor pointing at rows that still exist.
+      setSelected(current => {
+        const present = new Set(next.files.map(file => file.path));
+        const kept = [...current].filter(selectedPath => present.has(selectedPath));
+        return kept.length === current.size ? current : new Set(kept);
+      });
+      setLastSelected(current => (current && next.files.some(file => file.path === current)) ? current : null);
+    } catch {
+      // Keep the last listing rather than interrupting the view with an error.
+    }
+  }, []);
+
+  useEffect(() => {
+    const tick = (): void => {
+      if (document.visibilityState !== "visible" || backgroundBusy.current) return;
+      void refreshListing();
+    };
+    const timer = window.setInterval(tick, AUTO_REFRESH_MS);
+    // Returning to the tab should show the current state, not wait out the interval.
+    const onVisibilityChange = (): void => { if (document.visibilityState === "visible") tick(); };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [refreshListing]);
 
   useEffect(() => {
     const newlyCompleted = upload.items.filter(item => item.status === "completed" && !completedUploads.current.has(item.id));
@@ -539,15 +609,31 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
 }
 
 function ToastView({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }): React.JSX.Element {
+  const [closing, setClosing] = useState(false);
+  const dismissing = useRef(false);
+  const onDismissRef = useRef(onDismiss);
+  onDismissRef.current = onDismiss;
+
+  // Timer expiry and the action button both route through here: the exit
+  // animation runs before the toast leaves the stack, and a toast can only
+  // start dismissing once.
+  const dismiss = useCallback((): void => {
+    if (dismissing.current) return;
+    dismissing.current = true;
+    setClosing(true);
+    window.setTimeout(() => onDismissRef.current(), prefersReducedMotion() ? 0 : TOAST_EXIT_MS);
+  }, []);
+
   useEffect(() => {
-    const timer = window.setTimeout(onDismiss, toast.duration);
+    const timer = window.setTimeout(dismiss, toast.duration);
     return () => window.clearTimeout(timer);
-  }, [toast.id, toast.duration]);
+  }, [toast.id, toast.duration, dismiss]);
+
   const icon = toast.kind === "deleted" || toast.kind === "error" ? "trash" : "check";
-  return <div className={`toast ${toast.kind}`} role={toast.kind === "error" ? "alert" : "status"}>
+  return <div className={`toast ${toast.kind}${closing ? " closing" : ""}`} role={toast.kind === "error" ? "alert" : "status"}>
     <span className="toast-icon"><Icon name={icon}/></span>
     <span className="toast-message">{toast.message}</span>
-    {toast.action && <button className="toast-action" onClick={() => { onDismiss(); toast.action?.run(); }}>{toast.action.label}</button>}
+    {toast.action && <button className="toast-action" onClick={() => { dismiss(); toast.action?.run(); }}>{toast.action.label}</button>}
     <span className="toast-timer" aria-hidden="true" style={{ animationDuration: `${toast.duration}ms` }}/>
   </div>;
 }
