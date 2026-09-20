@@ -51,7 +51,7 @@ def test_audit_store_activity_scopes(tmp_path):
     assert audit_store.summarize_events(db_path, scope="admin")["event_count"] == 1
 
 
-def test_static_assets_are_not_audited(root, tmp_dir, users_yaml, tmp_path):
+def test_static_assets_are_not_audited(root, tmp_dir, users_yaml, tmp_path, asset_url):
     db_path = tmp_path / "audit.db"
     settings = Settings(
         root_dir=root,
@@ -63,7 +63,7 @@ def test_static_assets_are_not_audited(root, tmp_dir, users_yaml, tmp_path):
     )
     with TestClient(create_app(settings)) as client:
         response = client.get(
-            "/static/assets/app.js",
+            asset_url("app.js"),
             headers={"X-Forwarded-User": "alice"},
         )
 

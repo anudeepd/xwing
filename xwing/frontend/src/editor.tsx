@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { formatBytes, prefersReducedMotion } from "./format";
 import { useModalFocus } from "./keyboard";
 import { UploadClient, UploadError, UploadState, uploadFile } from "./upload-engine";
 
@@ -124,7 +125,7 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
     if (!editor || closingRef.current || !cm.searchPanelOpen(editor.state)) return false;
     closingRef.current = true;
     const panel = mount.current?.querySelector(".cm-panel.cm-search");
-    if (panel && !window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    if (panel && !prefersReducedMotion()) {
       panel.classList.add("closing");
       window.setTimeout(() => {
         cm.closeSearchPanel(editor);
@@ -218,7 +219,7 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
     if (pageLeaving) return;
     allowLeave.current = true;
     setPageLeaving(true);
-    window.setTimeout(() => location.assign(href), window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 170);
+    window.setTimeout(() => location.assign(href), prefersReducedMotion() ? 0 : 170);
   };
 
   const requestLeave = (href: string): void => {
@@ -228,12 +229,14 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
   const leave = (): void => { if (!confirmLeave) return; allowLeave.current = true; if (confirmLeave === "__logout__") { setAuthOverlay("signout"); window.setTimeout(() => logoutForm.current?.submit(), AUTH_REDIRECT_DELAY_MS); } else navigateAway(confirmLeave); };
 
   return <div className={`editor-app ${pageLeaving ? "page-leaving" : ""}`}>
+    {/* The editor's view heading; the visible file name sits in the topbar. */}
+    <h1 className="sr-only">{boot.filename}</h1>
     <header className="topbar editor-topbar"><div className="brand"><Logo/><span>X-wing</span><small>EDITOR</small></div><div className="editor-heading"><strong>{boot.filename}</strong><span role="status" aria-live="polite">{status || (dirty ? "Unsaved changes" : boot.displayPath)}</span></div><div className="editor-actions"><a className="button" href={boot.path} download>Download</a><button className="button primary" disabled={!canEdit || !dirty} onClick={() => void save()}>Save</button>{boot.user.authenticated ? <div className="account-inline"><span>{boot.user.name}</span><form ref={logoutForm} id="logout-form" method="post" action="/_auth/logout" onSubmit={event => { event.preventDefault(); if (dirty) setConfirmLeave("__logout__"); else { setAuthOverlay("signout"); const form = event.currentTarget; window.setTimeout(() => form.submit(), AUTH_REDIRECT_DELAY_MS); } }}><button className="signout-button" type="submit">Sign out</button></form></div> : <span className="anonymous-label">anonymous</span>}</div></header>
     {(!boot.canWrite || boot.truncated) && <div className="editor-notices">
       {!boot.canWrite && <div className="readonly-notice">Read-only access. Saving changes is disabled.</div>}
       {boot.truncated && <div className="readonly-notice">Showing first {formatBytes(boot.previewBytes)} of {formatBytes(boot.totalSize)}. File too large to edit here — use Download for the full file.</div>}
     </div>}
-    <div className="editor-body"><aside className="editor-rail"><button className="editor-back" onClick={() => requestLeave(boot.directory)} aria-label="Back to files">←</button><span>{boot.extension || "TXT"}</span></aside><div className="editor-canvas" ref={mount}/></div>
+    <div className="editor-body"><aside className="editor-rail"><button className="editor-back" onClick={() => requestLeave(boot.directory)} aria-label="Back to files" title="Back to files">←</button><span>{boot.extension || "TXT"}</span></aside><div className="editor-canvas" ref={mount}/></div>
     {confirmLeave && <DiscardDialog onCancel={() => setConfirmLeave(null)} onDiscard={leave}/>} 
     {authOverlay && <div className="auth-overlay" role="status"><div className="auth-overlay-card"><span className="auth-pulse"><span/></span><div><h2>{authOverlay === "signout" ? "Signing out" : "Session expired"}</h2><p>{authOverlay === "signout" ? "Ending your session…" : "Redirecting to sign in…"}</p></div></div></div>}
   </div>;
@@ -245,15 +248,6 @@ function DiscardDialog({ onCancel, onDiscard }: { onCancel: () => void; onDiscar
 }
 
 function loginUrl(): string { return `/_auth/login?redirect=${encodeURIComponent(location.pathname + location.search)}`; }
-
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  const units = ["KB", "MB", "GB", "TB", "PB"];
-  let value = n;
-  let unit = "B";
-  for (const next of units) { value /= 1024; unit = next; if (value < 1024) break; }
-  return `${value.toFixed(1)} ${unit}`;
-}
 
 function detectLanguage(cm: CodeMirrorApi, extension: string): unknown[] {
   const aliases: Record<string, string> = { py:"python",js:"javascript",jsx:"javascript",ts:"javascript",tsx:"javascript",html:"html",htm:"html",css:"css",json:"json",yaml:"yaml",yml:"yaml",md:"markdown",xml:"xml",svg:"xml",sql:"sql",sh:"shell",bash:"shell",zsh:"shell",toml:"toml",dockerfile:"dockerfile",nginx:"nginx" };

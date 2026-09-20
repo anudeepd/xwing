@@ -1,6 +1,9 @@
+import json
+
 import pytest
 import fastapi.testclient
 from importlib.util import find_spec
+from pathlib import Path
 from starlette.testclient import TestClient as StarletteTestClient
 
 from xwing.app import create_app
@@ -54,3 +57,16 @@ def client(settings):
     app = create_app(settings)
     with TestClient(app, raise_server_exceptions=True) as c:
         yield c
+
+
+@pytest.fixture
+def asset_url():
+    """Resolve a logical asset name to the built, content-hashed URL."""
+
+    def resolve(name: str) -> str:
+        manifest = json.loads(
+            (Path(__file__).resolve().parents[1] / "xwing/static/assets/manifest.json").read_text()
+        )
+        return f"/static/assets/{manifest.get(name, name)}"
+
+    return resolve

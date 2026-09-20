@@ -6,12 +6,12 @@
   <meta name="theme-color" content="#080b12"/>
   <title>{{ filename }} — X-wing</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg"/>
-  <link rel="stylesheet" href="/static/assets/style.css"/>
+  <link rel="stylesheet" href="{{ asset("style.css") }}"/>
 </head>
 <body data-file-path="{{ file_url_path }}" data-file-ext="{{ ext }}" data-can-write="{{ 'true' if perms.write else 'false' }}" data-auth-idle-timeout="{{ auth_idle_timeout }}" data-csp-style-nonce="{{ csp_style_nonce or '' }}">
   <div id="xwing-editor-root"></div>
   <script type="application/json" id="xwing-editor-bootstrap">{{ editor_bootstrap | tojson }}</script>
-  <script src="/static/codemirror-bundle.js"></script>
-  <script src="/static/assets/editor.js" defer></script>
+  <script src="{{ asset("codemirror-bundle.js") }}"></script>
+  <script src="{{ asset("editor.js") }}" defer></script>
 </body>
 </html>

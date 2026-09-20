@@ -54,7 +54,8 @@ class TestDirectoryListing:
         assert response.headers["content-type"].startswith(
             "application/vnd.xwing.directory+json"
         )
-        assert response.headers["vary"] == "Accept"
+        # The response now also varies by encoding because it is compressed.
+        assert "Accept" in response.headers["vary"].split(", ")
         data = response.json()
         assert data["version"] == 1
         assert data["path"] == "/"
@@ -339,12 +340,12 @@ class TestAuth:
         assert "font-src 'self'" in csp
         assert "'unsafe-inline'" not in csp
 
-    def test_app_html_and_unversioned_assets_are_revalidated(self, client):
+    def test_app_html_revalidates_and_hashed_assets_are_immutable(self, client, asset_url):
         listing = client.get("/", headers=HTML)
-        asset = client.get("/static/assets/app.js")
+        asset = client.get(asset_url("app.js"))
 
         assert listing.headers["cache-control"] == "no-cache, must-revalidate"
-        assert asset.headers["cache-control"] == "no-cache, must-revalidate"
+        assert asset.headers["cache-control"] == "public, max-age=31536000, immutable"
 
     def test_editor_csp_uses_nonce_for_runtime_styles(self, client, root):
         (root / "notes.txt").write_text("hello")
@@ -368,8 +369,8 @@ class TestAuth:
             '<input type="hidden" name="csrf_token" value="{{ csrf_token }}">'
             in template
         )
-        assert "xwing-card-in" in template
-        assert "xwing-error-up" in template
+        assert "animation: login-card-in 340ms" in template
+        assert "animation: login-error-up 180ms" in template
         assert "xwing:login:username" in template
         assert "Signing in" in template
         assert "security-lock" in template
@@ -396,7 +397,11 @@ class TestAuth:
         assert "LDAPGate" in template
         assert "font-display: swap" in template
         assert "letter-spacing: 0;" in template
-        assert "rgb(155 135 245 / .18)" in template
+        # Brand-safe deltas: the login card carries the product palette.
+        assert "rgb(167 139 250 / .18)" in template
+        assert "#a78bfa" in template
+        assert "#7c3aed" in template
+        assert "rgb(155 135 245 / .18)" not in template
         assert "@media (prefers-reduced-motion: reduce)" in template
         assert "font-display: block" not in template
         assert "letter-spacing: -0.025em" not in template
@@ -563,17 +568,18 @@ class TestAuth:
         assert directory.status_code == 200
         assert 'data-auth-idle-timeout="900"' in directory.text
 
-    def test_pages_use_bundled_frontend_assets(self, client, root):
+    def test_pages_use_bundled_frontend_assets(self, client, root, asset_url):
         (root / "notes.txt").write_text("hello")
         listing = client.get("/", headers=HTML)
         editor = client.get("/notes.txt?edit")
 
         assert listing.status_code == 200
         assert editor.status_code == 200
-        assert "/static/assets/style.css" in listing.text
-        assert "/static/assets/app.js" in listing.text
-        assert "/static/assets/style.css" in editor.text
-        assert "/static/assets/editor.js" in editor.text
+        assert asset_url("style.css") in listing.text
+        assert asset_url("app.js") in listing.text
+        assert asset_url("style.css") in editor.text
+        assert asset_url("editor.js") in editor.text
+        assert asset_url("codemirror-bundle.js") in editor.text
         assert "/static/app.js" not in listing.text
         assert "/static/editor.js" not in editor.text
 
@@ -1433,7 +1439,7 @@ class TestAdminConsole:
             loaded_config,
         )
 
-    def test_admin_page_and_user_management(self, root, tmp_dir, tmp_path, monkeypatch):
+    def test_admin_page_and_user_management(self, root, tmp_dir, tmp_path, monkeypatch, asset_url):
         settings, users, loaded_config = self._settings(
             root, tmp_dir, tmp_path, monkeypatch
         )
@@ -1446,11 +1452,11 @@ class TestAdminConsole:
             assert directory.status_code == 200
             assert bootstrap(directory)["admin"] is True
             assert "admin-bootstrap" in page.text
-            assert "/static/assets/admin.js" in page.text
-            admin_css = client.get("/static/assets/admin.css")
+            assert asset_url("admin.js") in page.text
+            admin_css = client.get(asset_url("admin.css"))
             assert admin_css.status_code == 200
             assert admin_css.headers["content-type"].startswith("text/css")
-            admin_js = client.get("/static/assets/admin.js")
+            admin_js = client.get(asset_url("admin.js"))
             assert admin_js.status_code == 200
             assert admin_js.headers["content-type"].startswith("text/javascript")
 

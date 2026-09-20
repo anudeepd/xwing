@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
+import { escapeHtml, formatBytes, formatDate, prefersReducedMotion } from "./format";
 import { useModalFocus } from "./keyboard";
 import { nearestSurvivor, selectionRange } from "./selection";
 import { nextSort, normalizeSortPreference, sortFiles } from "./sort";
@@ -34,10 +35,19 @@ const DRAG_OVERLAY_STALE_MS = 1500;
 const DROP_DELAYED_MS = 15000;
 /** How often the open folder is re-read so external changes show up on their own. */
 const AUTO_REFRESH_MS = 15000;
+/** How many consecutive background refreshes may fail before the statusbar says so. */
+const REFRESH_FAILURE_NOTICE = 3;
 const DELETE_KEYS: Record<string, true> = { Delete: true, Backspace: true };
+/** The sort button inside a header cell is `height:100%`, so its cell must have a definite height. */
+const SORT_CELL: React.CSSProperties = { height: "100%" };
 
 function sortStorageKey(user: string): string {
   return `xwing.sort.${SORT_STORAGE_VERSION}.${user}`;
+}
+
+/** The server calls the root crumb "Home"; the UI shows it as "workspace". */
+function crumbLabel(name: string): string {
+  return name === "Home" || !name ? "workspace" : name;
 }
 
 function TransitionVeil({ active, label }: { active: boolean; label: string }): React.JSX.Element | null {
@@ -116,6 +126,10 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [lastSelected, setLastSelected] = useState<string | null>(null);
   const [sort, setSort] = useState<SortEntry[]>(() => readSort(initial.user.name));
+  // The filter lives in the URL, so a filtered listing is shareable and the
+  // back button restores it along with the folder.
+  const [query, setQuery] = useState(() => new URLSearchParams(location.search).get("q") ?? "");
+  const [refreshFailures, setRefreshFailures] = useState(0);
   const [parallelOpen, setParallelOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const [dialog, setDialog] = useState<Dialog>(null);
@@ -129,6 +143,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   const fileInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
   const parallelRef = useRef<HTMLDivElement>(null);
+  const parallelMenu = useRef<HTMLDivElement>(null);
   const accountRef = useRef<HTMLDivElement>(null);
   const requestId = useRef(0);
   const abort = useRef<AbortController | null>(null);
@@ -154,34 +169,51 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   useEffect(() => { backgroundBusy.current = paneBusy; });
   const upload = useSyncExternalStore(uploadManager.subscribe, uploadManager.getSnapshot);
 
+  /** Close the parallel-uploads popover; focus returns to its trigger when the
+   *  close came from the keyboard or from choosing an option. */
+  const closeParallel = (restoreFocus = false): void => {
+    setParallelOpen(false);
+    if (restoreFocus) parallelRef.current?.querySelector<HTMLElement>(".parallel-trigger")?.focus();
+  };
+
   useOutsideClose(parallelRef, () => setParallelOpen(false));
   useOutsideClose(accountRef, () => setAccountOpen(false));
+
+  // Focus moves into the popover as it opens, so Escape is handled by the
+  // popover's own key path instead of the file row that opened it.
+  useEffect(() => {
+    if (!parallelOpen) return;
+    const menu = parallelMenu.current;
+    if (!menu) return;
+    (menu.querySelector<HTMLInputElement>("input[type='radio']") ?? menu).focus();
+  }, [parallelOpen]);
 
   useEffect(() => {
     const handleGlobalKey = (event: KeyboardEvent): void => {
       if (event.defaultPrevented || document.querySelector("[aria-modal='true']")) return;
+      const target = event.target instanceof HTMLElement ? event.target : null;
+      // Escape and Delete belong to the field the user is typing in, not to the
+      // file list.
+      const typing = Boolean(target?.matches("input, textarea, select")) || Boolean(target?.isContentEditable);
       if (event.key === "Escape" && accountOpen) {
         event.preventDefault();
         setAccountOpen(false);
         accountRef.current?.querySelector<HTMLElement>(".account-trigger")?.focus();
       } else if (event.key === "Escape" && parallelOpen) {
         event.preventDefault();
-        setParallelOpen(false);
-        parallelRef.current?.querySelector<HTMLElement>(".parallel-trigger")?.focus();
-      } else if (event.key === "Escape" && selected.size) {
+        closeParallel(true);
+      } else if (event.key === "Escape" && selected.size && !typing) {
         event.preventDefault();
         setSelected(new Set());
         setLastSelected(null);
-      } else if (DELETE_KEYS[event.key] && selected.size && directory.permissions.delete && !parallelOpen) {
-        const target = event.target instanceof HTMLElement ? event.target : null;
-        if (target?.matches("input, textarea, select") || target?.isContentEditable) return;
+      } else if (DELETE_KEYS[event.key] && selected.size && directory.permissions.delete && !parallelOpen && !typing) {
         event.preventDefault();
         setDialog({ kind: "delete", paths: [...selected], pending: false });
       }
     };
     document.addEventListener("keydown", handleGlobalKey);
     return () => document.removeEventListener("keydown", handleGlobalKey);
-  }, [accountOpen, directory.permissions.delete, parallelOpen, selected]);
+  }, [accountOpen, closeParallel, directory.permissions.delete, parallelOpen, selected]);
 
   const addToast = (message: string, kind: Toast["kind"] = "success", action?: Toast["action"], duration = 5200): void => {
     const id = Date.now() + Math.random();
@@ -229,6 +261,9 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
         const url = encodePath(next.path === "/" ? "/" : `${next.path}/`);
         if (historyMode === "push") history.pushState({ path: next.path }, "", url);
         if (historyMode === "replace") history.replaceState({ path: next.path }, "", url);
+        // A folder URL carries no filter: the query belongs to the listing the
+        // user was filtering, not to the folder they just opened.
+        if (historyMode !== "none") setQuery("");
         if (animate) setPageLeaving(false);
         focusFileRow(null, true);
       } catch (error) {
@@ -244,7 +279,11 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
 
   useEffect(() => {
     history.replaceState({ path: initial.path }, "", location.href);
-    const onPop = () => void navigate(location.pathname, "none");
+    const onPop = (): void => {
+      // The URL is the filter's source of truth, so back/forward restore it.
+      setQuery(new URLSearchParams(location.search).get("q") ?? "");
+      void navigate(location.pathname, "none");
+    };
     const onBeforeUnload = (event: BeforeUnloadEvent) => {
       if (uploadManager.hasActive()) event.preventDefault();
     };
@@ -269,12 +308,29 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     return () => { window.clearTimeout(timer); events.forEach(name => window.removeEventListener(name, activity)); };
   }, []);
 
-  const files = useMemo(() => sortFiles(directory.files, sort), [directory.files, sort]);
+  // Filtering runs over the already-sorted list, so a filter never changes the
+  // order the user chose.
+  const files = useMemo(() => {
+    const sorted = sortFiles(directory.files, sort);
+    const needle = query.trim().toLowerCase();
+    return needle ? sorted.filter(file => file.name.toLowerCase().includes(needle)) : sorted;
+  }, [directory.files, query, sort]);
+
+  /** The filter is mirrored into `?q=` so the state is shareable and restorable. */
+  const updateQuery = (value: string): void => {
+    setQuery(value);
+    const url = new URL(location.href);
+    if (value) url.searchParams.set("q", value);
+    else url.searchParams.delete("q");
+    // replace, not push: typing must not fill the back button with keystrokes.
+    history.replaceState(history.state, "", url);
+  };
 
   const updateSort = (key: SortKey): void => {
     setSort(current => {
       const next = nextSort(current, key);
-      localStorage.setItem(sortStorageKey(directory.user.name), JSON.stringify(next));
+      try { localStorage.setItem(sortStorageKey(directory.user.name), JSON.stringify(next)); }
+      catch { /* Storage can be unavailable (private mode); the sort still applies now. */ }
       return next;
     });
   };
@@ -312,8 +368,8 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
       const response = await authFetch(encodePath(path), {
         headers: { Accept: DIRECTORY_MEDIA_TYPE }, signal: controller.signal,
       });
-      if (!response.ok) return;
-      if (!response.headers.get("content-type")?.includes(DIRECTORY_MEDIA_TYPE)) return;
+      if (!response.ok) throw new Error(`Request failed (${response.status})`);
+      if (!response.headers.get("content-type")?.includes(DIRECTORY_MEDIA_TYPE)) throw new Error("The server returned an unexpected response");
       const next = parseBootstrap(await response.json());
       if (id !== requestId.current || currentDirectory.current !== path) return;
       setDirectory(previous => listingFingerprint(previous) === listingFingerprint(next) ? previous : next);
@@ -325,8 +381,11 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
         return kept.length === current.size ? current : new Set(kept);
       });
       setLastSelected(current => (current && next.files.some(file => file.path === current)) ? current : null);
+      setRefreshFailures(0);
     } catch {
-      // Keep the last listing rather than interrupting the view with an error.
+      // Keep the last listing rather than interrupting the view with an error,
+      // but stop pretending the view is current once the failures pile up.
+      if (!controller.signal.aborted && id === requestId.current) setRefreshFailures(count => count + 1);
     }
   }, []);
 
@@ -387,7 +446,9 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     const value = dialog.value.trim();
     if (!value || value.includes("/")) { setDialog({ ...dialog, error: "Enter one valid folder name." }); return; }
     const target = `${directory.path === "/" ? "" : directory.path}/${encodeURIComponent(value)}/`;
-    const response = await authFetch(target, { method: "MKCOL" });
+    let response: Response;
+    try { response = await authFetch(target, { method: "MKCOL" }); }
+    catch (error) { setDialog({ ...dialog, error: errorMessage(error) }); return; }
     if (!response.ok) { setDialog({ ...dialog, error: await responseError(response) }); return; }
     setDialog(null); addToast(`Created ${value}`); await refresh();
   };
@@ -396,9 +457,15 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     if (!dialog || dialog.kind !== "delete") return;
     const focusAfterDelete = nearestSurvivor(files, dialog.paths);
     setDialog({ ...dialog, pending: true, error: undefined });
-    const response = dialog.paths.length === 1
-      ? await authFetch(dialog.paths[0]!, { method: "DELETE" })
-      : await authFetch("/_bulk/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paths: dialog.paths }) });
+    let response: Response;
+    try {
+      response = dialog.paths.length === 1
+        ? await authFetch(dialog.paths[0]!, { method: "DELETE" })
+        : await authFetch("/_bulk/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paths: dialog.paths }) });
+    } catch (error) {
+      setDialog({ ...dialog, pending: false, error: errorMessage(error) });
+      return;
+    }
     if (!response.ok) { setDialog({ ...dialog, pending: false, error: await responseError(response) }); return; }
     const data = await response.json().catch(() => ({})) as { transaction_id?: string };
     setDialog(null); setSelected(new Set());
@@ -514,6 +581,8 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   };
 
   const transitioning = directoryState === "loading" || pageLeaving;
+  // Controls disabled by read-only mode point at the notice that explains it.
+  const readOnlyHint = directory.permissions.write ? undefined : "readonly-notice";
 
   return <div className={`xw-app ${pageLeaving ? "page-leaving" : ""}`}
     onDragEnter={event => { event.preventDefault(); if (!directory.permissions.write) return; dragDepth.current += 1; refreshDropFeedback(); }}
@@ -522,6 +591,9 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     onDrop={event => { event.preventDefault(); clearDropFeedback(); void queueDrop(event.dataTransfer); }}>
     <TransitionVeil active={transitioning} label="Switching" />
     <a className="skip-link" href="#file-list">Skip to files</a>
+    {/* The browser's view heading. The visible label is the breadcrumb, which
+        cannot itself become a heading without breaking the crumb row's layout. */}
+    <h1 className="sr-only">{crumbLabel(directory.breadcrumbs[directory.breadcrumbs.length - 1]?.name ?? "")}</h1>
     <header className="topbar">
       <div className="brand"><Logo/><span>X-wing</span><small className="brand-context">FILES</small></div>
       {directory.user.authenticated ? <div className="account-inline">{directory.admin ? <div className="account" ref={accountRef}>
@@ -539,36 +611,37 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
       <section className="location" aria-label="Current location">
         <nav className="crumbs" aria-label="Breadcrumb">{directory.breadcrumbs.map((crumb, index) => <React.Fragment key={crumb.path}>
           {index > 0 && <span className="slash">/</span>}
-          {index === directory.breadcrumbs.length - 1 ? <span className="crumb current">{crumb.name === "Home" ? "workspace" : crumb.name}</span> : <a className="crumb" href={crumb.path} onClick={event => { event.preventDefault(); void navigate(crumb.path); }}>{crumb.name === "Home" ? "workspace" : crumb.name}</a>}
+          {index === directory.breadcrumbs.length - 1 ? <span className="crumb current">{crumbLabel(crumb.name)}</span> : <a className="crumb" href={crumb.path} onClick={event => { event.preventDefault(); void navigate(crumb.path); }}>{crumbLabel(crumb.name)}</a>}
         </React.Fragment>)}</nav>
         <div className="location-meta"><span>{directory.files.length} items</span></div>
       </section>
 
       <div className="workspace-controls">
-      {!directory.permissions.write && <div className="readonly-notice" role="status">Read-only access. Uploads and folder creation are disabled.</div>}
+      {!directory.permissions.write && <div id="readonly-notice" className="readonly-notice" role="status">Read-only access. Uploads and folder creation are disabled.</div>}
       <section className="actionbar" aria-label="File actions">
         <div className="toolbar-group">
-          <button className="button primary" disabled={!directory.permissions.write} onClick={() => fileInput.current?.click()}><Icon name="upload"/><span className="label">Upload files</span></button>
-          <button className="button hide-tablet" aria-label="Upload folder" disabled={!directory.permissions.write} onClick={() => folderInput.current?.click()}><Icon name="folderUpload"/><span className="label">Upload folder</span></button>
-          <button className="button" aria-label="New folder" disabled={!directory.permissions.write} onClick={() => setDialog({ kind: "mkdir", value: "" })}><Icon name="folderAdd"/><span className="label">New folder</span></button>
+          <button className="button primary" disabled={!directory.permissions.write} aria-describedby={readOnlyHint} onClick={() => fileInput.current?.click()}><Icon name="upload"/><span className="label">Upload files</span></button>
+          <button className="button hide-tablet" aria-label="Upload folder" disabled={!directory.permissions.write} aria-describedby={readOnlyHint} onClick={() => folderInput.current?.click()}><Icon name="folderUpload"/><span className="label">Upload folder</span></button>
+          <button className="button" aria-label="New folder" disabled={!directory.permissions.write} aria-describedby={readOnlyHint} onClick={() => setDialog({ kind: "mkdir", value: "" })}><Icon name="folderAdd"/><span className="label">New folder</span></button>
           <input ref={fileInput} type="file" multiple hidden onChange={event => { if (event.target.files) { clearDropFeedback(); queueFiles(event.target.files); } event.currentTarget.value = ""; }}/>
           <input ref={folderInput} type="file" multiple hidden {...({ webkitdirectory: "" } as React.InputHTMLAttributes<HTMLInputElement>)} onChange={event => { if (event.target.files) { clearDropFeedback(); queueFiles(event.target.files); } event.currentTarget.value = ""; }}/>
         </div>
         <div className={`toolbar-group selection-actions ${selected.size ? "visible" : ""}`} aria-hidden={!selected.size}>
           <span className="selection-pill"><i/>{selected.size} selected</span>
           <button className="button" aria-label="Download selected as zip" disabled={!selected.size || zipPending > 0} aria-busy={zipPending > 0} onClick={() => void downloadSelected()}><Icon name="download"/><span className="label">Download zip</span></button>
-          <button className="button danger" aria-label="Delete selected" disabled={!selected.size || !directory.permissions.delete} onClick={() => setDialog({ kind: "delete", paths: [...selected], pending: false })}><Icon name="trash"/><span className="label">Delete</span></button>
+          <button className="button danger" aria-label="Delete selected" disabled={!selected.size || !directory.permissions.delete} aria-describedby={!directory.permissions.delete ? readOnlyHint : undefined} onClick={() => setDialog({ kind: "delete", paths: [...selected], pending: false })}><Icon name="trash"/><span className="label">Delete</span></button>
           <button className="button ghost" disabled={!selected.size} onClick={() => { const focusPath = lastSelected ?? selected.values().next().value ?? null; setSelected(new Set()); setLastSelected(null); focusFileRow(focusPath); }}>Clear</button>
         </div>
         <div className="toolbar-group toolbar-end">
+          <input className="filter-input" type="search" aria-label="Filter files by name" placeholder="Filter files" value={query} onChange={event => updateQuery(event.target.value)}/>
           <div className="parallel-wrap" ref={parallelRef}>
-            <button className="parallel-trigger" aria-label={`Parallel uploads: ${upload.parallel}`} aria-haspopup="dialog" aria-expanded={parallelOpen} onClick={() => setParallelOpen(value => !value)}>
+            <button className="parallel-trigger" aria-label={`Parallel uploads: ${upload.parallel}`} aria-haspopup="dialog" aria-expanded={parallelOpen} onClick={() => parallelOpen ? closeParallel(true) : setParallelOpen(true)}>
               <span className="parallel-copy"><span>Parallel</span><strong>{upload.parallel}</strong></span><Icon name="chevron"/>
             </button>
-            {parallelOpen && <div className="popover parallel-menu" role="dialog" aria-label="Concurrent uploads">
+            {parallelOpen && <div ref={parallelMenu} className="popover parallel-menu" role="dialog" aria-label="Concurrent uploads" tabIndex={-1}>
               <div className="menu-title">Concurrent uploads</div>
               <div role="radiogroup">{PARALLEL_VALUES.map(value => <label className={`parallel-option ${upload.parallel === value ? "selected" : ""}`} key={value}>
-                <input type="radio" name="parallel" value={value} checked={upload.parallel === value} onChange={() => { uploadManager.setParallel(value); setParallelOpen(false); }}/>
+                <input type="radio" name="parallel" value={value} checked={upload.parallel === value} onChange={() => { uploadManager.setParallel(value); closeParallel(true); }}/>
                 <span><strong>{value}</strong><small>at a time</small></span>{upload.parallel === value && <Icon name="check"/>}
               </label>)}</div>
             </div>}
@@ -582,13 +655,15 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
         if (DELETE_KEYS[event.key] && directory.permissions.delete && selected.size) { event.preventDefault(); setDialog({ kind: "delete", paths: [...selected], pending: false }); }
         else if (event.key === "Escape" && selected.size) { event.preventDefault(); setSelected(new Set()); setLastSelected(null); }
       }}>
-        <div className="table-head"><SelectionCheckbox label={selected.size === files.length ? "Deselect all" : "Select all"} checked={files.length > 0 && selected.size === files.length} indeterminate={selected.size > 0 && selected.size < files.length} onToggle={() => { setSelected(selected.size === files.length ? new Set() : new Set(files.map(file => file.path))); setLastSelected(null); }}/><span/>{(["name", "size", "modified"] as SortKey[]).map(key => { const index = sort.findIndex(entry => entry.key === key); const entry = sort[index]; const label = key === "modified" ? "Modified" : key[0]!.toUpperCase() + key.slice(1); return <button key={key} className={`sort ${key === "modified" ? "date" : ""} ${entry ? "active" : ""}`} aria-label={`${label}, ${entry ? `${entry.direction === "asc" ? "ascending" : "descending"}, priority ${index + 1}` : "not sorted"}`} onClick={() => updateSort(key)}>{label} {entry && <span>{entry.direction === "asc" ? "▲" : "▼"}{sort.length > 1 ? index + 1 : ""}</span>}</button>; })}<span/></div>
-        <div id="file-list" className="file-list" tabIndex={-1}>
+        <div className="file-table" role="table" aria-label="Files" aria-rowcount={files.length + 1}>
+        <div className="table-head" role="rowgroup"><span className="select-all" role="columnheader"><SelectionCheckbox label={selected.size === files.length ? "Deselect all" : "Select all"} checked={files.length > 0 && selected.size === files.length} indeterminate={selected.size > 0 && selected.size < files.length} onToggle={() => { setSelected(selected.size === files.length ? new Set() : new Set(files.map(file => file.path))); setLastSelected(null); }}/></span><span role="columnheader"/>{(["name", "size", "modified"] as SortKey[]).map(key => { const index = sort.findIndex(entry => entry.key === key); const entry = sort[index]; const label = key === "modified" ? "Modified" : key[0]!.toUpperCase() + key.slice(1); return <span key={key} className="sort-cell" role="columnheader" aria-sort={entry ? (entry.direction === "asc" ? "ascending" : "descending") : "none"} style={SORT_CELL}><button className={`sort ${key === "modified" ? "date" : ""} ${entry ? "active" : ""}`} aria-label={`${label}, ${entry ? `${entry.direction === "asc" ? "ascending" : "descending"}, priority ${index + 1}` : "not sorted"}`} onClick={() => updateSort(key)}>{label} {entry && <span>{entry.direction === "asc" ? "▲" : "▼"}{sort.length > 1 ? index + 1 : ""}</span>}</button></span>; })}<span role="columnheader"/></div>
+        <div id="file-list" className="file-list" role="rowgroup" tabIndex={-1}>
           {directoryState === "error" && <div className="state-panel"><strong>Couldn’t open this folder</strong><span>{directoryError}</span><button className="button" onClick={() => void refresh()}>Retry</button></div>}
-          {!files.length && directoryState !== "error" && <div className="state-panel empty"><span className="empty-icon"><Icon name="folder"/></span><strong>This folder is empty</strong><span>{directory.permissions.write ? "Upload files or create a folder to get started." : "You have read-only access here."}</span></div>}
-          {files.map((file, index) => <FileRow key={file.path} file={file} selected={selected.has(file.path)} loading={directoryState === "loading"} arriving={arrivingNames.has(file.name)} onSelect={(gesture) => toggleSelection(file, index, gesture)} onOpen={() => file.kind === "directory" ? void navigate(file.path) : openDocument(`${file.path}${file.editable ? "?edit" : ""}`)} onDelete={() => setDialog({ kind: "delete", paths: [file.path], pending: false })} onDeleteKey={() => { if (directory.permissions.delete) setDialog({ kind: "delete", paths: selected.size ? [...selected] : [file.path], pending: false }); }} onClear={() => { setSelected(new Set()); setLastSelected(null); }}/>) }
+          {!files.length && directoryState !== "error" && <div className="state-panel empty"><span className="empty-icon"><Icon name="folder"/></span><strong>{query.trim() ? "No matches" : "This folder is empty"}</strong><span>{query.trim() ? `Nothing here matches “${query.trim()}”.` : directory.permissions.write ? "Upload files or create a folder to get started." : "You have read-only access here."}</span>{directory.permissions.write && !query.trim() && <button className="button primary" onClick={() => fileInput.current?.click()}><Icon name="upload"/><span className="label">Upload files</span></button>}</div>}
+          {files.map((file, index) => <FileRow key={file.path} file={file} index={index} selected={selected.has(file.path)} loading={directoryState === "loading"} arriving={arrivingNames.has(file.name)} onSelect={(gesture) => toggleSelection(file, index, gesture)} onOpen={() => file.kind === "directory" ? void navigate(file.path) : openDocument(`${file.path}${file.editable ? "?edit" : ""}`)} onDelete={() => setDialog({ kind: "delete", paths: [file.path], pending: false })} onDeleteKey={() => { if (directory.permissions.delete) setDialog({ kind: "delete", paths: selected.size ? [...selected] : [file.path], pending: false }); }} onClear={() => { setSelected(new Set()); setLastSelected(null); }}/>) }
         </div>
-        <div className="statusbar"><span className="drop-hint">Drop files anywhere to upload</span></div>
+        </div>
+        <div className="statusbar"><span className="drop-hint">Drop files anywhere to upload</span>{refreshFailures >= REFRESH_FAILURE_NOTICE && <span role="status">Couldn't refresh — retrying</span>}</div>
         {dropWaitState && <div className={`drop-wait ${dropWaitState}`}>
           {dropWaitState === "preparing"
             ? <span className="drop-wait-spinner" aria-hidden="true"/>
@@ -599,9 +674,14 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
         </div>}
       </section>
       {dragging && <div className="drop-target" role="status" aria-live="polite"><span className="drop-target-icon"><Icon name="upload"/></span><strong>Drop files here</strong><span>Upload to {directory.path}</span></div>}
-      <UploadDock snapshot={upload}/>
+      {/* One rail: toasts stack above the upload dock so they cannot overlap,
+          and each toast carries its own status/alert role so a message is
+          announced exactly once. */}
+      <div className="notify-rail">
+        <div className="toast-stack">{toasts.map(toast => <ToastView key={toast.id} toast={toast} onDismiss={() => dismissToast(toast.id)}/>)}</div>
+        <UploadDock snapshot={upload}/>
+      </div>
       {zipPending > 0 && <div className="zip-overlay" role="status" aria-live="polite"><div className="zip-overlay-card"><span className="zip-spinner" aria-hidden="true"/><span className="zip-overlay-text">Zipping {zipPending} file{zipPending === 1 ? "" : "s"}…</span></div></div>}
-      <div className="toast-stack" aria-live="polite">{toasts.map(toast => <ToastView key={toast.id} toast={toast} onDismiss={() => dismissToast(toast.id)}/>)}</div>
     </main>
     {dialog && <DialogView dialog={dialog} setDialog={setDialog} onMkdir={() => void createFolder()} onDelete={() => void deletePaths()}/>} 
     {authOverlay && <div className="auth-overlay" role="status" aria-live="polite"><div className="auth-overlay-card"><span className="auth-pulse"><span/></span><div><h2>{authOverlay === "signout" ? "Signing out" : "Session expired"}</h2><p>{authOverlay === "signout" ? "Ending your session…" : "Your session has ended. Redirecting to sign in…"}</p></div></div></div>}
@@ -638,14 +718,14 @@ function ToastView({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
   </div>;
 }
 
-function FileRow({ file, selected, loading, arriving, onSelect, onOpen, onDelete, onDeleteKey, onClear }: { file: XwingFile; selected: boolean; loading: boolean; arriving: boolean; onSelect: (gesture: { range: boolean; additive: boolean }) => void; onOpen: () => void; onDelete: () => void; onDeleteKey: () => void; onClear: () => void }): React.JSX.Element {
+function FileRow({ file, index, selected, loading, arriving, onSelect, onOpen, onDelete, onDeleteKey, onClear }: { file: XwingFile; index: number; selected: boolean; loading: boolean; arriving: boolean; onSelect: (gesture: { range: boolean; additive: boolean }) => void; onOpen: () => void; onDelete: () => void; onDeleteKey: () => void; onClear: () => void }): React.JSX.Element {
   const moveFocus = (row: HTMLElement, direction: "next" | "previous" | "first" | "last"): void => {
     const rows = [...(row.parentElement?.querySelectorAll<HTMLElement>(".file-row") ?? [])];
     const current = rows.indexOf(row);
     const target = direction === "first" ? rows[0] : direction === "last" ? rows[rows.length - 1] : rows[current + (direction === "next" ? 1 : -1)];
     target?.focus();
   };
-  return <div className={`file-row ${selected ? "selected" : ""} ${loading ? "muted" : ""} ${arriving ? "arriving" : ""}`} role="row" aria-label={`${file.name}, ${file.kind}`} aria-selected={selected} data-path={file.path} tabIndex={0}
+  return <div className={`file-row ${selected ? "selected" : ""} ${loading ? "muted" : ""} ${arriving ? "arriving" : ""}`} role="row" aria-rowindex={index + 2} aria-label={`${file.name}, ${file.kind}`} aria-selected={selected} data-path={file.path} tabIndex={0}
     onMouseDown={event => { if (event.shiftKey && !(event.target as Element).closest(".row-actions")) event.preventDefault(); }}
     onDragStart={event => event.preventDefault()}
     onClick={event => { if ((event.target as Element).closest(".row-actions")) return; window.getSelection()?.removeAllRanges(); onSelect({ range: event.shiftKey, additive: event.metaKey || event.ctrlKey }); event.currentTarget.focus(); }}
@@ -662,12 +742,12 @@ function FileRow({ file, selected, loading, arriving, onSelect, onOpen, onDelete
       else if (event.key === "Home") { event.preventDefault(); moveFocus(event.currentTarget, "first"); }
       else if (event.key === "End") { event.preventDefault(); moveFocus(event.currentTarget, "last"); }
     }}>
-    <SelectionCheckbox rowControl label={`${selected ? "Deselect" : "Select"} ${file.name}`} checked={selected} onToggle={event => onSelect({ range: event.shiftKey, additive: event.metaKey || event.ctrlKey || !event.shiftKey })}/>
-    <span className={`file-icon ${file.kind}`}><Icon name={file.kind === "directory" ? "folder" : "file"}/></span>
-    <span className={`filename ${file.kind}`} title={file.name}>{file.name}{file.kind === "directory" ? "/" : ""}</span>
-    <span className="cell">{file.size === null ? "—" : formatBytes(file.size)}</span>
-    <span className="cell date">{file.modified ? formatDate(file.modified) : "—"}</span>
-    <span className="row-actions"><a className="icon-button" href={file.kind === "directory" ? `${file.path}?zip` : file.path} download aria-label={`Download ${file.name}`}><Icon name="download"/></a><button className="icon-button danger-icon" aria-label={`Delete ${file.name}`} onClick={onDelete}><Icon name="trash"/></button></span>
+    <span className="row-check" role="cell"><SelectionCheckbox rowControl label={`${selected ? "Deselect" : "Select"} ${file.name}`} checked={selected} onToggle={event => onSelect({ range: event.shiftKey, additive: event.metaKey || event.ctrlKey || !event.shiftKey })}/></span>
+    <span className={`file-icon ${file.kind}`} role="cell"><Icon name={file.kind === "directory" ? "folder" : "file"}/></span>
+    <span className={`filename ${file.kind}`} role="cell" title={file.name}>{file.name}{file.kind === "directory" ? "/" : ""}</span>
+    <span className="cell" role="cell">{file.size === null ? "—" : formatBytes(file.size)}</span>
+    <span className="cell date" role="cell">{file.modified ? formatDate(file.modified) : "—"}</span>
+    <span className="row-actions" role="cell"><a className="icon-button" href={file.kind === "directory" ? `${file.path}?zip` : file.path} download aria-label={`Download ${file.name}`}><Icon name="download"/></a><button className="icon-button danger-icon" aria-label={`Delete ${file.name}`} onClick={onDelete}><Icon name="trash"/></button></span>
   </div>;
 }
 
@@ -710,7 +790,7 @@ function UploadDock({ snapshot }: { snapshot: ReturnType<UploadManager["getSnaps
   if (!snapshot.items.length) return null;
   const dismissible = snapshot.items.some(item => item.status === "completed" || item.status === "cancelled");
   return <aside className={`upload-dock ${closing ? "closing" : ""}`} aria-label="Uploads"><div className="upload-header"><div><strong>Uploads</strong><span className={`upload-summary ${uploadSummaryKind(snapshot)}`}>{uploadSummary(snapshot)}</span></div><button className="icon-button" aria-label="Clear finished uploads" disabled={!dismissible} onClick={() => uploadManager.dismissCompleted()}><Icon name="close"/></button></div>
-    <div className="upload-items">{snapshot.items.map(item => <div className={`upload-item ${item.status}`} key={item.id}><div className="upload-line"><span title={item.relativePath}>{item.relativePath}</span><strong>{item.status === "completed" ? "Done" : `${Math.round(item.size ? item.uploaded / item.size * 100 : 0)}%`}</strong></div><div className="progress-track"><span style={{ width: `${item.size ? item.uploaded / item.size * 100 : 0}%` }}/></div><div className="upload-meta"><span>{uploadItemLabel(item)}{item.status === "uploading" && item.speed > 0 ? ` · ${formatBytes(item.speed)}/s` : ""}</span><span>{item.status === "failed" || item.status === "cancelled" ? <button onClick={() => uploadManager.retry(item.id)}><Icon name="retry"/> Retry</button> : item.status !== "completed" ? <button onClick={() => uploadManager.cancel(item.id)}>Cancel</button> : null}</span></div></div>)}</div>
+    <div className="upload-items">{snapshot.items.map(item => { const percent = item.size ? Math.round(item.uploaded / item.size * 100) : 0; return <div className={`upload-item ${item.status}`} key={item.id} role="group" aria-label={`${item.relativePath}, ${uploadItemLabel(item)}`}><div className="upload-line"><span title={item.relativePath}>{item.relativePath}</span><strong>{item.status === "completed" ? "Done" : `${percent}%`}</strong></div><div className="progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent} aria-label={`${item.relativePath} upload progress`}><span style={{ transform: `scaleX(${percent / 100})` }}/></div><div className="upload-meta"><span>{uploadItemLabel(item)}{item.status === "uploading" && item.speed > 0 ? ` · ${formatBytes(item.speed)}/s` : ""}</span><span>{item.status === "failed" || item.status === "cancelled" ? <button onClick={() => uploadManager.retry(item.id)}><Icon name="retry"/> Retry</button> : item.status !== "completed" ? <button onClick={() => uploadManager.cancel(item.id)}>Cancel</button> : null}</span></div></div>; })}</div>
   </aside>;
 }
 
@@ -731,8 +811,8 @@ function DialogView({ dialog, setDialog, onMkdir, onDelete }: { dialog: Exclude<
   return <div ref={modalRef} className={`modal-backdrop ${closing ? "closing" : ""}`} onMouseDown={event => { if (event.target === event.currentTarget) close(); }}><form className="modal" role="dialog" aria-modal="true" aria-labelledby="dialog-title" aria-describedby="dialog-description" onSubmit={event => { event.preventDefault(); if (mkdir) onMkdir(); else onDelete(); }}>
     <h2 id="dialog-title">{mkdir ? "New folder" : `Delete ${dialog.paths.length} item${dialog.paths.length === 1 ? "" : "s"}?`}</h2>
     <p id="dialog-description">{mkdir ? "Create a folder in the current directory." : "The items will move to X-wing’s recoverable trash."}</p>
-    {mkdir && <label>Folder name<input data-autofocus value={dialog.value} onChange={event => setDialog({ ...dialog, value: event.target.value, error: undefined })}/></label>}
-    {dialog.error && <div className="dialog-error" role="alert">{dialog.error}</div>}
+    {mkdir && <label>Folder name<input data-autofocus value={dialog.value} aria-invalid={dialog.error ? "true" : undefined} aria-describedby={dialog.error ? "dialog-error" : undefined} onChange={event => setDialog({ ...dialog, value: event.target.value, error: undefined })}/></label>}
+    {dialog.error && <div id="dialog-error" className="dialog-error" role="alert">{dialog.error}</div>}
     <div className="modal-actions"><button type="button" className="button" disabled={pending || closing} onClick={close}>Cancel</button><button ref={confirmRef} data-autofocus={!mkdir ? "true" : undefined} className={`button ${mkdir ? "primary" : "danger"}`} disabled={pending || closing}>{pending ? "Deleting…" : mkdir ? "Create folder" : "Delete"}</button></div>
   </form></div>;
 }
@@ -752,13 +832,29 @@ function readSort(user: string): SortEntry[] {
   } catch { return normalizeSortPreference(null); }
 }
 
-function formatBytes(bytes: number): string { const units = ["B", "KB", "MB", "GB", "TB"]; let value = bytes; let unit = 0; while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1; } return `${unit ? value.toFixed(1) : value} ${units[unit]}`; }
-function formatDate(value: string): string { return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value)); }
+/**
+ * User-facing copy for the statuses the file browser can actually hit; the
+ * server's raw status code is never shown. Anything unmapped falls back to the
+ * server's own detail message.
+ */
+const STATUS_COPY: Record<number, string> = {
+  405: "A folder or file with that name already exists.",
+  403: "You don't have permission for that.",
+  404: "That file or folder no longer exists.",
+  409: "That name is already taken.",
+  413: "That file is too large.",
+  507: "Not enough space on the server.",
+};
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : "Something went wrong"; }
-async function responseError(response: Response): Promise<string> { try { const body = await response.json() as { detail?: string }; return body.detail || `Request failed (${response.status})`; } catch { return `Request failed (${response.status})`; } }
+async function responseError(response: Response): Promise<string> {
+  const mapped = STATUS_COPY[response.status];
+  try {
+    const body = await response.json() as { detail?: string };
+    return mapped ?? (body.detail || `Request failed (${response.status})`);
+  } catch { return mapped ?? `Request failed (${response.status})`; }
+}
 function downloadBlob(blob: Blob, filename: string): void { const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = filename; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
 function contentDispositionFilename(header: string | null): string | null { const match = header?.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i); return match?.[1] ? decodeURIComponent(match[1]) : null; }
-function prefersReducedMotion(): boolean { return window.matchMedia("(prefers-reduced-motion: reduce)").matches; }
 
 try {
   const root = document.getElementById("xwing-root");
@@ -768,5 +864,3 @@ try {
   const root = document.getElementById("xwing-root") || document.body;
   root.innerHTML = `<div class="boot-error"><strong>X-wing couldn’t start</strong><span>${escapeHtml(errorMessage(error))}</span><button onclick="location.reload()">Reload</button></div>`;
 }
-
-function escapeHtml(value: string): string { const node = document.createElement("span"); node.textContent = value; return node.innerHTML; }

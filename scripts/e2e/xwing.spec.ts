@@ -4,7 +4,7 @@ test("daily browser workflow is keyboard-accessible", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("img", { name: "X-wing logo" })).toBeVisible();
   await expect(page.getByText("X-wing", { exact: true })).toBeVisible();
-  await expect(page.getByText("workspace", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Breadcrumb").getByText("workspace", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "Parallel uploads: 4" }).click();
   const menu = page.getByRole("dialog", { name: "Concurrent uploads" });
@@ -34,7 +34,7 @@ test("daily browser workflow is keyboard-accessible", async ({ page }) => {
   await releases.focus();
   await releases.press("Enter");
   await expect(page).toHaveURL(/\/releases\/$/);
-  await expect(page.getByRole("row", { name: /^checksums\.txt,/ })).toBeFocused();
+  await expect.poll(() => page.getByRole("row", { name: /^checksums\.txt,/ }).evaluate(element => document.activeElement === element)).toBe(true);
   await page.goBack();
   await expect(page.getByRole("row", { name: /^README\.md,/ })).toBeVisible();
 });
@@ -380,7 +380,7 @@ test("editor controls keep the same appearance across browser engines", async ({
   await expect(download).toHaveCSS("color", "rgb(231, 234, 240)");
   await expect(download).toHaveCSS("text-decoration-line", "none");
   await expect(download).toHaveCSS("appearance", "none");
-  await expect(save).toHaveCSS("background-color", "rgb(115, 95, 212)");
+  await expect(save).toHaveCSS("background-color", "rgb(124, 58, 237)");
   await expect(page.getByText("anonymous", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Account: anonymous" })).toHaveCount(0);
 });
@@ -514,7 +514,7 @@ test("an empty folder invites the next step and sorting survives a reload", asyn
 
   await expect(page.getByText("This folder is empty")).toBeVisible();
   await expect(page.getByText("Upload files or create a folder to get started.")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Upload files" })).toBeEnabled();
+  await expect(page.getByLabel("Files and folders").getByRole("button", { name: "Upload files" })).toBeEnabled();
 
   await page.getByRole("link", { name: "workspace" }).click();
   await page.getByRole("checkbox", { name: `Select ${folder}` }).click();

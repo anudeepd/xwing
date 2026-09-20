@@ -90,7 +90,11 @@ def propfind_response(request: Request, path: Path, root: Path) -> Response:
 
 def mkcol_response(path: Path) -> Response:
     if path.exists():
-        return Response(status_code=405, content="Already exists")
+        # RFC 4918 keeps 405 for an existing collection; the body is only a
+        # human-readable hint because WebDAV clients ignore it.
+        return Response(
+            status_code=405, content="A folder or file with that name already exists."
+        )
     try:
         path.mkdir(parents=False)
     except FileNotFoundError:

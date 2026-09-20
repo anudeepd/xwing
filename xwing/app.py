@@ -3,6 +3,7 @@ import io
 import json
 import logging
 import os
+import re
 import secrets
 import shutil
 import tempfile
@@ -17,6 +18,7 @@ from urllib.parse import quote, unquote, urlparse
 import anyio
 import yaml
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -79,8 +81,41 @@ APP_CSP = (
     "font-src 'self' data:"
 )
 APP_SHELL_CACHE_CONTROL = "no-cache, must-revalidate"
+# Content-hashed bundles never change under the same name, so they can be cached
+# forever; the HTML shell and unhashed files keep revalidating.
+IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable"
+_HASHED_ASSET_RE = re.compile(r"-[A-Za-z0-9]{8}\.(?:js|css|woff2?)$")
 DIRECTORY_MEDIA_TYPE = "application/vnd.xwing.directory+json"
 ACTIVE_USER_WINDOW_MINUTES = 5
+
+# Short page title and a plain-language sentence per status, used by the HTML
+# error page so a browser navigation never lands on a raw JSON body.
+_ERROR_COPY: dict[int, tuple[str, str]] = {
+    400: ("That request could not be handled", "The request was not valid. Go back and try again."),
+    403: ("Access denied", "You do not have permission to open this."),
+    404: ("Not found", "That file or folder no longer exists."),
+    405: ("Not allowed", "That action is not allowed on this path."),
+    409: ("Already exists", "A folder or file with that name already exists."),
+    413: ("File too large", "That file is larger than this server accepts."),
+    422: ("That request could not be handled", "The request was not valid. Go back and try again."),
+    500: ("Server error", "Something went wrong on the server. Try again."),
+    507: ("No space left", "The server does not have enough space for that file."),
+}
+
+
+def load_asset_manifest() -> dict[str, str]:
+    """Map logical asset names to the content-hashed names from the build."""
+    try:
+        return json.loads((STATIC_DIR / "assets" / "manifest.json").read_text())
+    except FileNotFoundError:
+        logger.warning(
+            "Asset manifest missing; serving unhashed asset names. "
+            "Run the frontend build: cd scripts && npm run build"
+        )
+        return {}
+    except json.JSONDecodeError:
+        logger.exception("Asset manifest is not valid JSON; serving unhashed names")
+        return {}
 
 
 class BreadcrumbPayload(BaseModel):
@@ -364,11 +399,19 @@ def create_app(settings: Settings) -> FastAPI:
             )
         # Xwing's JS and CSS filenames are stable across releases, so they
         # must be revalidated before a normal browser reload can use them.
-        if request.url.path.startswith("/static/") or response.headers.get(
+        if request.url.path.startswith("/static/assets/") and _HASHED_ASSET_RE.search(
+            request.url.path
+        ):
+            response.headers.setdefault("Cache-Control", IMMUTABLE_CACHE_CONTROL)
+        elif request.url.path.startswith("/static/") or response.headers.get(
             "content-type", ""
         ).startswith("text/html"):
             response.headers.setdefault("Cache-Control", APP_SHELL_CACHE_CONTROL)
         return response
+
+    # Registered last so it wraps the middlewares above and the routes below,
+    # which means static assets are compressed as well.
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
 
     if settings.users_config:
         logger.info("Permissions loaded from %s", settings.users_config)
@@ -409,8 +452,32 @@ def create_app(settings: Settings) -> FastAPI:
             template_path=str(_login_template) if _login_template.exists() else None,
         )
 
+    # Content-hashed asset names come from the frontend build manifest, so the
+    # templates never hard-code a version.
+    asset_manifest = load_asset_manifest()
+
+    def asset(name: str) -> str:
+        return f"/static/assets/{asset_manifest.get(name, name)}"
+
     templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
     templates.env.filters["human_size"] = human_size
+    templates.env.globals["asset"] = asset
+
+    @app.exception_handler(HTTPException)
+    async def http_exception_handler(request: Request, exc: HTTPException):
+        """Browsers get a page; API and WebDAV clients keep the JSON body."""
+        accepts_html = "text/html" in request.headers.get("accept", "")
+        if not accepts_html or request.method not in {"GET", "HEAD"}:
+            return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+        status = exc.status_code
+        title, fallback = _ERROR_COPY.get(status, _ERROR_COPY[500])
+        detail = exc.detail if isinstance(exc.detail, str) and exc.detail else ""
+        return templates.TemplateResponse(
+            request,
+            "error.html",
+            {"status": status, "title": title, "message": detail or fallback},
+            status_code=status,
+        )
 
     app.include_router(create_upload_router(settings, upload_store))
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -1167,7 +1234,11 @@ def create_app(settings: Settings) -> FastAPI:
         if _ldap_config_path is None and not settings.trusted_auth_proxies:
             raise HTTPException(
                 status_code=403,
-                detail="Admin console requires LDAPGate authentication",
+                detail=(
+                    "The admin console needs an LDAPGate session. Start LDAPGate as a "
+                    "reverse proxy in front of X-wing, or pass --ldap-config, then sign "
+                    "in and reload this page."
+                ),
             )
         user = getattr(request.state, "user", None)
         if not user:

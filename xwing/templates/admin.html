@@ -6,8 +6,8 @@
   <meta name="theme-color" content="#080b12"/>
   <title>X-wing — Admin</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg"/>
-  <link rel="stylesheet" href="/static/assets/style.css"/>
-  <link rel="stylesheet" href="/static/assets/admin.css"/>
+  <link rel="stylesheet" href="{{ asset("style.css") }}"/>
+  <link rel="stylesheet" href="{{ asset("admin.css") }}"/>
 </head>
 <body class="admin-body" data-user="{{ user }}" data-auth-idle-timeout="{{ auth_idle_timeout }}">
   <a class="skip-link" href="#admin-main">Skip to admin content</a>
@@ -16,6 +16,6 @@
     <div class="auth-overlay-card"><span class="auth-pulse"><span></span></span><div><h2 id="auth-overlay-title">Signing out</h2><p id="auth-overlay-message">Ending your session...</p></div></div>
   </div>
   <script type="application/json" id="admin-bootstrap">{{ {"user": user, "ldapConfigured": ldap_configured} | tojson }}</script>
-  <script src="/static/assets/admin.js" defer></script>
+  <script src="{{ asset("admin.js") }}" defer></script>
 </body>
 </html>

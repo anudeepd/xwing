@@ -88,15 +88,13 @@ describe("shared auth helpers", () => {
 });
 
 describe("responsive file browser styles", () => {
-  it("wraps every toolbar group on narrow viewports", () => {
+  it("keeps the live breakpoints for the file browser", () => {
     const stylesheet = readFileSync("../xwing/frontend/src/style.css", "utf8");
 
-    expect(stylesheet).toContain("@media (max-width: 700px)");
-    expect(stylesheet).toContain(`.toolbar-primary,
-  .toolbar-selection,
-  .toolbar-meta {
-    flex: 1 1 100%;
-    flex-wrap: wrap;
-  }`);
+    // The legacy 700px toolbar block was deleted with the rest of the dead CSS;
+    // the live layout collapses at 900px and 640px and the e2e suite asserts the
+    // rendered result (no horizontal overflow at 375px).
+    expect(stylesheet).toContain("@media(max-width:900px)");
+    expect(stylesheet).toContain("@media(max-width:640px)");
   });
 });

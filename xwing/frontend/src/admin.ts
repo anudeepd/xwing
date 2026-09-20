@@ -1,4 +1,6 @@
 import { createAuthSession } from "./shared.js";
+import { escapeHtml, formatBytes, formatDate, prefersReducedMotion } from "./format";
+import { trapFocus } from "./focus-trap";
 
 declare global {
   interface PromiseConstructor {
@@ -12,7 +14,6 @@ const authSession = createAuthSession({
 const dialogs = { confirm: confirmAction };
 
 function confirmAction(title: string, message: string, confirmText = "Confirm"): Promise<boolean> {
-  const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const backdrop = document.createElement("div");
   const dialog = document.createElement("form");
   const titleElement = document.createElement("h2");
@@ -22,6 +23,7 @@ function confirmAction(title: string, message: string, confirmText = "Confirm"):
   const confirm = document.createElement("button");
   const { promise, resolve } = Promise.withResolvers<boolean>();
   let closing = false;
+  let releaseFocus: (() => void) | null = null;
 
   backdrop.className = "modal-backdrop";
   dialog.className = "modal";
@@ -40,6 +42,9 @@ function confirmAction(title: string, message: string, confirmText = "Confirm"):
   confirm.className = "button danger";
   confirm.type = "submit";
   confirm.textContent = confirmText;
+  // Every admin confirmation is destructive, so the confirm button takes the
+  // initial focus; a safe action would simply omit this and land on Cancel.
+  confirm.dataset.autofocus = "true";
   dialog.append(titleElement, messageElement, actions);
   actions.append(cancel, confirm);
   backdrop.appendChild(dialog);
@@ -50,32 +55,13 @@ function confirmAction(title: string, message: string, confirmText = "Confirm"):
     backdrop.classList.add("closing");
     window.setTimeout(() => {
       backdrop.remove();
-      if (previous?.isConnected) previous.focus();
+      releaseFocus?.();
+      releaseFocus = null;
       resolve(value);
-    }, window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 160);
+    }, prefersReducedMotion() ? 0 : 160);
   };
-  const focusable = (): HTMLElement[] => [cancel, confirm].filter(button => !button.disabled);
   backdrop.addEventListener("mousedown", event => {
     if (event.target === backdrop) close(false);
-  });
-  backdrop.addEventListener("keydown", event => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      close(false);
-      return;
-    }
-    if (event.key !== "Tab") return;
-    const controls = focusable();
-    if (!controls.length) return;
-    const first = controls[0]!;
-    const last = controls[controls.length - 1]!;
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault();
-      first.focus();
-    }
   });
   cancel.addEventListener("click", () => close(false));
   dialog.addEventListener("submit", event => {
@@ -83,7 +69,7 @@ function confirmAction(title: string, message: string, confirmText = "Confirm"):
     close(true);
   });
   document.body.appendChild(backdrop);
-  window.setTimeout(() => confirm.focus(), 0);
+  releaseFocus = trapFocus(backdrop, { onEscape: () => close(false) });
   return promise;
 }
 
@@ -173,24 +159,6 @@ function accountMarkup(): string {
 }
 const root = document.getElementById("admin-root") as HTMLElement;
 
-function escapeHtml(value: unknown): string {
-  const node = document.createElement("span");
-  node.textContent = String(value ?? "");
-  return node.innerHTML;
-}
-
-function formatBytes(bytes: number): string {
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let value = Math.max(0, bytes);
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1; }
-  return `${unit ? value.toFixed(1) : value.toFixed(0)} ${units[unit] ?? "B"}`;
-}
-
-function formatDate(value: string): string {
-  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
-}
-
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await authSession.authFetch(url, { credentials: "same-origin", ...init, headers: { "Content-Type": "application/json", ...(init?.headers || {}) } });
   if (!response.ok) {
@@ -212,15 +180,24 @@ function readPermissions(form: HTMLFormElement, prefix: string): PermissionSet {
   return { read: value("read"), write: value("write"), delete: value("delete") };
 }
 
+/** Matches the app's default toast duration, so admin feedback clears like a toast. */
+const FEEDBACK_DURATION_MS = 5200;
+
+/** The rail holds one message at a time: a new one replaces the previous one. */
+function showToast(kind: "success" | "error", message: string): HTMLElement | null {
+  const rail = document.querySelector<HTMLElement>(".notify-rail");
+  if (!rail) return null;
+  rail.innerHTML = `<div class="toast ${kind}" role="${kind === "error" ? "alert" : "status"}"><span class="toast-message">${escapeHtml(message)}</span></div>`;
+  return rail.firstElementChild as HTMLElement | null;
+}
+
 function showError(error: unknown): void {
-  const message = error instanceof Error ? error.message : "Something went wrong";
-  const target = document.getElementById("admin-feedback");
-  if (target) { target.textContent = message; target.className = "admin-feedback error"; }
+  showToast("error", error instanceof Error ? error.message : "Something went wrong");
 }
 
 function showSuccess(message: string): void {
-  const target = document.getElementById("admin-feedback");
-  if (target) { target.textContent = message; target.className = "admin-feedback success"; }
+  const toast = showToast("success", message);
+  if (toast) window.setTimeout(() => toast.remove(), FEEDBACK_DURATION_MS);
 }
 
 function metricCard(label: string, value: string, hint: string): string {
@@ -244,10 +221,11 @@ function render(): void {
   ];
   root.innerHTML = `<div class="admin-shell">
     <header class="topbar admin-topbar"><div class="brand">${logoMarkup()}<span>X-wing</span><small class="brand-context">ADMIN</small></div><div class="account-inline">${accountMarkup()}<form id="logout-form" method="post" action="/_auth/logout"><button class="signout-button" type="submit">Sign out</button></form></div></header>
-    <main id="admin-main" class="admin-main"><div class="admin-heading"><div><p class="eyebrow">CONTROL PLANE</p><h1>Workspace administration</h1><p class="lede">Manage user access, activity, and recoverable storage.</p></div><div id="admin-feedback" class="admin-feedback" role="status" aria-live="polite"></div></div>
+    <main id="admin-main" class="admin-main"><div class="admin-heading"><div><p class="eyebrow">CONTROL PLANE</p><h1>Workspace administration</h1><p class="lede">Manage user access, activity, and recoverable storage.</p></div></div>
       <nav class="admin-tabs" aria-label="Admin sections">${tabs.map(tab => `<a class="admin-tab ${activeTab === tab.id ? "active" : ""}" data-admin-tab="${tab.id}" href="#${tab.id}">${tab.label}</a>`).join("")}</nav>
       <section id="admin-view" class="admin-view ${suppressViewAnimation ? "no-motion" : ""}" aria-live="polite">${viewMarkup()}</section>
     </main>
+    <div class="notify-rail"></div>
   </div>`;
   suppressViewAnimation = false;
   root.querySelectorAll<HTMLElement>("[data-admin-tab]").forEach(link => link.addEventListener("click", event => {
@@ -271,6 +249,22 @@ window.addEventListener("popstate", () => {
   render();
   loadActiveTab();
 });
+
+/**
+ * Repaint only the view section. Data loads call this instead of render(), so a
+ * refresh no longer rebuilds the shell, the tabs or the account menu.
+ */
+function renderView(): void {
+  const view = document.getElementById("admin-view");
+  if (!view) {
+    render();
+    return;
+  }
+  view.classList.toggle("no-motion", suppressViewAnimation);
+  view.innerHTML = viewMarkup();
+  suppressViewAnimation = false;
+  bindView();
+}
 
 function bindAccountMenu(): void {
   const control = document.getElementById("account-control");
@@ -535,10 +529,10 @@ async function deleteUser(username: string): Promise<void> {
   } catch (error) { showError(error); }
 }
 
-async function loadUsers(): Promise<void> { try { const result = await api<{ users: UserRecord[]; default: PermissionSet | null }>("/api/admin/users"); state.users = result.users; state.defaultPermissions = result.default; suppressViewAnimation = true; render(); } catch (error) { showError(error); } }
-async function loadTrash(): Promise<void> { try { const result = await api<{ transactions: TrashTransaction[] }>("/api/admin/trash", { cache: "no-store" }); state.trash = result.transactions; state.selectedTrash = new Set([...state.selectedTrash].filter(transactionId => state.trash.some(transaction => transaction.transaction_id === transactionId))); suppressViewAnimation = true; render(); } catch (error) { showError(error); } }
-async function loadMetrics(): Promise<void> { try { state.metrics = await api<Metrics>("/api/admin/metrics"); suppressViewAnimation = true; render(); } catch (error) { showError(error); } }
-async function loadActivity(form?: HTMLFormElement): Promise<void> { try { const params = new URLSearchParams({ limit: "200" }); const username = form && (form.elements.namedItem("username") as HTMLInputElement).value; const since = form && (form.elements.namedItem("since") as HTMLInputElement).value; const scope = form ? (form.elements.namedItem("scope") as HTMLSelectElement).value : "file"; if (username) params.set("username", username); if (since) params.set("since", `${since}T00:00:00+00:00`); params.set("scope", scope); const result = await api<{ events: ActivityEvent[]; summary: AdminState["activitySummary"] }>(`/api/admin/activity?${params}`); state.events = result.events; state.activitySummary = result.summary; suppressViewAnimation = true; render(); const nextUsername = document.getElementById("activity-user") as HTMLInputElement | null; if (nextUsername) nextUsername.value = username || ""; const nextSince = document.getElementById("activity-since") as HTMLInputElement | null; if (nextSince) nextSince.value = since || ""; const nextScope = document.getElementById("activity-scope") as HTMLSelectElement | null; if (nextScope) nextScope.value = scope; } catch (error) { showError(error); } }
+async function loadUsers(): Promise<void> { try { const result = await api<{ users: UserRecord[]; default: PermissionSet | null }>("/api/admin/users"); state.users = result.users; state.defaultPermissions = result.default; suppressViewAnimation = true; renderView(); } catch (error) { showError(error); } }
+async function loadTrash(): Promise<void> { try { const result = await api<{ transactions: TrashTransaction[] }>("/api/admin/trash", { cache: "no-store" }); state.trash = result.transactions; state.selectedTrash = new Set([...state.selectedTrash].filter(transactionId => state.trash.some(transaction => transaction.transaction_id === transactionId))); suppressViewAnimation = true; renderView(); } catch (error) { showError(error); } }
+async function loadMetrics(): Promise<void> { try { state.metrics = await api<Metrics>("/api/admin/metrics"); suppressViewAnimation = true; renderView(); } catch (error) { showError(error); } }
+async function loadActivity(form?: HTMLFormElement): Promise<void> { try { const params = new URLSearchParams({ limit: "200" }); const username = form && (form.elements.namedItem("username") as HTMLInputElement).value; const since = form && (form.elements.namedItem("since") as HTMLInputElement).value; const scope = form ? (form.elements.namedItem("scope") as HTMLSelectElement).value : "file"; if (username) params.set("username", username); if (since) params.set("since", `${since}T00:00:00+00:00`); params.set("scope", scope); const result = await api<{ events: ActivityEvent[]; summary: AdminState["activitySummary"] }>(`/api/admin/activity?${params}`); state.events = result.events; state.activitySummary = result.summary; suppressViewAnimation = true; renderView(); const nextUsername = document.getElementById("activity-user") as HTMLInputElement | null; if (nextUsername) nextUsername.value = username || ""; const nextSince = document.getElementById("activity-since") as HTMLInputElement | null; if (nextSince) nextSince.value = since || ""; const nextScope = document.getElementById("activity-scope") as HTMLSelectElement | null; if (nextScope) nextScope.value = scope; } catch (error) { showError(error); } }
 async function purgeAuditHistory(form: HTMLFormElement): Promise<void> { try { const days = (form.elements.namedItem("older_than_days") as HTMLInputElement).value; const result = await api<{ deleted: number; older_than_days: number }>(`/api/admin/activity?older_than_days=${encodeURIComponent(days)}`, { method: "DELETE" }); await loadActivity(); showSuccess(`Purged ${result.deleted} audit event${result.deleted === 1 ? "" : "s"}.`); } catch (error) { showError(error); } }
 
 async function restoreTrash(transactionId: string): Promise<void> { try { const result = await api<{ restored: number }>(`/api/admin/trash/${encodeURIComponent(transactionId)}/restore`, { method: "POST" }); await loadTrash(); showSuccess(`${result.restored} item${result.restored === 1 ? "" : "s"} restored.`); } catch (error) { showError(error); } }

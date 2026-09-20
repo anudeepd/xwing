@@ -6,11 +6,11 @@
   <meta name="theme-color" content="#080b12"/>
   <title>X-wing — {{ current_path }}</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg"/>
-  <link rel="stylesheet" href="/static/assets/style.css"/>
+  <link rel="stylesheet" href="{{ asset("style.css") }}"/>
 </head>
 <body data-user="{{ user }}" data-auth-idle-timeout="{{ auth_idle_timeout }}">
   <div id="xwing-root"><div class="boot-loading" role="status">Opening X-wing…</div></div>
   <script type="application/json" id="xwing-bootstrap">{{ bootstrap | tojson }}</script>
-  <script src="/static/assets/app.js" defer></script>
+  <script src="{{ asset("app.js") }}" defer></script>
 </body>
 </html>
