@@ -251,8 +251,12 @@ class UploadStore:
             updated_at=now,
         )
         async with self._lock:
-            await self._evict_locked()
+            evicted = self._evict_locked()
             self._sessions[session.session_id] = session
+        # Abort after releasing the lock: sink.abort() closes a remote channel,
+        # and holding the store lock across it would stall every other upload.
+        for stale in evicted:
+            await _abort_session(stale, enabled=True)
         return session
 
     def get(self, session_id: str) -> UploadSession | None:
@@ -297,12 +301,18 @@ class UploadStore:
 
     # -- internals ---------------------------------------------------------
 
-    async def _evict_locked(self) -> None:
-        """Make room for one more session. Caller holds ``self._lock``."""
+    def _evict_locked(self) -> list[UploadSession]:
+        """Drop the oldest sessions until there is room; caller holds the lock.
+
+        Returns the evicted sessions so the caller can abort them once the lock
+        is released.
+        """
+        evicted: list[UploadSession] = []
         while len(self._sessions) >= self.max_sessions:
             oldest = min(self._sessions.values(), key=lambda item: item.updated_at)
             self._sessions.pop(oldest.session_id, None)
-            await _abort_session(oldest, enabled=True)
+            evicted.append(oldest)
+        return evicted
 
     def user_session_count(self, user: str | None) -> int:
         if user is None:
