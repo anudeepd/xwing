@@ -74,7 +74,7 @@ for (const name of readdirSync(fontDir)) {
 const manifest = {};
 for (const name of readdirSync(outDir)) {
   if (!name.endsWith(".js") && !name.endsWith(".css")) continue;
-  const [stem, hash, ext] = name.match(/^(.*?)-([A-Za-z0-9]{8})\.(js|css)$/)?.slice(1) ?? [];
+  const [stem, , ext] = name.match(/^(.*?)-([A-Za-z0-9]{8})\.(js|css)$/)?.slice(1) ?? [];
   if (!stem) continue;
   manifest[`${stem}.${ext}`] = name;
   let text = readFileSync(resolve(outDir, name), "utf8");

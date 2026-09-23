@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { formatBytes, prefersReducedMotion } from "./format";
 import { useModalFocus } from "./keyboard";
+import { AUTH_OVERLAY_COPY, AUTH_REDIRECT_EVENT, beginAuthRedirect, redirectToLoginNow } from "./shared.js";
 import { UploadClient, UploadError, UploadState, uploadFile } from "./upload-engine";
 
 interface EditorBootstrap {
@@ -61,9 +62,17 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
   const [dirty, setDirty] = useState(false);
   const [status, setStatus] = useState("");
   const [confirmLeave, setConfirmLeave] = useState<string | null>(null);
-  const [authOverlay, setAuthOverlay] = useState<"signout" | "expired" | null>(null);
+  const [authOverlay, setAuthOverlay] = useState<keyof typeof AUTH_OVERLAY_COPY | null>(null);
   const [pageLeaving, setPageLeaving] = useState(false);
   const canEdit = boot.canWrite && !boot.truncated;
+
+  // A 401, a rejected upload or the idle timer all announce through one event,
+  // so the editor shows the same overlay the file browser does.
+  useEffect(() => {
+    const onAuthRedirect = (): void => setAuthOverlay("expired");
+    window.addEventListener(AUTH_REDIRECT_EVENT, onAuthRedirect);
+    return () => window.removeEventListener(AUTH_REDIRECT_EVENT, onAuthRedirect);
+  }, []);
 
   useEffect(() => {
     const cm = window.CM;
@@ -144,8 +153,7 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
     let timer = window.setTimeout(expire, boot.authIdleTimeout * 1000);
     function expire(): void {
       if (Date.now() < deadline) { timer = window.setTimeout(expire, deadline - Date.now()); return; }
-      setAuthOverlay("expired");
-      window.setTimeout(() => location.assign(loginUrl()), AUTH_REDIRECT_DELAY_MS);
+      beginAuthRedirect();
     }
     function activity(): void { deadline = Date.now() + boot.authIdleTimeout * 1000; window.clearTimeout(timer); timer = window.setTimeout(expire, boot.authIdleTimeout * 1000); }
     const events = ["pointerdown", "keydown", "touchstart", "wheel"] as const;
@@ -155,7 +163,7 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
 
   const requireAuthOk = (response: Response): void => {
     if (response.status === 401 || new URL(response.url || location.href, location.href).pathname === "/_auth/login") {
-      setAuthOverlay("expired"); window.setTimeout(() => location.assign(loginUrl()), AUTH_REDIRECT_DELAY_MS); throw new Error("authentication required");
+      beginAuthRedirect(); throw new Error("authentication required");
     }
   };
 
@@ -206,8 +214,7 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
       window.setTimeout(() => setStatus(""), 2500);
     } catch (error) {
       if (error instanceof UploadError && (error.status === 401 || error.status === 403 || error.code === "BAD_RESPONSE")) {
-        setAuthOverlay("expired");
-        window.setTimeout(() => location.assign(loginUrl()), AUTH_REDIRECT_DELAY_MS);
+        beginAuthRedirect();
         setStatus("Sign-in required");
         return;
       }
@@ -226,19 +233,19 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
     if (dirty) setConfirmLeave(href); else navigateAway(href);
   };
 
-  const leave = (): void => { if (!confirmLeave) return; allowLeave.current = true; if (confirmLeave === "__logout__") { setAuthOverlay("signout"); window.setTimeout(() => logoutForm.current?.submit(), AUTH_REDIRECT_DELAY_MS); } else navigateAway(confirmLeave); };
+  const leave = (): void => { if (!confirmLeave) return; allowLeave.current = true; if (confirmLeave === "__logout__") { setAuthOverlay("logout"); window.setTimeout(() => logoutForm.current?.submit(), AUTH_REDIRECT_DELAY_MS); } else navigateAway(confirmLeave); };
 
   return <div className={`editor-app ${pageLeaving ? "page-leaving" : ""}`}>
     {/* The editor's view heading; the visible file name sits in the topbar. */}
     <h1 className="sr-only">{boot.filename}</h1>
-    <header className="topbar editor-topbar"><div className="brand"><Logo/><span>X-wing</span><small>EDITOR</small></div><div className="editor-heading"><strong>{boot.filename}</strong><span role="status" aria-live="polite">{status || (dirty ? "Unsaved changes" : boot.displayPath)}</span></div><div className="editor-actions"><a className="button" href={boot.path} download>Download</a><button className="button primary" disabled={!canEdit || !dirty} onClick={() => void save()}>Save</button>{boot.user.authenticated ? <div className="account-inline"><span>{boot.user.name}</span><form ref={logoutForm} id="logout-form" method="post" action="/_auth/logout" onSubmit={event => { event.preventDefault(); if (dirty) setConfirmLeave("__logout__"); else { setAuthOverlay("signout"); const form = event.currentTarget; window.setTimeout(() => form.submit(), AUTH_REDIRECT_DELAY_MS); } }}><button className="signout-button" type="submit">Sign out</button></form></div> : <span className="anonymous-label">anonymous</span>}</div></header>
+    <header className="topbar editor-topbar"><a className="brand" href="/" aria-label="X-wing home" onClick={event => { event.preventDefault(); requestLeave("/"); }}><Logo/><span>X-wing</span><small>EDITOR</small></a><div className="editor-heading"><strong>{boot.filename}</strong><span role="status" aria-live="polite">{status || (dirty ? "Unsaved changes" : boot.displayPath)}</span></div><div className="editor-actions"><a className="button" href={boot.path} download>Download</a><button className="button primary" disabled={!canEdit || !dirty} onClick={() => void save()}>Save</button>{boot.user.authenticated ? <div className="account-inline"><span>{boot.user.name}</span><form ref={logoutForm} id="logout-form" method="post" action="/_auth/logout" onSubmit={event => { event.preventDefault(); if (dirty) setConfirmLeave("__logout__"); else { setAuthOverlay("logout"); const form = event.currentTarget; window.setTimeout(() => form.submit(), AUTH_REDIRECT_DELAY_MS); } }}><button className="signout-button" type="submit">Sign out</button></form></div> : <span className="anonymous-label">anonymous</span>}</div></header>
     {(!boot.canWrite || boot.truncated) && <div className="editor-notices">
       {!boot.canWrite && <div className="readonly-notice">Read-only access. Saving changes is disabled.</div>}
       {boot.truncated && <div className="readonly-notice">Showing first {formatBytes(boot.previewBytes)} of {formatBytes(boot.totalSize)}. File too large to edit here — use Download for the full file.</div>}
     </div>}
     <div className="editor-body"><aside className="editor-rail"><button className="editor-back" onClick={() => requestLeave(boot.directory)} aria-label="Back to files" title="Back to files">←</button><span>{boot.extension || "TXT"}</span></aside><div className="editor-canvas" ref={mount}/></div>
     {confirmLeave && <DiscardDialog onCancel={() => setConfirmLeave(null)} onDiscard={leave}/>} 
-    {authOverlay && <div className="auth-overlay" role="status"><div className="auth-overlay-card"><span className="auth-pulse"><span/></span><div><h2>{authOverlay === "signout" ? "Signing out" : "Session expired"}</h2><p>{authOverlay === "signout" ? "Ending your session…" : "Redirecting to sign in…"}</p></div></div></div>}
+    {authOverlay && <div className="auth-overlay" role="status" aria-live="polite"><div className="auth-overlay-card"><div className="auth-overlay-row"><span className="auth-pulse"><span/></span><div><h2>{AUTH_OVERLAY_COPY[authOverlay].title}</h2><p>{AUTH_OVERLAY_COPY[authOverlay].message}</p></div></div>{AUTH_OVERLAY_COPY[authOverlay].action && <button className="button primary" type="button" onClick={() => redirectToLoginNow()}>{AUTH_OVERLAY_COPY[authOverlay].action}</button>}</div></div>}
   </div>;
 }
 
@@ -247,7 +254,7 @@ function DiscardDialog({ onCancel, onDiscard }: { onCancel: () => void; onDiscar
   return <div ref={modalRef} className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="discard-title" aria-describedby="discard-description"><h2 id="discard-title">Discard unsaved changes?</h2><p id="discard-description">This file has unsaved edits. Leave without saving?</p><div className="modal-actions"><button className="button" onClick={onCancel}>Keep editing</button><button data-autofocus className="button danger" onClick={onDiscard}>Discard changes</button></div></div></div>;
 }
 
-function loginUrl(): string { return `/_auth/login?redirect=${encodeURIComponent(location.pathname + location.search)}`; }
+
 
 function detectLanguage(cm: CodeMirrorApi, extension: string): unknown[] {
   const aliases: Record<string, string> = { py:"python",js:"javascript",jsx:"javascript",ts:"javascript",tsx:"javascript",html:"html",htm:"html",css:"css",json:"json",yaml:"yaml",yml:"yaml",md:"markdown",xml:"xml",svg:"xml",sql:"sql",sh:"shell",bash:"shell",zsh:"shell",toml:"toml",dockerfile:"dockerfile",nginx:"nginx" };

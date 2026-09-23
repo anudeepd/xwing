@@ -8,6 +8,7 @@ import type { SortEntry, SortKey } from "./sort";
 import { DIRECTORY_MEDIA_TYPE, encodePath, parseBootstrap } from "./types";
 import type { Parallelism, XwingBootstrapV1, XwingFile } from "./types";
 import { collectDroppedEntries } from "./drop-entries";
+import { AUTH_OVERLAY_COPY, AUTH_REDIRECT_EVENT, beginAuthRedirect, dismissBootCard, redirectToLoginNow } from "./shared.js";
 import { UploadManager } from "./upload-manager";
 import { uploadItemLabel, uploadSummary, uploadSummaryKind } from "./upload-summary";
 
@@ -139,10 +140,33 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   const [dropWaitState, setDropWaitState] = useState<DropWaitState>(null);
   const [arrivingNames, setArrivingNames] = useState<Set<string>>(() => new Set());
   const [pageLeaving, setPageLeaving] = useState(false);
-  const [authOverlay, setAuthOverlay] = useState<"signout" | "expired" | null>(null);
+  const [authOverlay, setAuthOverlay] = useState<keyof typeof AUTH_OVERLAY_COPY | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
   const parallelRef = useRef<HTMLDivElement>(null);
+  const railRef = useRef<HTMLDivElement>(null);
+
+  // The rail is an overlay, so how far a focused row must stay clear of the
+  // bottom edge is its measured height, not a constant. Publish it as
+  // --xw-rail-clearance for .file-row's scroll-margin-block-end.
+  useEffect(() => {
+    const rail = railRef.current;
+    if (!rail) return;
+    const apply = (): void => {
+      const rect = rail.getBoundingClientRect();
+      const clearance = rect.height ? Math.ceil(window.innerHeight - rect.top + 8) : 0;
+      document.documentElement.style.setProperty("--xw-rail-clearance", `${clearance}px`);
+    };
+    apply();
+    const observer = new ResizeObserver(apply);
+    observer.observe(rail);
+    window.addEventListener("resize", apply);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", apply);
+      document.documentElement.style.removeProperty("--xw-rail-clearance");
+    };
+  }, []);
   const parallelMenu = useRef<HTMLDivElement>(null);
   const accountRef = useRef<HTMLDivElement>(null);
   const requestId = useRef(0);
@@ -292,6 +316,15 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     return () => { window.removeEventListener("popstate", onPop); window.removeEventListener("beforeunload", onBeforeUnload); };
   }, []);
 
+  // The shell is on screen, so the boot card can fade out under it.
+  useEffect(() => dismissBootCard(), []);
+
+  useEffect(() => {
+    const onAuthRedirect = (): void => setAuthOverlay("expired");
+    window.addEventListener(AUTH_REDIRECT_EVENT, onAuthRedirect);
+    return () => window.removeEventListener(AUTH_REDIRECT_EVENT, onAuthRedirect);
+  }, []);
+
   useEffect(() => {
     const seconds = Number.parseInt(document.body.dataset.authIdleTimeout || "0", 10);
     if (!seconds) return;
@@ -299,8 +332,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     let timer = window.setTimeout(expire, seconds * 1000);
     function expire(): void {
       if (Date.now() < deadline) { timer = window.setTimeout(expire, deadline - Date.now()); return; }
-      setAuthOverlay("expired");
-      window.setTimeout(() => location.assign(`/_auth/login?redirect=${encodeURIComponent(location.pathname + location.search)}`), AUTH_REDIRECT_DELAY_MS);
+      beginAuthRedirect();
     }
     function activity(): void { deadline = Date.now() + seconds * 1000; window.clearTimeout(timer); timer = window.setTimeout(expire, seconds * 1000); }
     const events = ["pointerdown", "keydown", "touchstart", "wheel"] as const;
@@ -595,16 +627,16 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
         cannot itself become a heading without breaking the crumb row's layout. */}
     <h1 className="sr-only">{crumbLabel(directory.breadcrumbs[directory.breadcrumbs.length - 1]?.name ?? "")}</h1>
     <header className="topbar">
-      <div className="brand"><Logo/><span>X-wing</span><small className="brand-context">FILES</small></div>
+      <a className="brand" href="/" aria-label="X-wing home" onClick={() => setPageLeaving(true)}><Logo/><span>X-wing</span><small className="brand-context">FILES</small></a>
       {directory.user.authenticated ? <div className="account-inline">{directory.admin ? <div className="account" ref={accountRef}>
         <button className="account-trigger" type="button" aria-haspopup="menu" aria-expanded={accountOpen} onClick={() => setAccountOpen(value => !value)}>
           <span>{directory.user.name}</span><Icon name="chevron"/>
         </button>
         {accountOpen && <div className="popover account-menu" role="menu" aria-label="Workspace navigation">
-          <a className="menu-item active" href="/" role="menuitem" aria-current="page"><span className="workspace-nav-dot" aria-hidden="true"/>Files</a>
-          <a className="menu-item" href="/admin" role="menuitem" onClick={() => setPageLeaving(true)}><span className="workspace-nav-dot" aria-hidden="true"/>Admin panel</a>
+          <a className="menu-item active" href="/" role="menuitem" aria-current="page">Files</a>
+          <a className="menu-item" href="/admin" role="menuitem" onClick={() => setPageLeaving(true)}>Admin panel</a>
         </div>}
-      </div> : <span>{directory.user.name}</span>}<form id="logout-form" method="post" action="/_auth/logout" onSubmit={event => { event.preventDefault(); setAuthOverlay("signout"); const form = event.currentTarget; window.setTimeout(() => form.submit(), AUTH_REDIRECT_DELAY_MS); }}><button className="signout-button" type="submit">Sign out</button></form></div> : <span className="anonymous-label">anonymous</span>}
+      </div> : <span>{directory.user.name}</span>}<form id="logout-form" method="post" action="/_auth/logout" onSubmit={event => { event.preventDefault(); setAuthOverlay("logout"); const form = event.currentTarget; window.setTimeout(() => form.submit(), AUTH_REDIRECT_DELAY_MS); }}><button className="signout-button" type="submit">Sign out</button></form></div> : <span className="anonymous-label">anonymous</span>}
     </header>
 
     <main className={`workspace ${dragging ? "dragging" : ""}`}>
@@ -661,9 +693,18 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
           {directoryState === "error" && <div className="state-panel"><strong>Couldn’t open this folder</strong><span>{directoryError}</span><button className="button" onClick={() => void refresh()}>Retry</button></div>}
           {!files.length && directoryState !== "error" && <div className="state-panel empty"><span className="empty-icon"><Icon name="folder"/></span><strong>{query.trim() ? "No matches" : "This folder is empty"}</strong><span>{query.trim() ? `Nothing here matches “${query.trim()}”.` : directory.permissions.write ? "Upload files or create a folder to get started." : "You have read-only access here."}</span>{directory.permissions.write && !query.trim() && <button className="button primary" onClick={() => fileInput.current?.click()}><Icon name="upload"/><span className="label">Upload files</span></button>}</div>}
           {files.map((file, index) => <FileRow key={file.path} file={file} index={index} selected={selected.has(file.path)} loading={directoryState === "loading"} arriving={arrivingNames.has(file.name)} onSelect={(gesture) => toggleSelection(file, index, gesture)} onOpen={() => file.kind === "directory" ? void navigate(file.path) : openDocument(`${file.path}${file.editable ? "?edit" : ""}`)} onDelete={() => setDialog({ kind: "delete", paths: [file.path], pending: false })} onDeleteKey={() => { if (directory.permissions.delete) setDialog({ kind: "delete", paths: selected.size ? [...selected] : [file.path], pending: false }); }} onClear={() => { setSelected(new Set()); setLastSelected(null); }}/>) }
+          {/* Space the rail's height, so the last rows can scroll clear of it. */}
+          <div className="rail-clearance" aria-hidden="true"/>
         </div>
         </div>
         <div className="statusbar"><span className="drop-hint">Drop files anywhere to upload</span>{refreshFailures >= REFRESH_FAILURE_NOTICE && <span role="status">Couldn't refresh — retrying</span>}</div>
+      </section>
+      {dragging && <div className="drop-target" role="status" aria-live="polite"><span className="drop-target-icon"><Icon name="upload"/></span><strong>Drop files here</strong><span>Upload to {directory.path}</span></div>}
+      {/* One rail for every transient message: the drag-wait bar, the toast
+          stack and the upload dock. They stack instead of overlapping, and each
+          one carries its own status/alert role so a message is announced
+          exactly once. */}
+      <div className="notify-rail" ref={railRef}>
         {dropWaitState && <div className={`drop-wait ${dropWaitState}`}>
           {dropWaitState === "preparing"
             ? <span className="drop-wait-spinner" aria-hidden="true"/>
@@ -672,19 +713,13 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
           {dropWaitState === "delayed" && <button className="button" type="button" onClick={() => fileInput.current?.click()}>Choose files</button>}
           <button className="icon-button" type="button" aria-label="Dismiss upload status" onClick={clearDropFeedback}><Icon name="close"/></button>
         </div>}
-      </section>
-      {dragging && <div className="drop-target" role="status" aria-live="polite"><span className="drop-target-icon"><Icon name="upload"/></span><strong>Drop files here</strong><span>Upload to {directory.path}</span></div>}
-      {/* One rail: toasts stack above the upload dock so they cannot overlap,
-          and each toast carries its own status/alert role so a message is
-          announced exactly once. */}
-      <div className="notify-rail">
         <div className="toast-stack">{toasts.map(toast => <ToastView key={toast.id} toast={toast} onDismiss={() => dismissToast(toast.id)}/>)}</div>
         <UploadDock snapshot={upload}/>
       </div>
       {zipPending > 0 && <div className="zip-overlay" role="status" aria-live="polite"><div className="zip-overlay-card"><span className="zip-spinner" aria-hidden="true"/><span className="zip-overlay-text">Zipping {zipPending} file{zipPending === 1 ? "" : "s"}…</span></div></div>}
     </main>
     {dialog && <DialogView dialog={dialog} setDialog={setDialog} onMkdir={() => void createFolder()} onDelete={() => void deletePaths()}/>} 
-    {authOverlay && <div className="auth-overlay" role="status" aria-live="polite"><div className="auth-overlay-card"><span className="auth-pulse"><span/></span><div><h2>{authOverlay === "signout" ? "Signing out" : "Session expired"}</h2><p>{authOverlay === "signout" ? "Ending your session…" : "Your session has ended. Redirecting to sign in…"}</p></div></div></div>}
+    {authOverlay && <div className="auth-overlay" role="status" aria-live="polite"><div className="auth-overlay-card"><div className="auth-overlay-row"><span className="auth-pulse"><span/></span><div><h2>{AUTH_OVERLAY_COPY[authOverlay].title}</h2><p>{AUTH_OVERLAY_COPY[authOverlay].message}</p></div></div>{AUTH_OVERLAY_COPY[authOverlay].action && <button className="button primary" type="button" onClick={() => redirectToLoginNow()}>{AUTH_OVERLAY_COPY[authOverlay].action}</button>}</div></div>}
   </div>;
 }
 
@@ -820,7 +855,7 @@ function DialogView({ dialog, setDialog, onMkdir, onDelete }: { dialog: Exclude<
 async function authFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const response = await fetch(input, init);
   if (response.status === 401 || new URL(response.url || location.href, location.href).pathname === "/_auth/login") {
-    location.assign(`/_auth/login?redirect=${encodeURIComponent(location.pathname + location.search)}`);
+    beginAuthRedirect();
     throw new Error("authentication required");
   }
   return response;
@@ -862,5 +897,6 @@ try {
   createRoot(root).render(<App initial={readBootstrap()}/>);
 } catch (error) {
   const root = document.getElementById("xwing-root") || document.body;
+  dismissBootCard();
   root.innerHTML = `<div class="boot-error"><strong>X-wing couldn’t start</strong><span>${escapeHtml(errorMessage(error))}</span><button onclick="location.reload()">Reload</button></div>`;
 }

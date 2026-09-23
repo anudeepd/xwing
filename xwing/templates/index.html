@@ -9,7 +9,8 @@
   <link rel="stylesheet" href="{{ asset("style.css") }}"/>
 </head>
 <body data-user="{{ user }}" data-auth-idle-timeout="{{ auth_idle_timeout }}">
-  <div id="xwing-root"><div class="boot-loading" role="status">Opening X-wing…</div></div>
+  <div id="xwing-root"></div>
+  <div class="boot-loading" role="status">Opening X-wing…</div>
   <script type="application/json" id="xwing-bootstrap">{{ bootstrap | tojson }}</script>
   <script src="{{ asset("app.js") }}" defer></script>
 </body>

@@ -1,4 +1,4 @@
-import { createAuthSession } from "./shared.js";
+import { createAuthSession, dismissBootCard } from "./shared.js";
 import { escapeHtml, formatBytes, formatDate, prefersReducedMotion } from "./format";
 import { trapFocus } from "./focus-trap";
 
@@ -131,6 +131,16 @@ let activeTab = tabNames.includes(requestedTab) ? requestedTab : "overview";
 let accountOpen = false;
 let accountOutsideHandler: ((event: PointerEvent) => void) | null = null;
 let suppressViewAnimation = false;
+let firstRender = true;
+let dataLoaded = false;
+
+/** Fade the console out, then hand over to the file browser. */
+function leaveTo(href: string): void {
+  const shell = document.querySelector<HTMLElement>(".admin-shell");
+  if (!shell || shell.classList.contains("page-leaving")) return;
+  shell.classList.add("page-leaving");
+  window.setTimeout(() => location.assign(href), prefersReducedMotion() ? 0 : 170);
+}
 
 function clearAccountOutsideHandler(): void {
   if (accountOutsideHandler) document.removeEventListener("pointerdown", accountOutsideHandler);
@@ -152,8 +162,8 @@ function accountMarkup(): string {
   return `<div class="account" id="account-control">
     <button class="account-trigger" type="button" aria-haspopup="menu" aria-expanded="${accountOpen}"><span>${escapeHtml(bootstrap.user)}</span>${accountChevronMarkup()}</button>
     ${accountOpen ? `<div class="popover account-menu" role="menu" aria-label="Workspace navigation">
-      <a class="menu-item" href="/" role="menuitem"><span class="workspace-nav-dot" aria-hidden="true"></span>Files</a>
-      <a class="menu-item active" href="/admin" role="menuitem" aria-current="page"><span class="workspace-nav-dot" aria-hidden="true"></span>Admin panel</a>
+      <a class="menu-item" href="/" role="menuitem" data-leave="/">Files</a>
+      <a class="menu-item active" href="/admin" role="menuitem" aria-current="page">Admin panel</a>
     </div>` : ""}
   </div>`;
 }
@@ -219,8 +229,8 @@ function render(): void {
     { id: "activity", label: "Activity" },
     { id: "trash", label: "Trash" },
   ];
-  root.innerHTML = `<div class="admin-shell">
-    <header class="topbar admin-topbar"><div class="brand">${logoMarkup()}<span>X-wing</span><small class="brand-context">ADMIN</small></div><div class="account-inline">${accountMarkup()}<form id="logout-form" method="post" action="/_auth/logout"><button class="signout-button" type="submit">Sign out</button></form></div></header>
+  root.innerHTML = `<div class="admin-shell${firstRender ? " admin-entering" : ""}">
+    <header class="topbar admin-topbar"><a class="brand" href="/" aria-label="X-wing home" data-leave="/">${logoMarkup()}<span>X-wing</span><small class="brand-context">ADMIN</small></a><div class="account-inline">${accountMarkup()}<form id="logout-form" method="post" action="/_auth/logout"><button class="signout-button" type="submit">Sign out</button></form></div></header>
     <main id="admin-main" class="admin-main"><div class="admin-heading"><div><p class="eyebrow">CONTROL PLANE</p><h1>Workspace administration</h1><p class="lede">Manage user access, activity, and recoverable storage.</p></div></div>
       <nav class="admin-tabs" aria-label="Admin sections">${tabs.map(tab => `<a class="admin-tab ${activeTab === tab.id ? "active" : ""}" data-admin-tab="${tab.id}" href="#${tab.id}">${tab.label}</a>`).join("")}</nav>
       <section id="admin-view" class="admin-view ${suppressViewAnimation ? "no-motion" : ""}" aria-live="polite">${viewMarkup()}</section>
@@ -228,12 +238,25 @@ function render(): void {
     <div class="notify-rail"></div>
   </div>`;
   suppressViewAnimation = false;
+  // Drop the entrance class once it has played, so the shell never carries a
+  // finished animation around.
+  root.querySelector<HTMLElement>(".admin-shell.admin-entering")?.addEventListener("animationend", event => {
+    (event.currentTarget as HTMLElement).classList.remove("admin-entering");
+  }, { once: true });
+  firstRender = false;
+  root.querySelectorAll<HTMLElement>("[data-leave]").forEach(link => link.addEventListener("click", event => {
+    event.preventDefault();
+    leaveTo(link.dataset.leave || "/");
+  }));
   root.querySelectorAll<HTMLElement>("[data-admin-tab]").forEach(link => link.addEventListener("click", event => {
     event.preventDefault();
     const nextTab = link.dataset.adminTab || "overview";
     if (nextTab === activeTab) return;
     activeTab = nextTab;
     history.pushState(null, "", `#${activeTab}`);
+    // The tab switch paints the new section without motion; the data that
+    // lands in it carries the one animation the switch gets.
+    suppressViewAnimation = true;
     render();
     loadActiveTab();
   }));
@@ -246,6 +269,7 @@ window.addEventListener("popstate", () => {
   const nextTab = location.hash.slice(1);
   if (!tabNames.includes(nextTab) || nextTab === activeTab) return;
   activeTab = nextTab;
+  suppressViewAnimation = true;
   render();
   loadActiveTab();
 });
@@ -282,7 +306,10 @@ function bindAccountMenu(): void {
   document.addEventListener("pointerdown", accountOutsideHandler);
 }
 
+/** Until the first payload lands, every tab shows the same loading card, so a
+ *  deep link cannot flash an empty table before its rows arrive. */
 function viewMarkup(): string {
+  if (!dataLoaded) return `<div class="admin-card loading-card" role="status">Loading admin data…</div>`;
   if (activeTab === "users") return usersMarkup();
   if (activeTab === "activity") return activityMarkup();
   if (activeTab === "trash") return trashMarkup();
@@ -529,10 +556,10 @@ async function deleteUser(username: string): Promise<void> {
   } catch (error) { showError(error); }
 }
 
-async function loadUsers(): Promise<void> { try { const result = await api<{ users: UserRecord[]; default: PermissionSet | null }>("/api/admin/users"); state.users = result.users; state.defaultPermissions = result.default; suppressViewAnimation = true; renderView(); } catch (error) { showError(error); } }
-async function loadTrash(): Promise<void> { try { const result = await api<{ transactions: TrashTransaction[] }>("/api/admin/trash", { cache: "no-store" }); state.trash = result.transactions; state.selectedTrash = new Set([...state.selectedTrash].filter(transactionId => state.trash.some(transaction => transaction.transaction_id === transactionId))); suppressViewAnimation = true; renderView(); } catch (error) { showError(error); } }
-async function loadMetrics(): Promise<void> { try { state.metrics = await api<Metrics>("/api/admin/metrics"); suppressViewAnimation = true; renderView(); } catch (error) { showError(error); } }
-async function loadActivity(form?: HTMLFormElement): Promise<void> { try { const params = new URLSearchParams({ limit: "200" }); const username = form && (form.elements.namedItem("username") as HTMLInputElement).value; const since = form && (form.elements.namedItem("since") as HTMLInputElement).value; const scope = form ? (form.elements.namedItem("scope") as HTMLSelectElement).value : "file"; if (username) params.set("username", username); if (since) params.set("since", `${since}T00:00:00+00:00`); params.set("scope", scope); const result = await api<{ events: ActivityEvent[]; summary: AdminState["activitySummary"] }>(`/api/admin/activity?${params}`); state.events = result.events; state.activitySummary = result.summary; suppressViewAnimation = true; renderView(); const nextUsername = document.getElementById("activity-user") as HTMLInputElement | null; if (nextUsername) nextUsername.value = username || ""; const nextSince = document.getElementById("activity-since") as HTMLInputElement | null; if (nextSince) nextSince.value = since || ""; const nextScope = document.getElementById("activity-scope") as HTMLSelectElement | null; if (nextScope) nextScope.value = scope; } catch (error) { showError(error); } }
+async function loadUsers(): Promise<void> { try { const result = await api<{ users: UserRecord[]; default: PermissionSet | null }>("/api/admin/users"); state.users = result.users; state.defaultPermissions = result.default; renderView(); } catch (error) { showError(error); } }
+async function loadTrash(): Promise<void> { try { const result = await api<{ transactions: TrashTransaction[] }>("/api/admin/trash", { cache: "no-store" }); state.trash = result.transactions; state.selectedTrash = new Set([...state.selectedTrash].filter(transactionId => state.trash.some(transaction => transaction.transaction_id === transactionId))); renderView(); } catch (error) { showError(error); } }
+async function loadMetrics(): Promise<void> { try { state.metrics = await api<Metrics>("/api/admin/metrics"); renderView(); } catch (error) { showError(error); } }
+async function loadActivity(form?: HTMLFormElement): Promise<void> { try { const params = new URLSearchParams({ limit: "200" }); const username = form && (form.elements.namedItem("username") as HTMLInputElement).value; const since = form && (form.elements.namedItem("since") as HTMLInputElement).value; const scope = form ? (form.elements.namedItem("scope") as HTMLSelectElement).value : "file"; if (username) params.set("username", username); if (since) params.set("since", `${since}T00:00:00+00:00`); params.set("scope", scope); const result = await api<{ events: ActivityEvent[]; summary: AdminState["activitySummary"] }>(`/api/admin/activity?${params}`); state.events = result.events; state.activitySummary = result.summary; renderView(); const nextUsername = document.getElementById("activity-user") as HTMLInputElement | null; if (nextUsername) nextUsername.value = username || ""; const nextSince = document.getElementById("activity-since") as HTMLInputElement | null; if (nextSince) nextSince.value = since || ""; const nextScope = document.getElementById("activity-scope") as HTMLSelectElement | null; if (nextScope) nextScope.value = scope; } catch (error) { showError(error); } }
 async function purgeAuditHistory(form: HTMLFormElement): Promise<void> { try { const days = (form.elements.namedItem("older_than_days") as HTMLInputElement).value; const result = await api<{ deleted: number; older_than_days: number }>(`/api/admin/activity?older_than_days=${encodeURIComponent(days)}`, { method: "DELETE" }); await loadActivity(); showSuccess(`Purged ${result.deleted} audit event${result.deleted === 1 ? "" : "s"}.`); } catch (error) { showError(error); } }
 
 async function restoreTrash(transactionId: string): Promise<void> { try { const result = await api<{ restored: number }>(`/api/admin/trash/${encodeURIComponent(transactionId)}/restore`, { method: "POST" }); await loadTrash(); showSuccess(`${result.restored} item${result.restored === 1 ? "" : "s"} restored.`); } catch (error) { showError(error); } }
@@ -549,9 +576,21 @@ async function loadData(): Promise<void> {
       api<{ events: ActivityEvent[]; summary: AdminState["activitySummary"] }>("/api/admin/activity?limit=200"),
     ]);
     state.users = users.users; state.defaultPermissions = users.default; state.metrics = metrics; state.trash = trash.transactions; state.events = activity.events; state.activitySummary = activity.summary;
-    render();
+    dataLoaded = true;
+    // The fill is part of the page entrance, not a tab switch, so it does not animate.
+    suppressViewAnimation = true;
+    renderView();
   } catch (error) { root.innerHTML = `<div class="admin-fatal" role="alert"><strong>Admin console unavailable</strong><span>${escapeHtml(error instanceof Error ? error.message : "Request failed")}</span><a class="button" href="/">Return to files</a></div>`; }
 }
 
 authSession.wireAuthIdleTimer();
+// Paint the shell straight away, the way the editor hydrates from its bootstrap,
+// and let the payload fill it. Waiting for four fetches first left the console on
+// a blank boot card for the length of the slowest request.
+//
+// One motion per page load: the shell's entrance. A view animation on top of it
+// read as a blurred flash of content, so the first fill does not animate either.
+suppressViewAnimation = true;
+render();
+dismissBootCard();
 void loadData();
