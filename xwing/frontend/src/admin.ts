@@ -230,7 +230,7 @@ function render(): void {
     { id: "trash", label: "Trash" },
   ];
   root.innerHTML = `<div class="admin-shell${firstRender ? " admin-entering" : ""}">
-    <header class="topbar admin-topbar"><a class="brand" href="/" aria-label="X-wing home" data-leave="/">${logoMarkup()}<span>X-wing</span><small class="brand-context">ADMIN</small></a><div class="account-inline">${accountMarkup()}<form id="logout-form" method="post" action="/_auth/logout"><button class="signout-button" type="submit">Sign out</button></form></div></header>
+    <header class="topbar admin-topbar"><a class="brand" href="/" aria-label="X-wing ADMIN, home" data-leave="/">${logoMarkup()}<span>X-wing</span><small class="brand-context">ADMIN</small></a><div class="account-inline">${accountMarkup()}<form id="logout-form" method="post" action="/_auth/logout"><button class="signout-button" type="submit">Sign out</button></form></div></header>
     <main id="admin-main" class="admin-main"><div class="admin-heading"><div><p class="eyebrow">CONTROL PLANE</p><h1>Workspace administration</h1><p class="lede">Manage user access, activity, and recoverable storage.</p></div></div>
       <nav class="admin-tabs" aria-label="Admin sections">${tabs.map(tab => `<a class="admin-tab ${activeTab === tab.id ? "active" : ""}" data-admin-tab="${tab.id}" href="#${tab.id}">${tab.label}</a>`).join("")}</nav>
       <section id="admin-view" class="admin-view ${suppressViewAnimation ? "no-motion" : ""}" aria-live="polite">${viewMarkup()}</section>

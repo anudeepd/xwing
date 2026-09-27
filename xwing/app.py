@@ -1193,6 +1193,10 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(
                 status_code=403, detail="Cannot restore another user's delete"
             )
+        # Claim the transaction before the first `await` below so a concurrent
+        # restore of the same id (double-click, two tabs) sees it gone and 404s
+        # instead of racing this loop's shutil.move calls against the same files.
+        delete_transactions.pop(transaction_id, None)
 
         restored = 0
         restored_paths = []
@@ -1207,7 +1211,6 @@ def create_app(settings: Settings) -> FastAPI:
             restored += 1
             restored_paths.append(_to_rel_path(target))
 
-        delete_transactions.pop(transaction_id, None)
         await anyio.to_thread.run_sync(
             trash_store.save_transactions,
             _trash_dir(),

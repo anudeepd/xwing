@@ -37,7 +37,11 @@ export function dismissBootCard(documentRef = document, windowRef = window) {
   const card = documentRef.querySelector(".boot-loading:not(.out)");
   if (!card) return;
   card.classList.add("out");
-  windowRef.setTimeout(() => card.remove(), 240);
+  // The card sits inside a labelled landmark region so it isn't stray page
+  // content while loading; remove that wrapper along with the card so an
+  // empty landmark doesn't linger in the DOM afterward.
+  const region = card.closest('[role="region"][aria-label="Loading"]');
+  windowRef.setTimeout(() => (region ?? card).remove(), 240);
 }
 
 export function currentAuthRedirectTarget(location = window.location) {

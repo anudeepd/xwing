@@ -26,6 +26,7 @@ interface CodeMirrorApi {
     lineWrapping: unknown;
     updateListener: { of(listener: (update: { docChanged: boolean; state: CodeMirrorView["state"] }) => void): unknown };
     cspNonce: { of(value: string): unknown };
+    contentAttributes: { of(value: Record<string, string>): unknown };
   };
   EditorState: { create(options: unknown): unknown; readOnly: { of(value: boolean): unknown } };
   basicSetup: unknown; keymap: { of(value: unknown[]): unknown }; indentWithTab: unknown; oneDark: unknown;
@@ -80,6 +81,7 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
     const editor = new cm.EditorView({
       state: cm.EditorState.create({ doc: boot.content, extensions: [
         cm.basicSetup, cm.keymap.of([cm.indentWithTab]), cm.oneDark,
+        cm.EditorView.contentAttributes.of({ "aria-label": `${boot.filename} contents` }),
         ...(boot.cspNonce ? [cm.EditorView.cspNonce.of(boot.cspNonce)] : []),
         ...language,
         ...(!canEdit ? [cm.EditorView.editable.of(false), cm.EditorState.readOnly.of(true)] : []),
@@ -237,13 +239,13 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
 
   return <div className={`editor-app ${pageLeaving ? "page-leaving" : ""}`}>
     {/* The editor's view heading; the visible file name sits in the topbar. */}
-    <h1 className="sr-only">{boot.filename}</h1>
-    <header className="topbar editor-topbar"><a className="brand" href="/" aria-label="X-wing home" onClick={event => { event.preventDefault(); requestLeave("/"); }}><Logo/><span>X-wing</span><small>EDITOR</small></a><div className="editor-heading"><strong>{boot.filename}</strong><span role="status" aria-live="polite">{status || (dirty ? "Unsaved changes" : boot.displayPath)}</span></div><div className="editor-actions"><a className="button" href={boot.path} download>Download</a><button className="button primary" disabled={!canEdit || !dirty} onClick={() => void save()}>Save</button>{boot.user.authenticated ? <div className="account-inline"><span>{boot.user.name}</span><form ref={logoutForm} id="logout-form" method="post" action="/_auth/logout" onSubmit={event => { event.preventDefault(); if (dirty) setConfirmLeave("__logout__"); else { setAuthOverlay("logout"); const form = event.currentTarget; window.setTimeout(() => form.submit(), AUTH_REDIRECT_DELAY_MS); } }}><button className="signout-button" type="submit">Sign out</button></form></div> : <span className="anonymous-label">anonymous</span>}</div></header>
+    <h1 id="editor-title" className="sr-only">{boot.filename}</h1>
+    <header className="topbar editor-topbar"><a className="brand" href="/" aria-label="X-wing EDITOR, home" onClick={event => { event.preventDefault(); requestLeave("/"); }}><Logo/><span>X-wing</span><small>EDITOR</small></a><div className="editor-heading"><strong>{boot.filename}</strong><span role="status" aria-live="polite">{status || (dirty ? "Unsaved changes" : boot.displayPath)}</span></div><div className="editor-actions"><a className="button" href={boot.path} download>Download</a><button className="button primary" disabled={!canEdit || !dirty} onClick={() => void save()}>Save</button>{boot.user.authenticated ? <div className="account-inline"><span>{boot.user.name}</span><form ref={logoutForm} id="logout-form" method="post" action="/_auth/logout" onSubmit={event => { event.preventDefault(); if (dirty) setConfirmLeave("__logout__"); else { setAuthOverlay("logout"); const form = event.currentTarget; window.setTimeout(() => form.submit(), AUTH_REDIRECT_DELAY_MS); } }}><button className="signout-button" type="submit">Sign out</button></form></div> : <span className="anonymous-label">anonymous</span>}</div></header>
     {(!boot.canWrite || boot.truncated) && <div className="editor-notices">
       {!boot.canWrite && <div className="readonly-notice">Read-only access. Saving changes is disabled.</div>}
       {boot.truncated && <div className="readonly-notice">Showing first {formatBytes(boot.previewBytes)} of {formatBytes(boot.totalSize)}. File too large to edit here — use Download for the full file.</div>}
     </div>}
-    <div className="editor-body"><aside className="editor-rail"><button className="editor-back" onClick={() => requestLeave(boot.directory)} aria-label="Back to files" title="Back to files">←</button><span>{boot.extension || "TXT"}</span></aside><div className="editor-canvas" ref={mount}/></div>
+    <main className="editor-body" aria-labelledby="editor-title"><aside className="editor-rail"><button className="editor-back" onClick={() => requestLeave(boot.directory)} aria-label="Back to files" title="Back to files">←</button><span>{boot.extension || "TXT"}</span></aside><div className="editor-canvas" ref={mount}/></main>
     {confirmLeave && <DiscardDialog onCancel={() => setConfirmLeave(null)} onDiscard={leave}/>} 
     {authOverlay && <div className="auth-overlay" role="status" aria-live="polite"><div className="auth-overlay-card"><div className="auth-overlay-row"><span className="auth-pulse"><span/></span><div><h2>{AUTH_OVERLAY_COPY[authOverlay].title}</h2><p>{AUTH_OVERLAY_COPY[authOverlay].message}</p></div></div>{AUTH_OVERLAY_COPY[authOverlay].action && <button className="button primary" type="button" onClick={() => redirectToLoginNow()}>{AUTH_OVERLAY_COPY[authOverlay].action}</button>}</div></div>}
   </div>;

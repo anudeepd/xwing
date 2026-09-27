@@ -10,7 +10,7 @@
 </head>
 <body data-user="{{ user }}" data-auth-idle-timeout="{{ auth_idle_timeout }}">
   <div id="xwing-root"></div>
-  <div class="boot-loading" role="status">Opening X-wing…</div>
+  <div role="region" aria-label="Loading"><div class="boot-loading" role="status">Opening X-wing…</div></div>
   <script type="application/json" id="xwing-bootstrap">{{ bootstrap | tojson }}</script>
   <script src="{{ asset("app.js") }}" defer></script>
 </body>

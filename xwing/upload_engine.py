@@ -539,6 +539,8 @@ def create_upload_router(
         _check_owner(session, context)
 
         async with session.lock:
+            if session.closing:
+                raise HTTPException(status_code=409, detail="Upload session is closing")
             if not session.ranges.covers(session.size):
                 missing = session.ranges.missing(session.size)
                 raise HTTPException(

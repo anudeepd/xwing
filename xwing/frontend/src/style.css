@@ -164,7 +164,7 @@ html, body {
 body {
  background: var(--xw-bg);
  color: var(--xw-text);
- min-height: 100vh;
+ min-height: 100dvh;
  font-size: 13px;
  -webkit-font-smoothing: antialiased;
 }

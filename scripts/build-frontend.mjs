@@ -28,7 +28,9 @@ await build({
   jsx: "automatic",
   nodePaths: [resolve(projectRoot, "scripts/node_modules")],
   outdir: outDir,
-  entryNames: "[name]-[hash]",
+  // Entry bundles are fingerprinted below, after the URL rewrite: a hash taken
+  // here would not cover the rewritten font and editor-payload names.
+  entryNames: "[name]",
   assetNames: "fonts/[name]-[hash]",
   loader: { ".woff": "file", ".woff2": "file" },
   logLevel: "info",
@@ -40,7 +42,7 @@ await build({
   minify: true,
   external: ["/static/fonts/*"],
   outdir: outDir,
-  entryNames: "[name]-[hash]",
+  entryNames: "[name]",
   assetNames: "fonts/[name]-[hash]",
   loader: { ".woff": "file", ".woff2": "file" },
   logLevel: "info",
@@ -72,22 +74,22 @@ for (const name of readdirSync(fontDir)) {
 }
 
 const manifest = {};
-for (const name of readdirSync(outDir)) {
-  if (!name.endsWith(".js") && !name.endsWith(".css")) continue;
-  const [stem, , ext] = name.match(/^(.*?)-([A-Za-z0-9]{8})\.(js|css)$/)?.slice(1) ?? [];
-  if (!stem) continue;
-  manifest[`${stem}.${ext}`] = name;
+for (const name of readdirSync(outDir).sort()) {
+  const match = name.match(/^(.*)\.(js|css)$/);
+  if (!match || name.startsWith("codemirror-bundle-")) continue;
+  const [, stem, ext] = match;
   let text = readFileSync(resolve(outDir, name), "utf8");
   for (const [from, to] of fontMap) {
     if (text.includes(from)) text = text.split(from).join(to);
   }
-  if (name.endsWith(".js") && text.includes("/static/codemirror-bundle.js")) {
-    text = text.split("/static/codemirror-bundle.js").join(fontMap.get("/static/codemirror-bundle.js"));
-  }
-  writeFileSync(resolve(outDir, name), text);
+  const hashed = `${stem}-${hash8(text)}.${ext}`;
+  writeFileSync(resolve(outDir, hashed), text);
+  rmSync(resolve(outDir, name));
+  manifest[`${stem}.${ext}`] = hashed;
 }
 
 manifest["codemirror-bundle.js"] = fontMap.get("/static/codemirror-bundle.js").split("/").pop();
-writeFileSync(resolve(outDir, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+const sorted = Object.fromEntries(Object.entries(manifest).sort(([a], [b]) => a.localeCompare(b)));
+writeFileSync(resolve(outDir, "manifest.json"), `${JSON.stringify(sorted, null, 2)}\n`);
 
-console.log("manifest:", manifest);
+console.log("manifest:", sorted);

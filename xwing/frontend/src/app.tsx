@@ -41,6 +41,8 @@ const REFRESH_FAILURE_NOTICE = 3;
 const DELETE_KEYS: Record<string, true> = { Delete: true, Backspace: true };
 /** The sort button inside a header cell is `height:100%`, so its cell must have a definite height. */
 const SORT_CELL: React.CSSProperties = { height: "100%" };
+/** ARIA requires columnheader cells inside a row; `display:contents` keeps that wrapper out of the CSS grid so the header cells still lay out as direct grid children of `.table-head`. */
+const ROW_CONTENTS: React.CSSProperties = { display: "contents" };
 
 function sortStorageKey(user: string): string {
   return `xwing.sort.${SORT_STORAGE_VERSION}.${user}`;
@@ -627,7 +629,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
         cannot itself become a heading without breaking the crumb row's layout. */}
     <h1 className="sr-only">{crumbLabel(directory.breadcrumbs[directory.breadcrumbs.length - 1]?.name ?? "")}</h1>
     <header className="topbar">
-      <a className="brand" href="/" aria-label="X-wing home" onClick={() => setPageLeaving(true)}><Logo/><span>X-wing</span><small className="brand-context">FILES</small></a>
+      <a className="brand" href="/" aria-label="X-wing FILES, home" onClick={() => setPageLeaving(true)}><Logo/><span>X-wing</span><small className="brand-context">FILES</small></a>
       {directory.user.authenticated ? <div className="account-inline">{directory.admin ? <div className="account" ref={accountRef}>
         <button className="account-trigger" type="button" aria-haspopup="menu" aria-expanded={accountOpen} onClick={() => setAccountOpen(value => !value)}>
           <span>{directory.user.name}</span><Icon name="chevron"/>
@@ -645,7 +647,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
           {index > 0 && <span className="slash">/</span>}
           {index === directory.breadcrumbs.length - 1 ? <span className="crumb current">{crumbLabel(crumb.name)}</span> : <a className="crumb" href={crumb.path} onClick={event => { event.preventDefault(); void navigate(crumb.path); }}>{crumbLabel(crumb.name)}</a>}
         </React.Fragment>)}</nav>
-        <div className="location-meta"><span>{directory.files.length} items</span></div>
+        <div className="location-meta"><span>{query.trim() ? `${files.length} of ${directory.files.length} items` : `${directory.files.length} items`}</span></div>
       </section>
 
       <div className="workspace-controls">
@@ -688,7 +690,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
         else if (event.key === "Escape" && selected.size) { event.preventDefault(); setSelected(new Set()); setLastSelected(null); }
       }}>
         <div className="file-table" role="table" aria-label="Files" aria-rowcount={files.length + 1}>
-        <div className="table-head" role="rowgroup"><span className="select-all" role="columnheader"><SelectionCheckbox label={selected.size === files.length ? "Deselect all" : "Select all"} checked={files.length > 0 && selected.size === files.length} indeterminate={selected.size > 0 && selected.size < files.length} onToggle={() => { setSelected(selected.size === files.length ? new Set() : new Set(files.map(file => file.path))); setLastSelected(null); }}/></span><span role="columnheader"/>{(["name", "size", "modified"] as SortKey[]).map(key => { const index = sort.findIndex(entry => entry.key === key); const entry = sort[index]; const label = key === "modified" ? "Modified" : key[0]!.toUpperCase() + key.slice(1); return <span key={key} className="sort-cell" role="columnheader" aria-sort={entry ? (entry.direction === "asc" ? "ascending" : "descending") : "none"} style={SORT_CELL}><button className={`sort ${key === "modified" ? "date" : ""} ${entry ? "active" : ""}`} aria-label={`${label}, ${entry ? `${entry.direction === "asc" ? "ascending" : "descending"}, priority ${index + 1}` : "not sorted"}`} onClick={() => updateSort(key)}>{label} {entry && <span>{entry.direction === "asc" ? "▲" : "▼"}{sort.length > 1 ? index + 1 : ""}</span>}</button></span>; })}<span role="columnheader"/></div>
+        <div className="table-head" role="rowgroup"><span role="row" style={ROW_CONTENTS}><span className="select-all" role="columnheader"><SelectionCheckbox label={selected.size === files.length ? "Deselect all" : "Select all"} checked={files.length > 0 && selected.size === files.length} indeterminate={selected.size > 0 && selected.size < files.length} onToggle={() => { setSelected(selected.size === files.length ? new Set() : new Set(files.map(file => file.path))); setLastSelected(null); }}/></span><span role="columnheader"/>{(["name", "size", "modified"] as SortKey[]).map(key => { const index = sort.findIndex(entry => entry.key === key); const entry = sort[index]; const label = key === "modified" ? "Modified" : key[0]!.toUpperCase() + key.slice(1); return <span key={key} className="sort-cell" role="columnheader" aria-sort={entry ? (entry.direction === "asc" ? "ascending" : "descending") : "none"} style={SORT_CELL}><button className={`sort ${key === "modified" ? "date" : ""} ${entry ? "active" : ""}`} aria-label={`${label}, ${entry ? `${entry.direction === "asc" ? "ascending" : "descending"}, priority ${index + 1}` : "not sorted"}`} onClick={() => updateSort(key)}>{label} {entry && <span>{entry.direction === "asc" ? "▲" : "▼"}{sort.length > 1 ? index + 1 : ""}</span>}</button></span>; })}<span role="columnheader"/></span></div>
         <div id="file-list" className="file-list" role="rowgroup" tabIndex={-1}>
           {directoryState === "error" && <div className="state-panel"><strong>Couldn’t open this folder</strong><span>{directoryError}</span><button className="button" onClick={() => void refresh()}>Retry</button></div>}
           {!files.length && directoryState !== "error" && <div className="state-panel empty"><span className="empty-icon"><Icon name="folder"/></span><strong>{query.trim() ? "No matches" : "This folder is empty"}</strong><span>{query.trim() ? `Nothing here matches “${query.trim()}”.` : directory.permissions.write ? "Upload files or create a folder to get started." : "You have read-only access here."}</span>{directory.permissions.write && !query.trim() && <button className="button primary" onClick={() => fileInput.current?.click()}><Icon name="upload"/><span className="label">Upload files</span></button>}</div>}
