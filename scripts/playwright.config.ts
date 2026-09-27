@@ -19,8 +19,18 @@ export default defineConfig({
       // Read-only permissions and an oversized file, so the read-only and
       // truncated-preview paths get a real browser instead of a source check.
       command:
-        "node e2e/prepare-limited.mjs && uv run xwing serve --root .e2e-limited --port 8991 --no-open --users-config e2e/users-readonly.yaml",
+        "node e2e/prepare-roots.mjs && uv run xwing serve --root .e2e-limited --port 8991 --no-open --users-config e2e/users-readonly.yaml",
       url: "http://127.0.0.1:8991/",
+      reuseExistingServer: false,
+      timeout: 60_000,
+    },
+    {
+      // A writable root of its own for the rename tests. They create and remove
+      // real files, and e2e/fixtures is shared with the tests that assert on
+      // that listing's row order, selection counts and snapshots.
+      command:
+        "node e2e/prepare-roots.mjs && uv run xwing serve --root .e2e-rename --port 8992 --no-open --users-config e2e/users-full.yaml",
+      url: "http://127.0.0.1:8992/",
       reuseExistingServer: false,
       timeout: 60_000,
     },

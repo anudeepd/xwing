@@ -1,4 +1,48 @@
 import { expect, test } from "@playwright/test";
+import type { Page } from "@playwright/test";
+
+interface BootstrapFile {
+  name: string;
+  path: string;
+  kind: "file" | "directory";
+  size: number | null;
+  modified: string | null;
+  editable: boolean;
+}
+
+interface BootstrapPatch {
+  permissions?: { read: boolean; write: boolean; delete: boolean };
+  files?: BootstrapFile[];
+}
+
+/**
+ * Serve the app with a patched bootstrap.
+ *
+ * The bootstrap is the embedded JSON the shell hydrates from, so patching it as
+ * the document loads is how a state no fixture server provides gets exercised:
+ * the three reachable `write`/`delete` combinations, and a listing that does not
+ * change while a test is measuring it.
+ */
+async function gotoWithBootstrap(page: Page, patch: BootstrapPatch): Promise<void> {
+  await page.route("**/*", async route => {
+    const request = route.request();
+    if (request.method() !== "GET" || !(request.headers()["accept"] ?? "").includes("text/html")) {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch();
+    const headers = { ...response.headers() };
+    delete headers["content-length"];
+    delete headers["content-encoding"];
+    const patched = (await response.text()).replace(
+      /(<script type="application\/json" id="xwing-bootstrap">)([\s\S]*?)(<\/script>)/,
+      (_match, open: string, json: string, close: string) =>
+        `${open}${JSON.stringify({ ...JSON.parse(json), ...patch })}${close}`,
+    );
+    await route.fulfill({ status: response.status(), headers, body: patched });
+  });
+  await page.goto("/");
+}
 
 test("daily browser workflow is keyboard-accessible", async ({ page }) => {
   await page.goto("/");
@@ -332,6 +376,131 @@ test("failed deletion keeps the dialog keyboard-operable", async ({ page }) => {
   await expect(dialog).not.toBeVisible();
 });
 
+test("a row can be renamed from its control or with F2", async ({ page }, testInfo) => {
+  // The dedicated writable root, and a name unique per invocation: the chromium
+  // and firefox projects run this test at the same time against the same server.
+  const api = "http://127.0.0.1:8992";
+  const stamp = `${testInfo.project.name}-${Date.now()}`;
+  const original = `e2e-rename-${stamp}.txt`;
+  const renamed = `e2e-renamed-${stamp}.txt`;
+  const folder = `e2e-dir-${stamp}`;
+  const renamedFolder = `${folder}-renamed`;
+  await page.request.put(`${api}/${original}`, { data: "hello" });
+  await page.request.fetch(`${api}/${folder}/`, { method: "MKCOL" });
+  try {
+    await page.goto(`${api}/`);
+    await expect(page.getByRole("row", { name: `${original}, file`, exact: true })).toBeVisible();
+
+    await page.getByRole("button", { name: `Rename ${original}` }).click();
+    const dialog = page.getByRole("dialog", { name: `Rename ${original}` });
+    await expect(dialog).toBeVisible();
+    const input = dialog.getByRole("textbox");
+    await expect(input).toBeFocused();
+    await expect(input).toHaveValue(original);
+
+    await input.fill(renamed);
+    await dialog.getByRole("button", { name: "Rename" }).click();
+
+    const renamedRow = page.getByRole("row", { name: `${renamed}, file`, exact: true });
+    await expect(renamedRow).toBeVisible();
+    await expect(page.getByRole("row", { name: `${original}, file`, exact: true })).toHaveCount(0);
+    await expect(page.getByText(`Renamed to ${renamed}`)).toBeVisible();
+    await expect.poll(() => renamedRow.evaluate(row => document.activeElement === row)).toBe(true);
+
+    await renamedRow.focus();
+    await page.keyboard.press("F2");
+    const keyboardDialog = page.getByRole("dialog", { name: `Rename ${renamed}` });
+    await expect(keyboardDialog).toBeVisible();
+    await keyboardDialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(keyboardDialog).not.toBeVisible();
+    await expect(renamedRow).toBeFocused();
+
+    // A folder keeps its trailing slash through the move.
+    await page.getByRole("button", { name: `Rename ${folder}` }).click();
+    const folderDialog = page.getByRole("dialog", { name: `Rename ${folder}` });
+    await folderDialog.getByRole("textbox").fill(renamedFolder);
+    await folderDialog.getByRole("button", { name: "Rename" }).click();
+    await expect(page.getByRole("row", { name: `${renamedFolder}, directory`, exact: true })).toBeVisible();
+    await expect(page.getByRole("row", { name: `${folder}, directory`, exact: true })).toHaveCount(0);
+    await expect(page.getByRole("row", { name: `${renamed}, file`, exact: true })).toBeVisible();
+  } finally {
+    await page.request.delete(`${api}/${renamedFolder}`);
+    await page.request.delete(`${api}/${folder}`);
+    await page.request.delete(`${api}/${renamed}`);
+    await page.request.delete(`${api}/${original}`);
+  }
+});
+
+test("renaming to an exotic name stores exactly that name", async ({ page }, testInfo) => {
+  const api = "http://127.0.0.1:8992";
+  const source = `e2e-exotic-${testInfo.project.name}-${Date.now()}.txt`;
+  // A space, an apostrophe, a percent, a hash, a plus and a non-ASCII letter:
+  // encodeURIComponent leaves some of these raw while the server re-encodes
+  // them, so the client and the server disagree about the path text.
+  const exotic = "sp ace'quote%pct#hash+bü.txt";
+  await page.request.put(`${api}/${source}`, { data: "payload" });
+  try {
+    await page.goto(`${api}/`);
+    await page.getByRole("button", { name: `Rename ${source}` }).click();
+    const dialog = page.getByRole("dialog", { name: `Rename ${source}` });
+    await dialog.getByRole("textbox").fill(exotic);
+    await dialog.getByRole("button", { name: "Rename" }).click();
+
+    const renamedRow = page.getByRole("row", { name: `${exotic}, file`, exact: true });
+    await expect(renamedRow).toBeVisible();
+    await expect(page.getByRole("row", { name: `${source}, file`, exact: true })).toHaveCount(0);
+
+    // The server reports the name it stored, whatever encoding it chose for the
+    // path, and the bytes are intact.
+    const listing = await page.request.get(`${api}/`, {
+      headers: { Accept: "application/vnd.xwing.directory+json" },
+    });
+    const body = (await listing.json()) as { files: Array<{ name: string; path: string }> };
+    const stored = body.files.find(file => file.name === exotic);
+    expect(stored).toBeDefined();
+    expect(await (await page.request.get(`${api}/${stored!.path.split("/").pop()}`)).text()).toBe(
+      "payload",
+    );
+  } finally {
+    await page.request.delete(`${api}/${encodeURIComponent(exotic)}`);
+    await page.request.delete(`${api}/${source}`);
+  }
+});
+
+test("renaming refuses an empty name and never overwrites an existing one", async ({ page }, testInfo) => {
+  const api = "http://127.0.0.1:8992";
+  const stamp = `${testInfo.project.name}-${Date.now()}`;
+  const first = `e2e-take-a-${stamp}.txt`;
+  const second = `e2e-take-b-${stamp}.txt`;
+  await page.request.put(`${api}/${first}`, { data: "a" });
+  await page.request.put(`${api}/${second}`, { data: "b" });
+  try {
+    await page.goto(`${api}/`);
+    await page.getByRole("button", { name: `Rename ${first}` }).click();
+    const dialog = page.getByRole("dialog", { name: `Rename ${first}` });
+    const input = dialog.getByRole("textbox");
+
+    await input.fill("   ");
+    await dialog.getByRole("button", { name: "Rename" }).click();
+    await expect(dialog.getByRole("alert")).toHaveText("Enter one valid name.");
+    await expect(input).toHaveAttribute("aria-invalid", "true");
+
+    await input.fill(second);
+    await dialog.getByRole("button", { name: "Rename" }).click();
+    await expect(dialog.getByRole("alert")).toHaveText("That name is already taken.");
+    await expect(dialog).toBeVisible();
+
+    await page.keyboard.press("Escape");
+    await expect(dialog).not.toBeVisible();
+    await expect(page.getByRole("row", { name: `${first}, file`, exact: true })).toBeVisible();
+    await expect(page.getByRole("row", { name: `${second}, file`, exact: true })).toBeVisible();
+    expect(await (await page.request.get(`${api}/${second}`)).text()).toBe("b");
+  } finally {
+    await page.request.delete(`${api}/${first}`);
+    await page.request.delete(`${api}/${second}`);
+  }
+});
+
 test("editor shell keeps CodeMirror and dirty-buffer guard", async ({ page }) => {
   await page.goto("/README.md?edit");
   const editor = page.getByRole("textbox");
@@ -387,8 +556,18 @@ test("editor controls keep the same appearance across browser engines", async ({
 
 test("approved visual states", async ({ page, browserName }) => {
   test.skip(browserName !== "chromium", "Chromium owns deterministic baselines");
+  // A fixed listing, because this screenshots the root that other tests add
+  // files to and remove files from. Pinning it keeps the baseline about the
+  // chrome and the row layout, which is what it is here to protect, instead of
+  // about whichever files happened to exist at that moment.
+  const files = [
+    { name: "releases", path: "/releases/", kind: "directory" as const, size: null, modified: "2026-07-19T12:26:00+00:00", editable: false },
+    { name: "README.md", path: "/README.md", kind: "file" as const, size: 38, modified: "2026-07-19T12:26:00+00:00", editable: true },
+    { name: "checksums.txt", path: "/checksums.txt", kind: "file" as const, size: 12345, modified: "2026-07-19T12:20:00+00:00", editable: true },
+  ];
   await page.setViewportSize({ width: 1440, height: 900 });
-  await page.goto("/");
+  // The route stays installed, so the mobile reload gets the same listing.
+  await gotoWithBootstrap(page, { files });
   await expect(page).toHaveScreenshot("browser-desktop.png", { fullPage: true });
   await page.getByRole("button", { name: "Parallel uploads: 4" }).click();
   await expect(page).toHaveScreenshot("parallel-menu-desktop.png", { fullPage: true });
@@ -469,6 +648,7 @@ test("listing controls are named and reachable, and the stylesheet keeps its gua
   await expect(skip).toBeFocused();
 
   await expect(page.getByRole("link", { name: "Download README.md" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Rename README.md" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Delete README.md" })).toBeVisible();
 
   await page.getByRole("checkbox", { name: "Select all" }).click();
@@ -548,10 +728,19 @@ test.describe("limited access server", () => {
     await page.goto("http://127.0.0.1:8991/");
 
     await expect(
-      page.getByText("Read-only access. Uploads and folder creation are disabled."),
+      page.getByText(
+        "Read-only access. Uploads, folder creation, rename and delete are disabled.",
+      ),
     ).toBeVisible();
     await expect(page.getByRole("button", { name: "Upload files" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "New folder" })).toBeDisabled();
+
+    // Rename and delete are policy-disabled and point at the permission notice.
+    const rename = page.getByRole("button", { name: "Rename oversized.txt" });
+    await expect(rename).toBeDisabled();
+    await expect(rename).toHaveAttribute("aria-describedby", "permission-notice");
+    await expect(page.getByRole("button", { name: "Delete oversized.txt" })).toBeDisabled();
+    await expect(page.getByRole("link", { name: "Download oversized.txt" })).toBeEnabled();
 
     await page.goto("http://127.0.0.1:8991/empty/");
     await expect(page.getByText("This folder is empty")).toBeVisible();
@@ -566,5 +755,96 @@ test.describe("limited access server", () => {
     await expect(page.getByRole("button", { name: "Save" })).toBeDisabled();
     // Nothing in the editor accepts typing when the file is only previewed.
     await expect(page.locator(".cm-content[contenteditable=true]")).toHaveCount(0);
+  });
+});
+
+test.describe("restricted permissions", () => {
+  const writeWithoutDelete = { read: true, write: true, delete: false };
+  const deleteWithoutWrite = { read: true, write: false, delete: true };
+
+  test("a partial restriction is explained instead of being called read-only", async ({ page }) => {
+    await gotoWithBootstrap(page, { permissions: writeWithoutDelete });
+
+    // Uploading is still allowed, so the notice must not claim read-only access.
+    await expect(
+      page.getByText("Renaming and deleting are disabled for your account."),
+    ).toBeVisible();
+    await expect(page.getByText(/Read-only access/)).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Upload files" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "New folder" })).toBeEnabled();
+
+    // Every control this profile disables points at the notice that explains it.
+    const rename = page.getByRole("button", { name: "Rename README.md" });
+    await expect(rename).toBeDisabled();
+    await expect(rename).toHaveAttribute("aria-describedby", "permission-notice");
+    const rowDelete = page.getByRole("button", { name: "Delete README.md" });
+    await expect(rowDelete).toBeDisabled();
+    await expect(rowDelete).toHaveAttribute("aria-describedby", "permission-notice");
+
+    await page.getByRole("checkbox", { name: "Select README.md" }).click();
+    const toolbarDelete = page.getByRole("button", { name: "Delete selected" });
+    await expect(toolbarDelete).toBeDisabled();
+    await expect(toolbarDelete).toHaveAttribute("aria-describedby", "permission-notice");
+    await expect(page.getByRole("button", { name: "Download selected as zip" })).toBeEnabled();
+
+    // The regions a keyboard user does reach carry the explanation, because the
+    // controls it disables are not focusable.
+    await expect(page.getByRole("region", { name: "File actions" })).toHaveAttribute(
+      "aria-describedby",
+      "permission-notice",
+    );
+    await expect(page.getByRole("table", { name: "Files" })).toHaveAttribute(
+      "aria-describedby",
+      "permission-notice",
+    );
+
+    // No aria-describedby anywhere on the page points at a missing element.
+    const dangling = await page.evaluate(() =>
+      [...document.querySelectorAll("[aria-describedby]")]
+        .flatMap(element => element.getAttribute("aria-describedby")!.split(/\s+/))
+        .filter(id => !document.getElementById(id)),
+    );
+    expect(dangling).toEqual([]);
+  });
+
+  test("a delete-only account can delete but is not told it is read-only", async ({ page }) => {
+    await gotoWithBootstrap(page, { permissions: deleteWithoutWrite });
+
+    // Rename is a move, so it also needs write; delete does not.
+    await expect(
+      page.getByText("Uploads, folder creation and renaming are disabled for your account."),
+    ).toBeVisible();
+    await expect(page.getByText(/Read-only access/)).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Upload files" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "New folder" })).toBeDisabled();
+    const rename = page.getByRole("button", { name: "Rename README.md" });
+    await expect(rename).toBeDisabled();
+    await expect(rename).toHaveAttribute("aria-describedby", "permission-notice");
+    // Deletion stays available, so it must not be dimmed or pointed at a notice
+    // that says it is not.
+    const rowDelete = page.getByRole("button", { name: "Delete README.md" });
+    await expect(rowDelete).toBeEnabled();
+    await expect(rowDelete).not.toHaveAttribute("aria-describedby", "permission-notice");
+    await page.getByRole("checkbox", { name: "Select README.md" }).click();
+    await expect(page.getByRole("button", { name: "Delete selected" })).toBeEnabled();
+  });
+
+  test("an empty folder does not offer an invitation the account cannot take", async ({ page }) => {
+    await gotoWithBootstrap(page, { permissions: deleteWithoutWrite, files: [] });
+
+    await expect(page.getByText("This folder is empty")).toBeVisible();
+    await expect(page.getByText("You don't have permission to add files here.")).toBeVisible();
+    await expect(page.getByText("Upload files or create a folder to get started.")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Upload files" })).toBeDisabled();
+  });
+
+  test("F2 opens nothing when renaming is not allowed", async ({ page }) => {
+    await gotoWithBootstrap(page, { permissions: writeWithoutDelete });
+
+    const row = page.getByRole("row", { name: /^README\.md,/ });
+    await row.focus();
+    await page.keyboard.press("F2");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(row).toBeFocused();
   });
 });

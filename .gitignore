@@ -29,4 +29,5 @@ DESIGN.md
 .gstack/
 .gstack-review/
 scripts/.e2e-limited/
+scripts/.e2e-rename/
 scripts/e2e/fixtures/.xwing-trash/

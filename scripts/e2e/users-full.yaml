@@ -1,0 +1,5 @@
+# Full permissions for the dedicated rename root. Rename is a WebDAV MOVE, so
+# the server demands both write and delete; this profile is the only one that
+# can exercise it.
+users:
+  anonymous: rwd

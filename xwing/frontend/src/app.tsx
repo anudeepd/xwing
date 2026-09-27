@@ -5,6 +5,8 @@ import { useModalFocus } from "./keyboard";
 import { nearestSurvivor, selectionRange } from "./selection";
 import { nextSort, normalizeSortPreference, sortFiles } from "./sort";
 import type { SortEntry, SortKey } from "./sort";
+import { permissionNotice } from "./permissions";
+import { renameDestination } from "./rename";
 import { DIRECTORY_MEDIA_TYPE, encodePath, parseBootstrap } from "./types";
 import type { Parallelism, XwingBootstrapV1, XwingFile } from "./types";
 import { collectDroppedEntries } from "./drop-entries";
@@ -22,9 +24,20 @@ interface Toast {
 type Dialog =
   | { kind: "mkdir"; value: string; error?: string | undefined }
   | { kind: "delete"; paths: string[]; pending: boolean; error?: string | undefined }
+  | { kind: "rename"; path: string; name: string; value: string; pending: boolean; error?: string | undefined }
   | null;
 
 type DropWaitState = "preparing" | "delayed" | null;
+
+/**
+ * Where keyboard focus should land once the listing it targets is on screen.
+ * Queued rather than applied immediately: focusing straight after a state
+ * update races React's commit, so the query runs against the previous
+ * directory's rows and focus lands on a node that is about to be replaced.
+ */
+type PendingFocus =
+  | { kind: "path"; path: string | null; fallbackToFirst: boolean }
+  | { kind: "name"; name: string };
 
 const uploadManager = new UploadManager();
 const PARALLEL_VALUES: Parallelism[] = [1, 2, 4, 8];
@@ -94,6 +107,7 @@ function Icon({ name }: { name: string }): React.JSX.Element {
     folder: <path d="M3 7h7l2 2h9v11H3z"/>,
     file: <><path d="M6 2h9l4 4v16H6z"/><path d="M15 2v5h5"/></>,
     download: <><path d="M12 4v11m0 0-4-4m4 4 4-4"/><path d="M4 19h16"/></>,
+    rename: <><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></>,
     trash: <><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7"/><path d="M10 11v5m4-5v5"/></>,
     check: <path d="m5 12.5 4.25 4.25L19 7.5"/>, chevron: <path d="m7 10 5 5 5-5"/>,
     close: <path d="m6 6 12 12M18 6 6 18"/>, retry: <path d="M20 11a8 8 0 1 0-2 5.3M20 4v7h-7"/>,
@@ -181,6 +195,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   const autoRefreshTimer = useRef<number | null>(null);
   const arrivalTimer = useRef<number | null>(null);
   const currentDirectory = useRef(directory.path);
+  const pendingFocus = useRef<PendingFocus | null>(null);
   currentDirectory.current = directory.path;
   const navigationInFlight = useRef(false);
   // True while the user is mid-action; auto refresh must never fight that work.
@@ -291,7 +306,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
         // user was filtering, not to the folder they just opened.
         if (historyMode !== "none") setQuery("");
         if (animate) setPageLeaving(false);
-        focusFileRow(null, true);
+        pendingFocus.current = { kind: "path", path: null, fallbackToFirst: true };
       } catch (error) {
         if (controller.signal.aborted) return;
         setDirectoryState("error");
@@ -487,6 +502,25 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     setDialog(null); addToast(`Created ${value}`); await refresh();
   };
 
+  // Rename is a same-directory WebDAV MOVE: the name changes, the location does
+  // not. Overwrite is refused (F) so renaming onto an existing name reports a
+  // conflict instead of silently replacing the other item.
+  const renamePath = async (): Promise<void> => {
+    if (!dialog || dialog.kind !== "rename" || dialog.pending) return;
+    const value = dialog.value.trim();
+    if (!value || value.includes("/")) { setDialog({ ...dialog, error: "Enter one valid name." }); return; }
+    if (value === dialog.name) { setDialog(null); return; }
+    const destination = renameDestination(dialog.path, value);
+    setDialog({ ...dialog, pending: true, error: undefined });
+    let response: Response;
+    try { response = await authFetch(dialog.path, { method: "MOVE", headers: { Destination: destination, Overwrite: "F" } }); }
+    catch (error) { setDialog({ ...dialog, pending: false, error: errorMessage(error) }); return; }
+    if (!response.ok) { setDialog({ ...dialog, pending: false, error: await responseError(response) }); return; }
+    setDialog(null); addToast(`Renamed to ${value}`, "success");
+    await refresh();
+    pendingFocus.current = { kind: "name", name: value };
+  };
+
   const deletePaths = async (): Promise<void> => {
     if (!dialog || dialog.kind !== "delete") return;
     const focusAfterDelete = nearestSurvivor(files, dialog.paths);
@@ -507,7 +541,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
       label: "Undo", run: () => void restore(data.transaction_id!),
     } : undefined, 15000);
     await refresh();
-    focusFileRow(focusAfterDelete);
+    pendingFocus.current = { kind: "path", path: focusAfterDelete, fallbackToFirst: false };
   };
 
   const restore = async (transaction: string): Promise<void> => {
@@ -615,8 +649,33 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   };
 
   const transitioning = directoryState === "loading" || pageLeaving;
-  // Controls disabled by read-only mode point at the notice that explains it.
-  const readOnlyHint = directory.permissions.write ? undefined : "readonly-notice";
+  // One notice names every capability this account is missing, and every control
+  // policy disables points at it: a dimmed control is never the only signal.
+  // `permissionNotice` returns null only when write and delete are both granted,
+  // which is also the only case where no control is disabled by policy, so the
+  // hint can never reference a notice that is not on the page.
+  const notice = permissionNotice(directory.permissions);
+  const policyHint = notice ? "permission-notice" : undefined;
+  // Served here, after the commit, so the rows belong to the listing the request
+  // was made for. An auto-refresh re-enters this effect with nothing queued and
+  // leaves the user's focus alone.
+  useEffect(() => {
+    const pending = pendingFocus.current;
+    if (!pending || directoryState !== "ready") return;
+    pendingFocus.current = null;
+    const rows = [...document.querySelectorAll<HTMLElement>(".file-row")];
+    const target = pending.kind === "name"
+      ? rows.find(row => row.querySelector(".filename")?.getAttribute("title") === pending.name)
+      : (rows.find(row => row.dataset.path === pending.path) ?? (pending.fallbackToFirst ? rows[0] : null));
+    (target ?? document.getElementById("file-list"))?.focus();
+  }, [directory, directoryState]);
+  // The empty state is an invitation or an orientation, so it follows the same
+  // capability rule as the notice: a delete-only account is not read-only.
+  const emptyStateHint = directory.permissions.write
+    ? "Upload files or create a folder to get started."
+    : directory.permissions.delete
+      ? "You don't have permission to add files here."
+      : "You have read-only access here.";
 
   return <div className={`xw-app ${pageLeaving ? "page-leaving" : ""}`}
     onDragEnter={event => { event.preventDefault(); if (!directory.permissions.write) return; dragDepth.current += 1; refreshDropFeedback(); }}
@@ -651,19 +710,19 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
       </section>
 
       <div className="workspace-controls">
-      {!directory.permissions.write && <div id="readonly-notice" className="readonly-notice" role="status">Read-only access. Uploads and folder creation are disabled.</div>}
-      <section className="actionbar" aria-label="File actions">
+      {notice && <div id="permission-notice" className="readonly-notice" role="status">{notice}</div>}
+      <section className="actionbar" aria-label="File actions" aria-describedby={policyHint}>
         <div className="toolbar-group">
-          <button className="button primary" disabled={!directory.permissions.write} aria-describedby={readOnlyHint} onClick={() => fileInput.current?.click()}><Icon name="upload"/><span className="label">Upload files</span></button>
-          <button className="button hide-tablet" aria-label="Upload folder" disabled={!directory.permissions.write} aria-describedby={readOnlyHint} onClick={() => folderInput.current?.click()}><Icon name="folderUpload"/><span className="label">Upload folder</span></button>
-          <button className="button" aria-label="New folder" disabled={!directory.permissions.write} aria-describedby={readOnlyHint} onClick={() => setDialog({ kind: "mkdir", value: "" })}><Icon name="folderAdd"/><span className="label">New folder</span></button>
+          <button className="button primary" disabled={!directory.permissions.write} aria-describedby={policyHint} onClick={() => fileInput.current?.click()}><Icon name="upload"/><span className="label">Upload files</span></button>
+          <button className="button hide-tablet" aria-label="Upload folder" disabled={!directory.permissions.write} aria-describedby={policyHint} onClick={() => folderInput.current?.click()}><Icon name="folderUpload"/><span className="label">Upload folder</span></button>
+          <button className="button" aria-label="New folder" disabled={!directory.permissions.write} aria-describedby={policyHint} onClick={() => setDialog({ kind: "mkdir", value: "" })}><Icon name="folderAdd"/><span className="label">New folder</span></button>
           <input ref={fileInput} type="file" multiple hidden onChange={event => { if (event.target.files) { clearDropFeedback(); queueFiles(event.target.files); } event.currentTarget.value = ""; }}/>
           <input ref={folderInput} type="file" multiple hidden {...({ webkitdirectory: "" } as React.InputHTMLAttributes<HTMLInputElement>)} onChange={event => { if (event.target.files) { clearDropFeedback(); queueFiles(event.target.files); } event.currentTarget.value = ""; }}/>
         </div>
         <div className={`toolbar-group selection-actions ${selected.size ? "visible" : ""}`} aria-hidden={!selected.size}>
           <span className="selection-pill"><i/>{selected.size} selected</span>
           <button className="button" aria-label="Download selected as zip" disabled={!selected.size || zipPending > 0} aria-busy={zipPending > 0} onClick={() => void downloadSelected()}><Icon name="download"/><span className="label">Download zip</span></button>
-          <button className="button danger" aria-label="Delete selected" disabled={!selected.size || !directory.permissions.delete} aria-describedby={!directory.permissions.delete ? readOnlyHint : undefined} onClick={() => setDialog({ kind: "delete", paths: [...selected], pending: false })}><Icon name="trash"/><span className="label">Delete</span></button>
+          <button className="button danger" aria-label="Delete selected" disabled={!selected.size || !directory.permissions.delete} aria-describedby={!directory.permissions.delete ? policyHint : undefined} onClick={() => setDialog({ kind: "delete", paths: [...selected], pending: false })}><Icon name="trash"/><span className="label">Delete</span></button>
           <button className="button ghost" disabled={!selected.size} onClick={() => { const focusPath = lastSelected ?? selected.values().next().value ?? null; setSelected(new Set()); setLastSelected(null); focusFileRow(focusPath); }}>Clear</button>
         </div>
         <div className="toolbar-group toolbar-end">
@@ -689,12 +748,12 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
         if (DELETE_KEYS[event.key] && directory.permissions.delete && selected.size) { event.preventDefault(); setDialog({ kind: "delete", paths: [...selected], pending: false }); }
         else if (event.key === "Escape" && selected.size) { event.preventDefault(); setSelected(new Set()); setLastSelected(null); }
       }}>
-        <div className="file-table" role="table" aria-label="Files" aria-rowcount={files.length + 1}>
+        <div className="file-table" role="table" aria-label="Files" aria-rowcount={files.length + 1} aria-describedby={policyHint}>
         <div className="table-head" role="rowgroup"><span role="row" style={ROW_CONTENTS}><span className="select-all" role="columnheader"><SelectionCheckbox label={selected.size === files.length ? "Deselect all" : "Select all"} checked={files.length > 0 && selected.size === files.length} indeterminate={selected.size > 0 && selected.size < files.length} onToggle={() => { setSelected(selected.size === files.length ? new Set() : new Set(files.map(file => file.path))); setLastSelected(null); }}/></span><span role="columnheader"/>{(["name", "size", "modified"] as SortKey[]).map(key => { const index = sort.findIndex(entry => entry.key === key); const entry = sort[index]; const label = key === "modified" ? "Modified" : key[0]!.toUpperCase() + key.slice(1); return <span key={key} className="sort-cell" role="columnheader" aria-sort={entry ? (entry.direction === "asc" ? "ascending" : "descending") : "none"} style={SORT_CELL}><button className={`sort ${key === "modified" ? "date" : ""} ${entry ? "active" : ""}`} aria-label={`${label}, ${entry ? `${entry.direction === "asc" ? "ascending" : "descending"}, priority ${index + 1}` : "not sorted"}`} onClick={() => updateSort(key)}>{label} {entry && <span>{entry.direction === "asc" ? "▲" : "▼"}{sort.length > 1 ? index + 1 : ""}</span>}</button></span>; })}<span role="columnheader"/></span></div>
         <div id="file-list" className="file-list" role="rowgroup" tabIndex={-1}>
           {directoryState === "error" && <div className="state-panel"><strong>Couldn’t open this folder</strong><span>{directoryError}</span><button className="button" onClick={() => void refresh()}>Retry</button></div>}
-          {!files.length && directoryState !== "error" && <div className="state-panel empty"><span className="empty-icon"><Icon name="folder"/></span><strong>{query.trim() ? "No matches" : "This folder is empty"}</strong><span>{query.trim() ? `Nothing here matches “${query.trim()}”.` : directory.permissions.write ? "Upload files or create a folder to get started." : "You have read-only access here."}</span>{directory.permissions.write && !query.trim() && <button className="button primary" onClick={() => fileInput.current?.click()}><Icon name="upload"/><span className="label">Upload files</span></button>}</div>}
-          {files.map((file, index) => <FileRow key={file.path} file={file} index={index} selected={selected.has(file.path)} loading={directoryState === "loading"} arriving={arrivingNames.has(file.name)} onSelect={(gesture) => toggleSelection(file, index, gesture)} onOpen={() => file.kind === "directory" ? void navigate(file.path) : openDocument(`${file.path}${file.editable ? "?edit" : ""}`)} onDelete={() => setDialog({ kind: "delete", paths: [file.path], pending: false })} onDeleteKey={() => { if (directory.permissions.delete) setDialog({ kind: "delete", paths: selected.size ? [...selected] : [file.path], pending: false }); }} onClear={() => { setSelected(new Set()); setLastSelected(null); }}/>) }
+          {!files.length && directoryState !== "error" && <div className="state-panel empty"><span className="empty-icon"><Icon name="folder"/></span><strong>{query.trim() ? "No matches" : "This folder is empty"}</strong><span>{query.trim() ? `Nothing here matches “${query.trim()}”.` : emptyStateHint}</span>{directory.permissions.write && !query.trim() && <button className="button primary" onClick={() => fileInput.current?.click()}><Icon name="upload"/><span className="label">Upload files</span></button>}</div>}
+          {files.map((file, index) => <FileRow key={file.path} file={file} index={index} selected={selected.has(file.path)} loading={directoryState === "loading"} arriving={arrivingNames.has(file.name)} permissions={directory.permissions} policyHint={policyHint} onSelect={(gesture) => toggleSelection(file, index, gesture)} onOpen={() => file.kind === "directory" ? void navigate(file.path) : openDocument(`${file.path}${file.editable ? "?edit" : ""}`)} onRename={() => { if (directory.permissions.write && directory.permissions.delete) setDialog({ kind: "rename", path: file.path, name: file.name, value: file.name, pending: false }); }} onDelete={() => setDialog({ kind: "delete", paths: [file.path], pending: false })} onDeleteKey={() => { if (directory.permissions.delete) setDialog({ kind: "delete", paths: selected.size ? [...selected] : [file.path], pending: false }); }} onClear={() => { setSelected(new Set()); setLastSelected(null); }}/>) }
           {/* Space the rail's height, so the last rows can scroll clear of it. */}
           <div className="rail-clearance" aria-hidden="true"/>
         </div>
@@ -720,7 +779,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
       </div>
       {zipPending > 0 && <div className="zip-overlay" role="status" aria-live="polite"><div className="zip-overlay-card"><span className="zip-spinner" aria-hidden="true"/><span className="zip-overlay-text">Zipping {zipPending} file{zipPending === 1 ? "" : "s"}…</span></div></div>}
     </main>
-    {dialog && <DialogView dialog={dialog} setDialog={setDialog} onMkdir={() => void createFolder()} onDelete={() => void deletePaths()}/>} 
+    {dialog && <DialogView dialog={dialog} setDialog={setDialog} onMkdir={() => void createFolder()} onRename={() => void renamePath()} onDelete={() => void deletePaths()}/>} 
     {authOverlay && <div className="auth-overlay" role="status" aria-live="polite"><div className="auth-overlay-card"><div className="auth-overlay-row"><span className="auth-pulse"><span/></span><div><h2>{AUTH_OVERLAY_COPY[authOverlay].title}</h2><p>{AUTH_OVERLAY_COPY[authOverlay].message}</p></div></div>{AUTH_OVERLAY_COPY[authOverlay].action && <button className="button primary" type="button" onClick={() => redirectToLoginNow()}>{AUTH_OVERLAY_COPY[authOverlay].action}</button>}</div></div>}
   </div>;
 }
@@ -755,7 +814,11 @@ function ToastView({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
   </div>;
 }
 
-function FileRow({ file, index, selected, loading, arriving, onSelect, onOpen, onDelete, onDeleteKey, onClear }: { file: XwingFile; index: number; selected: boolean; loading: boolean; arriving: boolean; onSelect: (gesture: { range: boolean; additive: boolean }) => void; onOpen: () => void; onDelete: () => void; onDeleteKey: () => void; onClear: () => void }): React.JSX.Element {
+function FileRow({ file, index, selected, loading, arriving, permissions, policyHint, onSelect, onOpen, onRename, onDelete, onDeleteKey, onClear }: { file: XwingFile; index: number; selected: boolean; loading: boolean; arriving: boolean; permissions: XwingBootstrapV1["permissions"]; policyHint: string | undefined; onSelect: (gesture: { range: boolean; additive: boolean }) => void; onOpen: () => void; onRename: () => void; onDelete: () => void; onDeleteKey: () => void; onClear: () => void }): React.JSX.Element {
+  // Rename is a move, so the server demands both write and delete; delete only
+  // needs delete. Either control, when policy disables it, points at the
+  // permission notice instead of relying on the dimmed style alone.
+  const canRename = permissions.write && permissions.delete;
   const moveFocus = (row: HTMLElement, direction: "next" | "previous" | "first" | "last"): void => {
     const rows = [...(row.parentElement?.querySelectorAll<HTMLElement>(".file-row") ?? [])];
     const current = rows.indexOf(row);
@@ -773,6 +836,7 @@ function FileRow({ file, index, selected, loading, arriving, onSelect, onOpen, o
       if (event.key === " ") { event.preventDefault(); onSelect({ range: event.shiftKey, additive: !event.shiftKey }); }
       else if (event.key === "Enter") { event.preventDefault(); onOpen(); }
       else if (event.key === "Delete") { event.preventDefault(); onDeleteKey(); }
+      else if (event.key === "F2") { event.preventDefault(); onRename(); }
       else if (event.key === "Escape") { event.preventDefault(); onClear(); }
       else if (event.key === "ArrowDown") { event.preventDefault(); moveFocus(event.currentTarget, "next"); }
       else if (event.key === "ArrowUp") { event.preventDefault(); moveFocus(event.currentTarget, "previous"); }
@@ -784,7 +848,7 @@ function FileRow({ file, index, selected, loading, arriving, onSelect, onOpen, o
     <span className={`filename ${file.kind}`} role="cell" title={file.name}>{file.name}{file.kind === "directory" ? "/" : ""}</span>
     <span className="cell" role="cell">{file.size === null ? "—" : formatBytes(file.size)}</span>
     <span className="cell date" role="cell">{file.modified ? formatDate(file.modified) : "—"}</span>
-    <span className="row-actions" role="cell"><a className="icon-button" href={file.kind === "directory" ? `${file.path}?zip` : file.path} download aria-label={`Download ${file.name}`}><Icon name="download"/></a><button className="icon-button danger-icon" aria-label={`Delete ${file.name}`} onClick={onDelete}><Icon name="trash"/></button></span>
+    <span className="row-actions" role="cell"><button className="icon-button" aria-label={`Rename ${file.name}`} disabled={!canRename} aria-describedby={!canRename ? policyHint : undefined} onClick={onRename}><Icon name="rename"/></button><a className="icon-button" href={file.kind === "directory" ? `${file.path}?zip` : file.path} download aria-label={`Download ${file.name}`}><Icon name="download"/></a><button className="icon-button danger-icon" aria-label={`Delete ${file.name}`} disabled={!permissions.delete} aria-describedby={!permissions.delete ? policyHint : undefined} onClick={onDelete}><Icon name="trash"/></button></span>
   </div>;
 }
 
@@ -794,6 +858,9 @@ function SelectionCheckbox({ label, checked, indeterminate = false, rowControl =
   return <input ref={ref} className="selection-checkbox" type="checkbox" aria-label={label} checked={checked} onChange={() => undefined} onClick={event => { event.stopPropagation(); onToggle(event); if (rowControl && event.detail > 0) event.currentTarget.closest<HTMLElement>(".file-row")?.focus(); }}/>;
 }
 
+/** Focus a row now. Only for actions that leave the listing untouched; anything
+ *  that changes the listing queues a `PendingFocus` instead, so the rows it
+ *  queries are the ones the user is looking at. */
 function focusFileRow(path: string | null, fallbackToFirst = false): void {
   window.requestAnimationFrame(() => {
     const rows = [...document.querySelectorAll<HTMLElement>(".file-row")];
@@ -831,8 +898,11 @@ function UploadDock({ snapshot }: { snapshot: ReturnType<UploadManager["getSnaps
   </aside>;
 }
 
-function DialogView({ dialog, setDialog, onMkdir, onDelete }: { dialog: Exclude<Dialog, null>; setDialog: (value: Dialog) => void; onMkdir: () => void; onDelete: () => void }): React.JSX.Element {
-  const mkdir = dialog.kind === "mkdir";
+function DialogView({ dialog, setDialog, onMkdir, onRename, onDelete }: { dialog: Exclude<Dialog, null>; setDialog: (value: Dialog) => void; onMkdir: () => void; onRename: () => void; onDelete: () => void }): React.JSX.Element {
+  const kind = dialog.kind;
+  // mkdir and rename are the same shape: one labelled name field and a primary
+  // confirm. Delete is the destructive variant.
+  const textDialog = kind === "mkdir" || kind === "rename";
   const pending = "pending" in dialog && dialog.pending;
   const [closing, setClosing] = useState(false);
   const close = (): void => {
@@ -845,12 +915,15 @@ function DialogView({ dialog, setDialog, onMkdir, onDelete }: { dialog: Exclude<
   useEffect(() => {
     if (!pending && modalRef.current && !modalRef.current.contains(document.activeElement)) confirmRef.current?.focus();
   }, [pending, modalRef]);
-  return <div ref={modalRef} className={`modal-backdrop ${closing ? "closing" : ""}`} onMouseDown={event => { if (event.target === event.currentTarget) close(); }}><form className="modal" role="dialog" aria-modal="true" aria-labelledby="dialog-title" aria-describedby="dialog-description" onSubmit={event => { event.preventDefault(); if (mkdir) onMkdir(); else onDelete(); }}>
-    <h2 id="dialog-title">{mkdir ? "New folder" : `Delete ${dialog.paths.length} item${dialog.paths.length === 1 ? "" : "s"}?`}</h2>
-    <p id="dialog-description">{mkdir ? "Create a folder in the current directory." : "The items will move to X-wing’s recoverable trash."}</p>
-    {mkdir && <label>Folder name<input data-autofocus value={dialog.value} aria-invalid={dialog.error ? "true" : undefined} aria-describedby={dialog.error ? "dialog-error" : undefined} onChange={event => setDialog({ ...dialog, value: event.target.value, error: undefined })}/></label>}
+  const title = kind === "mkdir" ? "New folder" : kind === "rename" ? `Rename ${dialog.name}` : `Delete ${dialog.paths.length} item${dialog.paths.length === 1 ? "" : "s"}?`;
+  const description = kind === "mkdir" ? "Create a folder in the current directory." : kind === "rename" ? "Enter a new name. The item stays in this folder." : "The items will move to X-wing’s recoverable trash.";
+  const submitLabel = pending ? (kind === "rename" ? "Renaming…" : "Deleting…") : kind === "mkdir" ? "Create folder" : kind === "rename" ? "Rename" : "Delete";
+  return <div ref={modalRef} className={`modal-backdrop ${closing ? "closing" : ""}`} onMouseDown={event => { if (event.target === event.currentTarget) close(); }}><form className="modal" role="dialog" aria-modal="true" aria-labelledby="dialog-title" aria-describedby="dialog-description" onSubmit={event => { event.preventDefault(); if (kind === "mkdir") onMkdir(); else if (kind === "rename") onRename(); else onDelete(); }}>
+    <h2 id="dialog-title">{title}</h2>
+    <p id="dialog-description">{description}</p>
+    {"value" in dialog && <label>{kind === "mkdir" ? "Folder name" : "New name"}<input data-autofocus value={dialog.value} aria-invalid={dialog.error ? "true" : undefined} aria-describedby={dialog.error ? "dialog-error" : undefined} onChange={event => setDialog({ ...dialog, value: event.target.value, error: undefined })}/></label>}
     {dialog.error && <div id="dialog-error" className="dialog-error" role="alert">{dialog.error}</div>}
-    <div className="modal-actions"><button type="button" className="button" disabled={pending || closing} onClick={close}>Cancel</button><button ref={confirmRef} data-autofocus={!mkdir ? "true" : undefined} className={`button ${mkdir ? "primary" : "danger"}`} disabled={pending || closing}>{pending ? "Deleting…" : mkdir ? "Create folder" : "Delete"}</button></div>
+    <div className="modal-actions"><button type="button" className="button" disabled={pending || closing} onClick={close}>Cancel</button><button ref={confirmRef} data-autofocus={textDialog ? undefined : "true"} className={`button ${textDialog ? "primary" : "danger"}`} disabled={pending || closing}>{submitLabel}</button></div>
   </form></div>;
 }
 
@@ -879,6 +952,7 @@ const STATUS_COPY: Record<number, string> = {
   403: "You don't have permission for that.",
   404: "That file or folder no longer exists.",
   409: "That name is already taken.",
+  412: "That name is already taken.",
   413: "That file is too large.",
   507: "Not enough space on the server.",
 };
