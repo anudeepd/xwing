@@ -311,7 +311,7 @@ function UsersView({ users, defaultPermissions, ldapConfigured, formError, formT
         <span className={COUNT_BADGE}>{users.length}</span>
       </div>
       <div className="table-wrap relative">
-        <table className={`user-table ${TABLE}`}>
+        <table className={cn("user-table", TABLE)}>
           <thead><tr>
             <th scope="col" className={cn(TH, "w-[28%]")}>Username</th>
             <th scope="col" className={cn(TH, "w-[42%]")}>Permissions</th>
@@ -323,8 +323,8 @@ function UsersView({ users, defaultPermissions, ldapConfigured, formError, formT
                 <td className={TD}><strong className={CELL_STRONG}>{user.username}</strong></td>
                 <td className={TD}><PermissionBadges permissions={user.permissions}/></td>
                 <td className={TD}><div className={ROW_ACTIONS}>
-                  <button type="button" className={`button small ${{BTN}} ${{BTN_SMALL}}`} aria-label={`Edit user ${user.username}`} onClick={() => onEdit(user.username)}>Edit</button>
-                  <button type="button" className={`button small danger ${{BTN}} ${{BTN_SMALL}} ${{BTN_DANGER}}`} aria-label={`Remove user ${user.username}`} onClick={() => onDelete(user.username)}>Remove</button>
+                  <button type="button" className={cn("button small", BTN, BTN_SMALL)} aria-label={`Edit user ${user.username}`} onClick={() => onEdit(user.username)}>Edit</button>
+                  <button type="button" className={cn("button small danger", BTN, BTN_SMALL, BTN_DANGER)} aria-label={`Remove user ${user.username}`} onClick={() => onDelete(user.username)}>Remove</button>
                 </div></td>
               </tr>)
               : <tr><td colSpan={3} className="empty-cell px-4 py-8 text-center text-admin-faint">No explicit users configured.</td></tr>}
@@ -346,7 +346,7 @@ function UsersView({ users, defaultPermissions, ldapConfigured, formError, formT
         <input id="username" name="username" className={FIELD} required maxLength={128} autoComplete="off" spellCheck={false}
           aria-invalid={formError ? "true" : undefined}
           aria-describedby={formError ? "user-form-help user-form-error" : "user-form-help"}/>
-        <p className={`field-help ${FIELD_HELP}`} id="user-form-help">{help}</p>
+        <p className={cn("field-help", FIELD_HELP)} id="user-form-help">{help}</p>
         <p className={`form-error m-0 rounded border border-solid border-admin-danger bg-admin-raised px-3 py-2 text-xs leading-snug break-words text-admin-danger`} id="user-form-error" aria-live="polite" hidden={!formError}>{formError || ""}</p>
         <div className="permission-grid my-2 grid grid-cols-2 gap-2 max-[620px]:grid-cols-1" role="group" aria-label="Permissions">
           {(["read", "write", "delete"] as const).map(permission => <label key={permission} className="check-label flex min-h-11 items-center gap-2 rounded border border-solid border-admin-line bg-admin-panel px-3">
@@ -354,8 +354,8 @@ function UsersView({ users, defaultPermissions, ldapConfigured, formError, formT
           </label>)}
         </div>
         <div className="form-actions mt-2 flex flex-wrap gap-2">
-          <button className={`button primary ${{BTN}} ${{BTN_PRIMARY}}`} type="submit">Save user</button>
-          <button className={`button ${{BTN}}`} type="button" id="clear-user" onClick={onClear}>Clear</button>
+          <button className={cn("button primary", BTN, BTN_PRIMARY)} type="submit">Save user</button>
+          <button className={cn("button", BTN)} type="button" id="clear-user" onClick={onClear}>Clear</button>
         </div>
       </form>
     </article>
@@ -398,7 +398,7 @@ function ActivityView({ events, summary, filters, filterRef, onFilterChange, onF
             <option value="admin">Administration</option>
           </select>
         </div>
-        <button className={`button ${{BTN}}`} type="submit">Refresh</button>
+        <button className={cn("button", BTN)} type="submit">Refresh</button>
       </form>
       <form id="audit-purge-form" className="inline-form purge-form grid grid-cols-[auto_auto] items-end justify-start gap-2 mb-0 border-0 border-l border-solid border-admin-line pl-4 max-[620px]:grid-cols-1 max-[620px]:border-l-0 max-[620px]:border-t max-[620px]:pt-3 max-[620px]:pl-0"
         onSubmit={event => { event.preventDefault(); onPurge(event.currentTarget); }}>
@@ -410,7 +410,7 @@ function ActivityView({ events, summary, filters, filterRef, onFilterChange, onF
             <span className="unit-label inline-flex items-center whitespace-nowrap font-sans text-[11px] text-admin-faint" id="audit-retention-unit">days</span>
           </div>
         </div>
-        <button className={`button danger ${{BTN}} ${{BTN_DANGER}}`} type="submit">Purge history</button>
+        <button className={cn("button danger", BTN, BTN_DANGER)} type="submit">Purge history</button>
       </form>
     </div>
     <div className="table-wrap relative activity-table">
@@ -471,12 +471,12 @@ function TrashView({ trash, selected, allSelected, onToggle, onToggleAll, onRest
     <div className={cn(CARD_HEADING, "max-[620px]:block")}>
       <div><p className={EYEBROW}>RECOVERY</p><h2 className="text-lg font-semibold leading-tight text-balance">Recoverable trash</h2></div>
       <div className={cn(ROW_ACTIONS, "trash-card-actions max-[620px]:mt-4")}>
-        <button type="button" className={`button small primary ${{BTN}} ${{BTN_SMALL}} ${{BTN_PRIMARY}}`} id="restore-selected-trash" disabled={selectedCount === 0} onClick={onRestoreSelected}>Restore selected{selectedCount ? ` (${selectedCount})` : ""}</button>
-        <button type="button" className={`button small danger ${{BTN}} ${{BTN_SMALL}} ${{BTN_DANGER}}`} id="empty-trash" disabled={!hasTrash} onClick={onEmpty}>Empty trash</button>
-        {hasTrash && <button type="button" className={`button small ${{BTN}} ${{BTN_SMALL}}`} onClick={onRefresh}>Refresh</button>}
+        <button type="button" className={cn("button small primary", BTN, BTN_SMALL, BTN_PRIMARY)} id="restore-selected-trash" disabled={selectedCount === 0} onClick={onRestoreSelected}>Restore selected{selectedCount ? ` (${selectedCount})` : ""}</button>
+        <button type="button" className={cn("button small danger", BTN, BTN_SMALL, BTN_DANGER)} id="empty-trash" disabled={!hasTrash} onClick={onEmpty}>Empty trash</button>
+        {hasTrash && <button type="button" className={cn("button small", BTN, BTN_SMALL)} onClick={onRefresh}>Refresh</button>}
       </div>
     </div>
-    <p className={`field-help trash-help mb-4 ${FIELD_HELP}`}>Select deleted transactions to restore in bulk. Deleted items stay here until restored or permanently removed.</p>
+    <p className={cn("field-help trash-help mb-4", FIELD_HELP)}>Select deleted transactions to restore in bulk. Deleted items stay here until restored or permanently removed.</p>
     <div className="table-wrap relative">
       <table className={`trash-table ${TABLE} max-[620px]:min-w-[680px]`}>
         <thead><tr>
@@ -507,14 +507,14 @@ function TrashView({ trash, selected, allSelected, onToggle, onToggleAll, onRest
             <td className={TD}>{formatDate(transaction.created)}</td>
             <td className={TD}>{formatBytes(transaction.size)}</td>
             <td className={TD}><div className={cn(ROW_ACTIONS, "justify-end whitespace-nowrap")}>
-              <button type="button" className={`button small ${{BTN}} ${{BTN_SMALL}}`} aria-label="Restore deleted items" onClick={() => onRestore(transaction.transaction_id)}>Restore</button>
-              <button type="button" className={`button small danger ${{BTN}} ${{BTN_SMALL}} ${{BTN_DANGER}}`} aria-label="Permanently delete items" onClick={() => onDelete(transaction.transaction_id)}>Delete permanently</button>
+              <button type="button" className={cn("button small", BTN, BTN_SMALL)} aria-label="Restore deleted items" onClick={() => onRestore(transaction.transaction_id)}>Restore</button>
+              <button type="button" className={cn("button small danger", BTN, BTN_SMALL, BTN_DANGER)} aria-label="Permanently delete items" onClick={() => onDelete(transaction.transaction_id)}>Delete permanently</button>
             </div></td>
           </tr>)}
           {!hasTrash && <tr><td colSpan={6} className="empty-cell px-4 py-8 text-center text-admin-faint max-[620px]:text-left">
             <div className="empty-state flex flex-col items-center gap-3">
               <span>Trash is empty. Deleted items stay recoverable here until restored or purged.</span>
-              <button type="button" className={`button small ${{BTN}} ${{BTN_SMALL}}`} onClick={onRefresh}>Refresh</button>
+              <button type="button" className={cn("button small", BTN, BTN_SMALL)} onClick={onRefresh}>Refresh</button>
             </div>
           </td></tr>}
         </tbody>
@@ -534,8 +534,8 @@ function ConfirmDialog({ request, onClose }: { request: ConfirmRequest; onClose:
       <h2 id="admin-dialog-title">{request.title}</h2>
       <p id="admin-dialog-description">{request.message}</p>
       <div className="modal-actions">
-        <button type="button" className={`button ${{BTN}}`} data-autofocus="" onClick={() => onClose(false)}>Cancel</button>
-        <button type="submit" className={`button danger ${{BTN}} ${{BTN_DANGER}}`}>{request.confirmText}</button>
+        <button type="button" className={cn("button", BTN)} data-autofocus="" onClick={() => onClose(false)}>Cancel</button>
+        <button type="submit" className={cn("button danger", BTN, BTN_DANGER)}>{request.confirmText}</button>
       </div>
     </form>
   </m.div>;
@@ -926,7 +926,7 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
   if (fatal) return <div className="admin-fatal flex min-h-dvh flex-col items-center justify-center gap-3 p-6 text-center text-admin-muted" role="alert">
     <strong className="text-xl text-admin-text">Admin console unavailable</strong>
     <span>{fatal}</span>
-    <a className={`button ${{BTN}} mt-2`} href="/">Return to files</a>
+    <a className={`button ${BTN} mt-2`} href="/">Return to files</a>
   </div>;
 
   return <m.div className="admin-shell h-dvh overflow-y-auto [scrollbar-gutter:stable]" initial={{ opacity: 0, y: 6 }} animate={leaving ? { opacity: 0, y: -5 } : { opacity: 1, y: 0 }} transition={leaving ? SHELL_LEAVE : SHELL_ENTER}>

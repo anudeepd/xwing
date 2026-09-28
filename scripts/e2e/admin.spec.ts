@@ -21,6 +21,21 @@ test("the console mounts and is painted, not merely present", async ({ page }) =
   await expect(page.locator(".metric-card").first()).toBeVisible();
 });
 
+// The console's controls are `button` plus a set of utilities. That set is built
+// from a template literal, and a brace mistake there turns every class into
+// "[object Object]": the hooks still resolve, the DOM still passes, and the
+// buttons quietly fall back to the user-agent grey.
+test("console controls are styled, not just present", async ({ page }) => {
+  await page.goto("/admin?tab=users");
+  const save = page.getByRole("button", { name: "Save user" });
+  await expect(save).toHaveCSS("background-color", "rgb(124, 58, 237)");
+  await expect(save).toHaveCSS("border-radius", "6px");
+  await expect(save).not.toHaveClass(/\[object/);
+
+  const clear = page.getByRole("button", { name: "Clear" });
+  await expect(clear).toHaveCSS("background-color", "rgb(18, 24, 39)");
+});
+
 test("every tab loads, announces one line and owns its URL", async ({ page }) => {
   await page.goto("/admin?tab=overview");
   await expect(page.locator("#admin-status")).toHaveText(/Overview loaded:/);
