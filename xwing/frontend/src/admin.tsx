@@ -943,12 +943,12 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
       </section>
       <p id="admin-status" className="sr-only" role="status">{status}</p>
     </main>
-    <div className="notify-rail">
+    <div className="notify-rail fixed right-8 bottom-8 flex flex-col items-end gap-2 z-rail pb-[env(safe-area-inset-bottom)] max-h-[calc(100vh-96px)] pointer-events-none [&>*]:pointer-events-auto max-[640px]:right-3 max-[640px]:bottom-4">
       <AnimatePresence initial={false}>
-        {toast && <m.div key={toast.id} className={`toast ${toast.kind}`} role={toast.kind === "error" ? "alert" : "status"} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0, transition: TOAST_ENTER }} exit={{ opacity: 0, y: 6, transition: TOAST_EXIT }}>
-          <span className="toast-icon"><svg className="ui-icon" viewBox="0 0 24 24" aria-hidden="true">{TOAST_ICONS[toast.kind]}</svg></span>
-          <span className="toast-message">{toast.message}</span>
-          <span className="toast-timer" aria-hidden="true" style={{ animationDuration: `${FEEDBACK_DURATION_MS}ms` }}/>
+        {toast && <m.div key={toast.id} className={cn("toast relative min-h-[46px] grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-2 overflow-hidden border border-solid border-[#3a465c] rounded-lg bg-[#141b2a] px-3 pb-1 shadow-[0_16px_42px_rgba(0,0,0,.48)] text-[11px]", toast.kind, toast.kind === "error" ? "border-[#743943] bg-[#29171d] text-[#ffc1c7]" : "border-[#326d55] bg-[#10251e] text-[#b8f2d5]")} role={toast.kind === "error" ? "alert" : "status"} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0, transition: TOAST_ENTER }} exit={{ opacity: 0, y: 6, transition: TOAST_EXIT }}>
+          <span className="toast-icon w-6 h-6 grid place-items-center rounded-full bg-[rgba(255,255,255,.06)]"><svg className="ui-icon" viewBox="0 0 24 24" aria-hidden="true">{TOAST_ICONS[toast.kind]}</svg></span>
+          <span className="toast-message flex-1 min-w-0 [overflow-wrap:anywhere] font-semibold">{toast.message}</span>
+          <span className="toast-timer absolute inset-x-0 bottom-0 h-1 bg-current origin-left animate-[xw-toast-timer_linear_forwards]" aria-hidden="true" style={{ animationDuration: `${FEEDBACK_DURATION_MS}ms` }}/>
         </m.div>}
       </AnimatePresence>
     </div>

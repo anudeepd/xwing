@@ -776,7 +776,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
           stack and the upload dock. They stack instead of overlapping, and each
           one carries its own status/alert role so a message is announced
           exactly once. */}
-      <div className="notify-rail" ref={railRef}>
+      <div className="notify-rail fixed right-8 bottom-8 flex flex-col items-end gap-2 z-rail pb-[env(safe-area-inset-bottom)] max-h-[calc(100vh-96px)] pointer-events-none [&>*]:pointer-events-auto max-[640px]:right-3 max-[640px]:bottom-4" ref={railRef}>
         <AnimatePresence initial={false}>{dropWaitState && <m.div key="drop-wait" className={cn("drop-wait w-[min(420px,calc(100vw-56px))] min-h-[42px] flex items-center gap-2 px-2 py-1 border border-solid rounded-[7px] bg-[rgba(20,24,39,.97)] shadow-[0_12px_32px_rgba(0,0,0,.38)] text-[11px]", dropWaitState === "delayed" ? "delayed border-[#6b5b38] text-[#e4c986]" : "border-xw-accent-border text-[#c9c2ef]")}
           initial={reduced ? false : { opacity: 0, y: 10, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={reduced ? { opacity: 1 } : { opacity: 0, y: 7, scale: 0.98 }} transition={{ duration: presenceDuration(reduced) }}>
           {dropWaitState === "preparing"
@@ -786,7 +786,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
           {dropWaitState === "delayed" && <button className={cn("button", BTN)} type="button" onClick={() => fileInput.current?.click()}>Choose files</button>}
           <button className="icon-button" type="button" aria-label="Dismiss upload status" onClick={clearDropFeedback}><Icon name="close"/></button>
         </m.div>}</AnimatePresence>
-        <div className="toast-stack"><AnimatePresence initial={false}>{toasts.map(toast => <ToastView key={toast.id} toast={toast} onDismiss={() => dismissToast(toast.id)}/>)}</AnimatePresence></div>
+        <div className="toast-stack static flex flex-col items-stretch gap-2 w-[min(420px,calc(100vw-56px))] pointer-events-auto"><AnimatePresence initial={false}>{toasts.map(toast => <ToastView key={toast.id} toast={toast} onDismiss={() => dismissToast(toast.id)}/>)}</AnimatePresence></div>
         <AnimatePresence initial={false}><UploadDock key="dock" snapshot={upload}/></AnimatePresence>
       </div>
       {zipPending > 0 && <div className="zip-overlay fixed inset-0 z-popover flex items-center justify-center p-4 bg-[rgba(2,6,23,.72)] animate-[zip-overlay-in_150ms_ease-out]" role="status" aria-live="polite"><div className="zip-overlay-card flex items-center gap-3 w-[min(100%,384px)] p-5 border border-solid border-xw-line-hi rounded-lg bg-[rgba(15,23,42,.96)] shadow-[0_24px_70px_rgba(0,0,0,.45)]"><span className="zip-spinner w-7 h-7 flex-none border-[3px] border-solid border-[rgba(124,58,237,.25)] border-t-xw-accent rounded-full animate-[zip-spin_.8s_linear_infinite]" aria-hidden="true"/><span className="zip-overlay-text font-sans text-sm font-semibold text-[#f8fafc]">Zipping {zipPending} file{zipPending === 1 ? "" : "s"}…</span></div></div>}
@@ -816,12 +816,12 @@ function ToastView({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
   }, [toast.id, toast.duration, dismiss]);
 
   const icon = toast.kind === "deleted" || toast.kind === "error" ? "trash" : "check";
-  return <m.div className={`toast ${toast.kind}`} role={toast.kind === "error" ? "alert" : "status"} layout
+  return <m.div className={cn("toast relative min-h-[46px] grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-2 overflow-hidden border border-solid border-[#3a465c] rounded-lg bg-[#141b2a] px-3 pb-1 shadow-[0_16px_42px_rgba(0,0,0,.48)] text-[11px]", toast.kind, toast.kind === "error" || toast.kind === "deleted" ? "border-[#743943] bg-[#29171d] text-[#ffc1c7]" : "border-[#326d55] bg-[#10251e] text-[#b8f2d5]")} role={toast.kind === "error" ? "alert" : "status"} layout
     initial={reduced ? false : { opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={reduced ? { opacity: 1 } : { opacity: 0, y: 6 }} transition={{ duration: presenceDuration(reduced) }}>
-    <span className="toast-icon"><Icon name={icon}/></span>
-    <span className="toast-message">{toast.message}</span>
-    {toast.action && <button className="toast-action" onClick={() => { dismiss(); toast.action?.run(); }}>{toast.action.label}</button>}
-    <span className="toast-timer" aria-hidden="true" style={{ animationDuration: `${toast.duration}ms` }}/>
+    <span className="toast-icon w-6 h-6 grid place-items-center rounded-full bg-[rgba(255,255,255,.06)]"><Icon name={icon}/></span>
+    <span className="toast-message flex-1 min-w-0 [overflow-wrap:anywhere] font-semibold">{toast.message}</span>
+    {toast.action && <button className="toast-action flex-none h-11 min-h-11 min-w-11 px-2 py-1 border border-solid border-[rgba(124,58,237,.58)] rounded-md bg-xw-accent-lo text-[#ddd6fe] cursor-pointer text-[11px] font-medium leading-none uppercase hover:border-xw-accent-border hover:bg-[rgba(124,58,237,.26)] focus-visible:border-xw-accent-border focus-visible:bg-[rgba(124,58,237,.26)] focus-visible:outline-none" onClick={() => { dismiss(); toast.action?.run(); }}>{toast.action.label}</button>}
+    <span className="toast-timer absolute inset-x-0 bottom-0 h-1 bg-current origin-left animate-[xw-toast-timer_linear_forwards]" aria-hidden="true" style={{ animationDuration: `${toast.duration}ms` }}/>
   </m.div>;
 }
 

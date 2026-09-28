@@ -70,12 +70,16 @@ describe("admin toast shape", () => {
   it("renders the purge result into every grid slot the toast template needs", async () => {
     const toast = await purge(async () => ({ deleted: 0, older_than_days: 36500 }));
 
-    expect([...toast.children].map(child => child.className)).toEqual([
+    // The hook class stays first; the element also carries its styling now.
+    expect([...toast.children].map(child => child.className.split(" ")[0])).toEqual([
       "toast-icon",
       "toast-message",
       "toast-timer",
     ]);
-    expect(toast.className).toBe("toast success");
+    // The kind drives the colours, so it sits after the shared utilities; the
+    // hook classes are what the console and the tests select on.
+    expect(toast.classList.contains("toast")).toBe(true);
+    expect(toast.classList.contains("success")).toBe(true);
     expect(toast.getAttribute("role")).toBe("status");
     expect(toast.querySelector(".toast-message").textContent).toBe("Purged 0 audit events.");
     expect(toast.querySelector(".toast-timer").style.animationDuration).toBe("5200ms");
@@ -86,7 +90,8 @@ describe("admin toast shape", () => {
       throw new Error("Purge failed");
     });
 
-    expect(toast.className).toBe("toast error");
+    expect(toast.classList.contains("toast")).toBe(true);
+    expect(toast.classList.contains("error")).toBe(true);
     expect(toast.getAttribute("role")).toBe("alert");
     expect(toast.querySelector(".toast-message").textContent).toBe("Purge failed");
     expect(toast.querySelector(".toast-icon svg")).not.toBeNull();

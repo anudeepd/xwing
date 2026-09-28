@@ -25,6 +25,16 @@ export default defineConfig({
       timeout: 60_000,
     },
     {
+      // The admin console. It only answers behind LDAPGate, so this one runs with
+      // the trusted-proxy header mode and an admin user; the specs that use it
+      // send the matching `X-Forwarded-User` header.
+      command:
+        "uv run xwing serve --root e2e/fixtures --port 8993 --no-open --users-config e2e/users.yaml --require-auth --trusted-auth-proxy 127.0.0.1 --admin-user e2e-admin",
+      url: "http://127.0.0.1:8993/",
+      reuseExistingServer: false,
+      timeout: 60_000,
+    },
+    {
       // A writable root of its own for the rename tests. They create and remove
       // real files, and e2e/fixtures is shared with the tests that assert on
       // that listing's row order, selection counts and snapshots.
