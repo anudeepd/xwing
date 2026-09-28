@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
+import { AnimatePresence, LazyMotion, MotionConfig, domAnimation } from "motion/react";
+import * as m from "motion/react-m";
 import { escapeHtml, formatBytes, formatDate, prefersReducedMotion } from "./format";
 import { cn } from "./lib/cn";
 import { useModalFocus } from "./keyboard";
@@ -44,8 +46,6 @@ const uploadManager = new UploadManager();
 const PARALLEL_VALUES: Parallelism[] = [1, 2, 4, 8];
 const AUTH_REDIRECT_DELAY_MS = 1500;
 const SORT_STORAGE_VERSION = "v2";
-/** Matches the .toast.closing animation duration in style.css. */
-const TOAST_EXIT_MS = 180;
 const DRAG_OVERLAY_STALE_MS = 1500;
 const DROP_DELAYED_MS = 15000;
 /** How often the open folder is re-read so external changes show up on their own. */
@@ -67,25 +67,22 @@ function crumbLabel(name: string): string {
   return name === "Home" || !name ? "workspace" : name;
 }
 
+/** Duration for a presence element. Reduced motion keeps the state change and
+ *  drops the wait, which is what the previous CSS-and-timer choreography did. */
+function presenceDuration(reduced: boolean, seconds = 0.18): number {
+  return reduced ? 0 : seconds;
+}
+
 function TransitionVeil({ active, label }: { active: boolean; label: string }): React.JSX.Element | null {
-  const [visible, setVisible] = useState(active);
-  const [closing, setClosing] = useState(false);
-
-  useEffect(() => {
-    if (active) {
-      setVisible(true);
-      setClosing(false);
-    } else if (visible) {
-      setClosing(true);
-      const timer = window.setTimeout(() => { setVisible(false); setClosing(false); }, prefersReducedMotion() ? 0 : 140);
-      return () => window.clearTimeout(timer);
-    }
-  }, [active]);
-
-  if (!visible) return null;
-  return <div className={`transition-veil ${closing ? "closing" : ""}`} role="status" aria-label={label}>
-    <div className="transition-veil-pill"><span className="transition-veil-spinner" aria-hidden="true"/><span>{label}</span></div>
-  </div>;
+  const reduced = prefersReducedMotion();
+  return <AnimatePresence>
+    {active && <m.div key="veil" className="transition-veil fixed inset-0 z-rail flex items-center justify-center pointer-events-none bg-[rgba(8,11,18,.6)]" role="status" aria-label={label}
+      initial={reduced ? false : { opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: presenceDuration(reduced) }}>
+      <m.div className="transition-veil-pill flex items-center gap-2 px-3 py-1 border border-solid border-xw-line rounded-full bg-[rgba(13,17,27,.9)] text-xw-muted text-[11px] font-semibold shadow-[0_8px_24px_rgba(0,0,0,.3)]" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 6 }}>
+        <span className="transition-veil-spinner w-3 h-3 flex-none border-2 border-solid border-xw-line border-t-xw-accent-hi rounded-full animate-[xw-spin_.8s_linear_infinite]" aria-hidden="true"/><span>{label}</span>
+      </m.div>
+    </m.div>}
+  </AnimatePresence>;
 }
 
 function Logo(): React.JSX.Element {
@@ -145,6 +142,7 @@ function listingFingerprint(directory: XwingBootstrapV1): string {
 }
 
 function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
+  const reduced = prefersReducedMotion();
   const [directory, setDirectory] = useState(initial);
   const [directoryState, setDirectoryState] = useState<"ready" | "loading" | "error">("ready");
   const [directoryError, setDirectoryError] = useState("");
@@ -685,7 +683,10 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
       ? "You don't have permission to add files here."
       : "You have read-only access here.";
 
-  return <div className={`xw-app h-full grid grid-rows-[52px_minmax(0,1fr)] isolate bg-xw-bg max-[640px]:grid-rows-[48px_minmax(0,1fr)] ${pageLeaving ? "page-leaving" : ""}`}
+  return <m.div className="xw-app h-full grid grid-rows-[52px_minmax(0,1fr)] isolate bg-xw-bg max-[640px]:grid-rows-[48px_minmax(0,1fr)]"
+    initial={reduced ? false : { opacity: 0, y: 6 }}
+    animate={pageLeaving ? { opacity: 0, y: -5 } : { opacity: 1, y: 0 }}
+    transition={pageLeaving ? { duration: presenceDuration(reduced, 0.17), ease: "easeIn" } : { duration: presenceDuration(reduced, 0.34), ease: [0.16, 1, 0.3, 1] }}
     onDragEnter={event => { event.preventDefault(); if (!directory.permissions.write) return; dragDepth.current += 1; refreshDropFeedback(); }}
     onDragOver={event => { if (!directory.permissions.write) return; event.preventDefault(); refreshDropFeedback(); }}
     onDragLeave={event => { event.preventDefault(); dragDepth.current = Math.max(0, dragDepth.current - 1); if (!dragDepth.current) clearDropFeedback(); }}
@@ -768,44 +769,45 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
         </div>
         <div className="statusbar flex items-center justify-end px-3 border-0 border-t border-solid border-xw-line bg-[#0b101a] text-xw-faint text-[11px] font-mono leading-[normal] tabular-nums max-[640px]:justify-center max-[640px]:[&>span]:hidden"><span className="drop-hint text-[#7f779c]">Drop files anywhere to upload</span>{refreshFailures >= REFRESH_FAILURE_NOTICE && <span role="status">Couldn't refresh — retrying</span>}</div>
       </section>
-      {dragging && <div className="drop-target" role="status" aria-live="polite"><span className="drop-target-icon"><Icon name="upload"/></span><strong>Drop files here</strong><span>Upload to {directory.path}</span></div>}
+      <AnimatePresence initial={false}>{dragging && <m.div key="drop-target" className="drop-target absolute inset-3 max-[640px]:inset-2 flex flex-col items-center justify-center gap-2 border-2 border-dashed border-xw-accent-border rounded-[10px] bg-[rgba(16,14,31,.94)] text-xw-accent-hi pointer-events-none z-drag"
+      initial={reduced ? false : { opacity: 0, scale: 0.985 }} animate={{ opacity: 1, scale: 1 }} exit={reduced ? { opacity: 1 } : { opacity: 0, scale: 0.985 }} transition={{ duration: presenceDuration(reduced) }}
+      role="status" aria-live="polite"><span className="drop-target-icon w-11 h-11 grid place-items-center mb-1 border border-solid border-xw-accent-border rounded-full bg-[#241d42] [&_.ui-icon]:w-[22px] [&_.ui-icon]:h-[22px]"><Icon name="upload"/></span><strong className="text-base font-semibold text-[#eeeaff]">Drop files here</strong><span className="text-[#9188b4] text-[11px]">Upload to {directory.path}</span></m.div>}</AnimatePresence>
       {/* One rail for every transient message: the drag-wait bar, the toast
           stack and the upload dock. They stack instead of overlapping, and each
           one carries its own status/alert role so a message is announced
           exactly once. */}
       <div className="notify-rail" ref={railRef}>
-        {dropWaitState && <div className={`drop-wait ${dropWaitState}`}>
+        <AnimatePresence initial={false}>{dropWaitState && <m.div key="drop-wait" className={cn("drop-wait w-[min(420px,calc(100vw-56px))] min-h-[42px] flex items-center gap-2 px-2 py-1 border border-solid rounded-[7px] bg-[rgba(20,24,39,.97)] shadow-[0_12px_32px_rgba(0,0,0,.38)] text-[11px]", dropWaitState === "delayed" ? "delayed border-[#6b5b38] text-[#e4c986]" : "border-xw-accent-border text-[#c9c2ef]")}
+          initial={reduced ? false : { opacity: 0, y: 10, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={reduced ? { opacity: 1 } : { opacity: 0, y: 7, scale: 0.98 }} transition={{ duration: presenceDuration(reduced) }}>
           {dropWaitState === "preparing"
-            ? <span className="drop-wait-spinner" aria-hidden="true"/>
-            : <span className="drop-wait-icon" aria-hidden="true"><Icon name="upload"/></span>}
-          <span role="status" aria-live="polite">{dropWaitState === "preparing" ? "Preparing upload…" : "Upload hasn't started yet."}</span>
+            ? <span className="drop-wait-spinner w-[14px] h-[14px] flex-none border-2 border-solid border-xw-accent-border border-t-xw-accent-hi rounded-full animate-[xw-spin_.8s_linear_infinite]" aria-hidden="true"/>
+            : <span className="drop-wait-icon w-5 h-5 grid place-items-center flex-none [&_.ui-icon]:w-4 [&_.ui-icon]:h-4" aria-hidden="true"><Icon name="upload"/></span>}
+          <span className="min-w-0 flex-1 font-semibold" role="status" aria-live="polite">{dropWaitState === "preparing" ? "Preparing upload…" : "Upload hasn't started yet."}</span>
           {dropWaitState === "delayed" && <button className={cn("button", BTN)} type="button" onClick={() => fileInput.current?.click()}>Choose files</button>}
           <button className="icon-button" type="button" aria-label="Dismiss upload status" onClick={clearDropFeedback}><Icon name="close"/></button>
-        </div>}
-        <div className="toast-stack">{toasts.map(toast => <ToastView key={toast.id} toast={toast} onDismiss={() => dismissToast(toast.id)}/>)}</div>
-        <UploadDock snapshot={upload}/>
+        </m.div>}</AnimatePresence>
+        <div className="toast-stack"><AnimatePresence initial={false}>{toasts.map(toast => <ToastView key={toast.id} toast={toast} onDismiss={() => dismissToast(toast.id)}/>)}</AnimatePresence></div>
+        <AnimatePresence initial={false}><UploadDock key="dock" snapshot={upload}/></AnimatePresence>
       </div>
-      {zipPending > 0 && <div className="zip-overlay" role="status" aria-live="polite"><div className="zip-overlay-card"><span className="zip-spinner" aria-hidden="true"/><span className="zip-overlay-text">Zipping {zipPending} file{zipPending === 1 ? "" : "s"}…</span></div></div>}
+      {zipPending > 0 && <div className="zip-overlay fixed inset-0 z-popover flex items-center justify-center p-4 bg-[rgba(2,6,23,.72)] animate-[zip-overlay-in_150ms_ease-out]" role="status" aria-live="polite"><div className="zip-overlay-card flex items-center gap-3 w-[min(100%,384px)] p-5 border border-solid border-xw-line-hi rounded-lg bg-[rgba(15,23,42,.96)] shadow-[0_24px_70px_rgba(0,0,0,.45)]"><span className="zip-spinner w-7 h-7 flex-none border-[3px] border-solid border-[rgba(124,58,237,.25)] border-t-xw-accent rounded-full animate-[zip-spin_.8s_linear_infinite]" aria-hidden="true"/><span className="zip-overlay-text font-sans text-sm font-semibold text-[#f8fafc]">Zipping {zipPending} file{zipPending === 1 ? "" : "s"}…</span></div></div>}
     </main>
-    {dialog && <DialogView dialog={dialog} setDialog={setDialog} onMkdir={() => void createFolder()} onRename={() => void renamePath()} onDelete={() => void deletePaths()}/>} 
-    {authOverlay && <div className="auth-overlay" role="status" aria-live="polite"><div className="auth-overlay-card"><div className="auth-overlay-row"><span className="auth-pulse"><span/></span><div><h2>{AUTH_OVERLAY_COPY[authOverlay].title}</h2><p>{AUTH_OVERLAY_COPY[authOverlay].message}</p></div></div>{AUTH_OVERLAY_COPY[authOverlay].action && <button className={cn("button", BTN, BTN_PRIMARY)} type="button" onClick={() => redirectToLoginNow()}>{AUTH_OVERLAY_COPY[authOverlay].action}</button>}</div></div>}
-  </div>;
+    <AnimatePresence initial={false}>{dialog && <DialogView key="dialog" dialog={dialog} setDialog={setDialog} onMkdir={() => void createFolder()} onRename={() => void renamePath()} onDelete={() => void deletePaths()}/>}</AnimatePresence> 
+    {authOverlay && <m.div className="auth-overlay" role="status" aria-live="polite" initial={reduced ? false : { opacity: 0 }} animate={{ opacity: 1 }}><div className="auth-overlay-card"><div className="auth-overlay-row"><span className="auth-pulse"><span/></span><div><h2>{AUTH_OVERLAY_COPY[authOverlay].title}</h2><p>{AUTH_OVERLAY_COPY[authOverlay].message}</p></div></div>{AUTH_OVERLAY_COPY[authOverlay].action && <button className={cn("button", BTN, BTN_PRIMARY)} type="button" onClick={() => redirectToLoginNow()}>{AUTH_OVERLAY_COPY[authOverlay].action}</button>}</div></m.div>}
+  </m.div>;
 }
 
 function ToastView({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }): React.JSX.Element {
-  const [closing, setClosing] = useState(false);
+  const reduced = prefersReducedMotion();
   const dismissing = useRef(false);
   const onDismissRef = useRef(onDismiss);
   onDismissRef.current = onDismiss;
 
-  // Timer expiry and the action button both route through here: the exit
-  // animation runs before the toast leaves the stack, and a toast can only
-  // start dismissing once.
+  // Timer expiry and the action button both route through here, so a toast can
+  // only start dismissing once. The exit itself belongs to AnimatePresence.
   const dismiss = useCallback((): void => {
     if (dismissing.current) return;
     dismissing.current = true;
-    setClosing(true);
-    window.setTimeout(() => onDismissRef.current(), prefersReducedMotion() ? 0 : TOAST_EXIT_MS);
+    onDismissRef.current();
   }, []);
 
   useEffect(() => {
@@ -814,12 +816,13 @@ function ToastView({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
   }, [toast.id, toast.duration, dismiss]);
 
   const icon = toast.kind === "deleted" || toast.kind === "error" ? "trash" : "check";
-  return <div className={`toast ${toast.kind}${closing ? " closing" : ""}`} role={toast.kind === "error" ? "alert" : "status"}>
+  return <m.div className={`toast ${toast.kind}`} role={toast.kind === "error" ? "alert" : "status"} layout
+    initial={reduced ? false : { opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={reduced ? { opacity: 1 } : { opacity: 0, y: 6 }} transition={{ duration: presenceDuration(reduced) }}>
     <span className="toast-icon"><Icon name={icon}/></span>
     <span className="toast-message">{toast.message}</span>
     {toast.action && <button className="toast-action" onClick={() => { dismiss(); toast.action?.run(); }}>{toast.action.label}</button>}
     <span className="toast-timer" aria-hidden="true" style={{ animationDuration: `${toast.duration}ms` }}/>
-  </div>;
+  </m.div>;
 }
 
 function FileRow({ file, index, selected, loading, arriving, permissions, policyHint, onSelect, onOpen, onRename, onDelete, onDeleteKey, onClear }: { file: XwingFile; index: number; selected: boolean; loading: boolean; arriving: boolean; permissions: XwingBootstrapV1["permissions"]; policyHint: string | undefined; onSelect: (gesture: { range: boolean; additive: boolean }) => void; onOpen: () => void; onRename: () => void; onDelete: () => void; onDeleteKey: () => void; onClear: () => void }): React.JSX.Element {
@@ -877,33 +880,25 @@ function focusFileRow(path: string | null, fallbackToFirst = false): void {
 }
 
 function UploadDock({ snapshot }: { snapshot: ReturnType<UploadManager["getSnapshot"]> }): React.JSX.Element | null {
-  const [closing, setClosing] = useState(false);
+  const reduced = prefersReducedMotion();
   useEffect(() => {
-    setClosing(false);
     const hasCompleted = snapshot.items.some(item => item.status === "completed");
     const hasActive = snapshot.items.some(item => ["queued", "preparing", "uploading", "retrying"].includes(item.status));
     if (!hasCompleted || hasActive) return;
 
-    let dismissTimer: number | null = null;
-    const waitTimer = window.setTimeout(() => {
-      const allSuccessful = snapshot.items.every(item => item.status === "completed");
-      if (allSuccessful) setClosing(true);
-      dismissTimer = window.setTimeout(
-        () => uploadManager.dismissSuccessful(),
-        allSuccessful && !prefersReducedMotion() ? 180 : 0,
-      );
-    }, 4000);
-    return () => {
-      window.clearTimeout(waitTimer);
-      if (dismissTimer !== null) window.clearTimeout(dismissTimer);
-    };
+    // The exit belongs to the AnimatePresence around this dock, so the timer
+    // only has to clear the successful items.
+    const waitTimer = window.setTimeout(() => uploadManager.dismissSuccessful(), 4000);
+    return () => window.clearTimeout(waitTimer);
   }, [snapshot.items]);
 
   if (!snapshot.items.length) return null;
   const dismissible = snapshot.items.some(item => item.status === "completed" || item.status === "cancelled");
-  return <aside className={`upload-dock ${closing ? "closing" : ""}`} aria-label="Uploads"><div className="upload-header"><div><strong>Uploads</strong><span className={`upload-summary ${uploadSummaryKind(snapshot)}`}>{uploadSummary(snapshot)}</span></div><button className="icon-button" aria-label="Clear finished uploads" disabled={!dismissible} onClick={() => uploadManager.dismissCompleted()}><Icon name="close"/></button></div>
-    <div className="upload-items">{snapshot.items.map(item => { const percent = item.size ? Math.round(item.uploaded / item.size * 100) : 0; return <div className={`upload-item ${item.status}`} key={item.id} role="group" aria-label={`${item.relativePath}, ${uploadItemLabel(item)}`}><div className="upload-line"><span title={item.relativePath}>{item.relativePath}</span><strong>{item.status === "completed" ? "Done" : `${percent}%`}</strong></div><div className="progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent} aria-label={`${item.relativePath} upload progress`}><span style={{ transform: `scaleX(${percent / 100})` }}/></div><div className="upload-meta"><span>{uploadItemLabel(item)}{item.status === "uploading" && item.speed > 0 ? ` · ${formatBytes(item.speed)}/s` : ""}</span><span>{item.status === "failed" || item.status === "cancelled" ? <button onClick={() => uploadManager.retry(item.id)}><Icon name="retry"/> Retry</button> : item.status !== "completed" ? <button onClick={() => uploadManager.cancel(item.id)}>Cancel</button> : null}</span></div></div>; })}</div>
-  </aside>;
+  return <m.aside className="upload-dock w-[360px] max-[900px]:w-[330px] max-[640px]:w-auto max-h-[min(520px,70vh)] flex flex-col border border-solid border-[#3b465c] rounded-lg bg-[rgba(15,20,32,.97)] shadow-[0_24px_70px_rgba(0,0,0,.5)] backdrop-blur-[18px] overflow-hidden z-raise"
+    initial={reduced ? false : { opacity: 0, y: 10, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={reduced ? { opacity: 1 } : { opacity: 0, y: 9, scale: 0.98 }} transition={{ duration: presenceDuration(reduced) }}
+    aria-label="Uploads"><div className="upload-header min-h-12 flex items-center justify-between pl-3 pr-2 border-0 border-b border-solid border-xw-line [&>div]:flex [&>div]:items-baseline [&>div]:gap-2 [&_strong]:font-semibold"><div><strong>Uploads</strong><span className={cn("upload-summary text-[11px] tabular-nums", uploadSummaryKind(snapshot) === "active" ? "text-xw-accent-hi" : uploadSummaryKind(snapshot) === "complete" ? "text-xw-success" : uploadSummaryKind(snapshot) === "error" ? "text-[#ff9ba3]" : "text-xw-muted")}>{uploadSummary(snapshot)}</span></div><button className="icon-button" aria-label="Clear finished uploads" disabled={!dismissible} onClick={() => uploadManager.dismissCompleted()}><Icon name="close"/></button></div>
+    <div className="upload-items overflow-auto">{snapshot.items.map(item => { const percent = item.size ? Math.round(item.uploaded / item.size * 100) : 0; return <m.div className={cn("upload-item p-3 border-0 border-b border-solid border-[#1d2534] last:border-b-0", item.status)} key={item.id} layout initial={{ opacity: 0 }} animate={{ opacity: 1 }} role="group" aria-label={`${item.relativePath}, ${uploadItemLabel(item)}`}><div className="upload-line flex justify-between gap-3 text-[11px] font-mono [&>span]:whitespace-nowrap [&>span]:overflow-hidden [&>span]:text-ellipsis"><span title={item.relativePath}>{item.relativePath}</span><strong>{item.status === "completed" ? "Done" : `${percent}%`}</strong></div><div className={cn("progress-track h-1 my-2 mb-1 bg-[#273148] rounded-[3px] overflow-hidden [&>span]:block [&>span]:h-full [&>span]:origin-left [&>span]:transition-transform [&>span]:duration-micro", item.status === "completed" ? "[&>span]:bg-xw-success" : item.status === "failed" ? "[&>span]:bg-xw-danger" : item.status === "cancelled" ? "[&>span]:bg-xw-muted" : "[&>span]:bg-xw-accent")} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent} aria-label={`${item.relativePath} upload progress`}><span style={{ transform: `scaleX(${percent / 100})` }}/></div><div className="upload-meta flex justify-between gap-2 text-xw-faint text-[11px] tabular-nums [&>span:first-child]:overflow-hidden [&>span:first-child]:text-ellipsis [&>span:first-child]:whitespace-nowrap [&_button]:border-0 [&_button]:bg-transparent [&_button]:text-xw-accent-hi [&_button]:cursor-pointer [&_button]:text-[11px] [&_button]:font-medium [&_button]:flex [&_button]:items-center [&_button]:gap-1"><span>{uploadItemLabel(item)}{item.status === "uploading" && item.speed > 0 ? ` · ${formatBytes(item.speed)}/s` : ""}</span><span>{item.status === "failed" || item.status === "cancelled" ? <button onClick={() => uploadManager.retry(item.id)}><Icon name="retry"/> Retry</button> : item.status !== "completed" ? <button onClick={() => uploadManager.cancel(item.id)}>Cancel</button> : null}</span></div></m.div>; })}</div>
+  </m.aside>;
 }
 
 function DialogView({ dialog, setDialog, onMkdir, onRename, onDelete }: { dialog: Exclude<Dialog, null>; setDialog: (value: Dialog) => void; onMkdir: () => void; onRename: () => void; onDelete: () => void }): React.JSX.Element {
@@ -911,14 +906,15 @@ function DialogView({ dialog, setDialog, onMkdir, onRename, onDelete }: { dialog
   // mkdir and rename are the same shape: one labelled name field and a primary
   // confirm. Delete is the destructive variant.
   const textDialog = kind === "mkdir" || kind === "rename";
+  const reduced = prefersReducedMotion();
   const pending = "pending" in dialog && dialog.pending;
-  const [closing, setClosing] = useState(false);
+  // Presence belongs to the AnimatePresence around this component: closing only
+  // clears the dialog, and the exit runs while it is still mounted.
   const close = (): void => {
-    if (pending || closing) return;
-    setClosing(true);
-    window.setTimeout(() => setDialog(null), prefersReducedMotion() ? 0 : 160);
+    if (pending) return;
+    setDialog(null);
   };
-  const modalRef = useModalFocus<HTMLDivElement>(close, !pending && !closing);
+  const modalRef = useModalFocus<HTMLDivElement>(close, !pending);
   const confirmRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (!pending && modalRef.current && !modalRef.current.contains(document.activeElement)) confirmRef.current?.focus();
@@ -926,13 +922,15 @@ function DialogView({ dialog, setDialog, onMkdir, onRename, onDelete }: { dialog
   const title = kind === "mkdir" ? "New folder" : kind === "rename" ? `Rename ${dialog.name}` : `Delete ${dialog.paths.length} item${dialog.paths.length === 1 ? "" : "s"}?`;
   const description = kind === "mkdir" ? "Create a folder in the current directory." : kind === "rename" ? "Enter a new name. The item stays in this folder." : "The items will move to X-wing’s recoverable trash.";
   const submitLabel = pending ? (kind === "rename" ? "Renaming…" : "Deleting…") : kind === "mkdir" ? "Create folder" : kind === "rename" ? "Rename" : "Delete";
-  return <div ref={modalRef} className={`modal-backdrop ${closing ? "closing" : ""}`} onMouseDown={event => { if (event.target === event.currentTarget) close(); }}><form className="modal" role="dialog" aria-modal="true" aria-labelledby="dialog-title" aria-describedby="dialog-description" onSubmit={event => { event.preventDefault(); if (kind === "mkdir") onMkdir(); else if (kind === "rename") onRename(); else onDelete(); }}>
+  return <m.div ref={modalRef} className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) close(); }}
+    initial={reduced ? false : { opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: presenceDuration(reduced) }}>
+    <m.form className="modal" initial={reduced ? false : { opacity: 0, y: 10, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={reduced ? { opacity: 1 } : { opacity: 0, y: 7, scale: 0.98 }} transition={{ duration: presenceDuration(reduced) }} role="dialog" aria-modal="true" aria-labelledby="dialog-title" aria-describedby="dialog-description" onSubmit={event => { event.preventDefault(); if (kind === "mkdir") onMkdir(); else if (kind === "rename") onRename(); else onDelete(); }}>
     <h2 id="dialog-title">{title}</h2>
     <p id="dialog-description">{description}</p>
     {"value" in dialog && <label>{kind === "mkdir" ? "Folder name" : "New name"}<input data-autofocus value={dialog.value} aria-invalid={dialog.error ? "true" : undefined} aria-describedby={dialog.error ? "dialog-error" : undefined} onChange={event => setDialog({ ...dialog, value: event.target.value, error: undefined })}/></label>}
     {dialog.error && <div id="dialog-error" className="dialog-error" role="alert">{dialog.error}</div>}
-    <div className="modal-actions"><button type="button" className={cn("button", BTN)} disabled={pending || closing} onClick={close}>Cancel</button><button ref={confirmRef} data-autofocus={textDialog ? undefined : "true"} className={`button ${textDialog ? "primary" : "danger"}`} disabled={pending || closing}>{submitLabel}</button></div>
-  </form></div>;
+    <div className="modal-actions"><button type="button" className={cn("button", BTN)} disabled={pending} onClick={close}>Cancel</button><button ref={confirmRef} data-autofocus={textDialog ? undefined : "true"} className={cn("button", BTN, textDialog ? BTN_PRIMARY : BTN_DANGER)} disabled={pending}>{submitLabel}</button></div>
+    </m.form></m.div>;
 }
 
 async function authFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
@@ -978,7 +976,13 @@ function contentDispositionFilename(header: string | null): string | null { cons
 try {
   const root = document.getElementById("xwing-root");
   if (!root) throw new Error("X-wing root is missing");
-  createRoot(root).render(<App initial={readBootstrap()}/>);
+  createRoot(root).render(
+    <LazyMotion features={domAnimation} strict>
+      <MotionConfig reducedMotion="user">
+        <App initial={readBootstrap()}/>
+      </MotionConfig>
+    </LazyMotion>,
+  );
 } catch (error) {
   const root = document.getElementById("xwing-root") || document.body;
   dismissBootCard();

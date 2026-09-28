@@ -186,7 +186,9 @@ test("mouse and keyboard transitions keep layer and trigger ownership", async ({
   const folderDialog = page.getByRole("dialog", { name: "New folder" });
   await expect(folderDialog.getByRole("textbox", { name: "Folder name" })).toBeFocused();
   await page.keyboard.press("Escape");
-  await expect(page.locator(".modal-backdrop")).toHaveClass(/closing/);
+  // The exit is AnimatePresence's now, so assert what the user can observe: the
+  // dialog leaves and the trigger takes focus back.
+  await expect(folderDialog).not.toBeVisible();
   await expect(newFolder).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(folderDialog).toBeVisible();
@@ -220,7 +222,9 @@ test("dragging files exposes feedback and a delayed-drop fallback", async ({ pag
   const app = page.locator(".xw-app");
   await app.dispatchEvent("dragenter");
   await app.dispatchEvent("dragover");
-  const target = page.getByRole("status");
+  // Scoped: the boot card keeps role=status until its removal timer runs, and
+  // this test freezes the clock, so a bare role lookup matches two elements.
+  const target = page.locator(".drop-target");
   await expect(target).toContainText("Drop files here");
   await expect(target).toContainText("Upload to /");
 
@@ -230,14 +234,28 @@ test("dragging files exposes feedback and a delayed-drop fallback", async ({ pag
   await expect(target).toContainText("Drop files here");
 
   await page.clock.fastForward(500);
-  await expect(page.getByRole("status")).toHaveText("Preparing upload…");
+  await expect(page.locator(".drop-wait [role=status]")).toHaveText("Preparing upload…");
 
   await page.clock.fastForward(15000);
-  await expect(page.getByRole("status")).toHaveText("Upload hasn't started yet.");
+  await expect(page.locator(".drop-wait [role=status]")).toHaveText("Upload hasn't started yet.");
   await expect(page.getByRole("button", { name: "Choose files" })).toBeVisible();
 
+});
+
+// The dismissal lives on its own: this one runs on the real clock, because the
+// bar leaves through an exit animation and a fake clock's frozen frame loop
+// never lets it finish.
+test("dismissing the drop feedback clears it", async ({ page }) => {
+  await page.goto("/");
+
+  const app = page.locator(".xw-app");
+  await app.dispatchEvent("dragenter");
+  await app.dispatchEvent("dragover");
+  await expect(page.locator(".drop-wait")).toBeVisible();
+
   await page.getByRole("button", { name: "Dismiss upload status" }).click();
-  await expect(page.getByText("Upload hasn't started yet.")).not.toBeVisible();
+  await expect(page.locator(".drop-wait")).toHaveCount(0);
+  await expect(page.locator(".drop-target")).toHaveCount(0);
 });
 
 test("a completed browser upload refreshes the folder automatically", async ({ page }) => {
