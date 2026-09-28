@@ -187,8 +187,8 @@ const EYEBROW = "eyebrow mb-2 font-sans text-[11px] font-semibold leading-tight 
 const COUNT_BADGE = "count-badge inline-flex min-h-6 items-center rounded-full border border-solid border-admin-line-hi px-2 font-mono text-[11px] font-medium tabular-nums text-admin-muted whitespace-nowrap";
 const TABLE = "w-full table-fixed border-collapse text-left text-xs";
 const TABLE_BODY = "[&>tr:last-child>td]:border-b-0";
-const TH = "border-b border-solid border-admin-line-hi px-3 py-3 font-sans text-[11px] font-medium uppercase whitespace-nowrap text-admin-faint";
-const TD = "border-b border-solid border-admin-line px-3 py-3 align-top tabular-nums text-admin-muted";
+const TH = "border-0 border-b border-solid border-admin-line-hi px-3 py-3 font-sans text-[11px] font-medium uppercase whitespace-nowrap text-admin-faint";
+const TD = "border-0 border-b border-solid border-admin-line px-3 py-3 align-top tabular-nums text-admin-muted";
 const CELL_STRONG = "font-medium text-admin-text";
 const ROW_ACTIONS = "row-actions flex flex-wrap justify-start gap-2 opacity-100 transform-none";
 // The console's controls, translated from admin.css. They are utilities now, so
@@ -202,7 +202,7 @@ const LABEL = "font-sans text-xs font-medium text-admin-muted";
 const FIELD_HELP = "text-[11px] text-admin-faint";
 const FILTER_FIELD = "filter-field flex min-w-0 flex-col gap-1";
 const TrashPath = ({ item, first }: { item: TrashItem; first: boolean }): React.JSX.Element => (
-  <div className={cn("trash-path grid grid-cols-[auto_minmax(0,1fr)] items-start gap-2 text-[11px] leading-snug text-admin-text", !first && "mt-2 border-t border-solid border-admin-line pt-2")}>
+  <div className={cn("trash-path grid grid-cols-[auto_minmax(0,1fr)] items-start gap-2 text-[11px] leading-snug text-admin-text", !first && "mt-2 border-0 border-t border-solid border-admin-line pt-2")}>
     <span className="trash-kind font-sans font-medium uppercase text-admin-faint">{item.kind}</span>
     <code className="min-w-0 break-words font-mono text-admin-text">{item.path}</code>
   </div>
@@ -381,7 +381,7 @@ function ActivityView({ events, summary, filters, filterRef, onFilterChange, onF
         </div>
         <button className={`button ${{BTN}}`} type="submit">Refresh</button>
       </form>
-      <form id="audit-purge-form" className="inline-form purge-form grid grid-cols-[auto_auto] items-end justify-start gap-2 mb-0 border-l border-solid border-admin-line pl-4 max-[620px]:grid-cols-1 max-[620px]:border-l-0 max-[620px]:border-t max-[620px]:pt-3 max-[620px]:pl-0"
+      <form id="audit-purge-form" className="inline-form purge-form grid grid-cols-[auto_auto] items-end justify-start gap-2 mb-0 border-0 border-l border-solid border-admin-line pl-4 max-[620px]:grid-cols-1 max-[620px]:border-l-0 max-[620px]:border-t max-[620px]:pt-3 max-[620px]:pl-0"
         onSubmit={event => { event.preventDefault(); onPurge(event.currentTarget); }}>
         <div className={FILTER_FIELD}>
           <label className={LABEL} htmlFor="audit-retention">Purge older than</label>
@@ -423,7 +423,7 @@ function ActivityRow({ event }: { event: ActivityEvent }): React.JSX.Element {
       {detail.paths.length
         ? <details className="activity-detail-list mt-1 block font-mono text-[11px] leading-tight text-admin-faint">
           <summary className="cursor-pointer break-words marker:text-admin-accent">{detail.summary || count(detail.paths.length, "selected item")}</summary>
-          <ul className="max-h-44 list-none overflow-y-auto border-l border-solid border-admin-line py-0 pr-2 pl-5">{detail.paths.map(path => <li key={path} className="mt-1 first:mt-0"><code className="break-words text-admin-text">{path}</code></li>)}</ul>
+          <ul className="max-h-44 list-none overflow-y-auto border-0 border-l border-solid border-admin-line py-0 pr-2 pl-5">{detail.paths.map(path => <li key={path} className="mt-1 first:mt-0"><code className="break-words text-admin-text">{path}</code></li>)}</ul>
         </details>
         : detail.summary ? <small className="activity-detail mt-1 block font-mono text-[11px] leading-tight text-admin-faint">{detail.summary}</small> : null}
     </td>
@@ -544,10 +544,10 @@ function AccountMenu({ user, open, onToggle, onLeave }: { user: string; open: bo
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [open, onToggle]);
   return <div className="account" id="account-control" ref={controlRef}>
-    <button className="account-trigger" type="button" aria-haspopup="menu" aria-expanded={open} onClick={onToggle}><span>{user}</span><Chevron/></button>
-    {open && <div className="popover account-menu" role="menu" aria-label="Workspace navigation">
-      <a className="menu-item" href="/" role="menuitem" data-leave="/" onClick={onLeave}>Files</a>
-      <a className="menu-item active" href="/admin" role="menuitem" aria-current="page">Admin panel</a>
+    <button className="account-trigger h-11 min-h-11 flex items-center gap-2 px-2 border border-solid border-transparent rounded-md bg-transparent text-[#aeb6c5] text-xs hover:border-xw-line-hi hover:bg-xw-raised hover:text-xw-text aria-expanded:border-xw-line-hi aria-expanded:bg-xw-raised aria-expanded:text-xw-text" type="button" aria-haspopup="menu" aria-expanded={open} onClick={onToggle}><span>{user}</span><Chevron/></button>
+    {open && <div className="popover absolute right-0 top-[38px] z-popover p-1 border border-solid border-[#3b465c] rounded-[7px] bg-[#111827] shadow-[0_18px_45px_rgba(0,0,0,.46)] origin-top-right animate-[xw-surface-in_var(--xw-surface)_var(--xw-ease)] account-menu min-w-[152px]" role="menu" aria-label="Workspace navigation">
+      <a className="menu-item w-full h-11 min-h-11 flex items-center px-2 border-0 rounded-[5px] bg-transparent text-[#b9c1ce] no-underline cursor-pointer text-xs hover:bg-xw-hover hover:text-xw-text" href="/" role="menuitem" data-leave="/" onClick={onLeave}>Files</a>
+      <a className="menu-item w-full h-11 min-h-11 flex items-center px-2 border-0 rounded-[5px] bg-transparent text-[#b9c1ce] no-underline cursor-pointer text-xs hover:bg-xw-hover hover:text-xw-text active bg-xw-hover text-xw-text" href="/admin" role="menuitem" aria-current="page">Admin panel</a>
     </div>}
   </div>;
 }
@@ -912,10 +912,10 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
 
   return <m.div className="admin-shell h-dvh overflow-y-auto [scrollbar-gutter:stable]" initial={{ opacity: 0, y: 6 }} animate={leaving ? { opacity: 0, y: -5 } : { opacity: 1, y: 0 }} transition={leaving ? SHELL_LEAVE : SHELL_ENTER}>
     <header className="topbar admin-topbar">
-      <a className="brand" href="/" aria-label="X-wing ADMIN, home" data-leave="/" onClick={event => leaveTo(event, "/")}><Logo/><span>X-wing</span><small className="brand-context">ADMIN</small></a>
-      <div className="account-inline">
+      <a className="brand flex items-center gap-2 min-h-11 text-inherit no-underline rounded-md" href="/" aria-label="X-wing ADMIN, home" data-leave="/" onClick={event => leaveTo(event, "/")}><Logo/><span className="font-sans text-[13px] font-semibold leading-none text-[#f1f3f7]">X-wing</span><small className="brand-context h-[13px] inline-flex items-center -translate-y-px text-xw-faint text-[11px] font-medium leading-none">ADMIN</small></a>
+      <div className="account-inline flex items-center gap-2 text-[#aeb6c5] text-xs">
         <AccountMenu user={bootstrap.user} open={accountOpen} onToggle={onAccountToggle} onLeave={event => leaveTo(event, "/")}/>
-        <form id="logout-form" method="post" action="/_auth/logout"><button className="signout-button" type="submit">Sign out</button></form>
+        <form id="logout-form" className="m-0" method="post" action="/_auth/logout"><button className="signout-button h-11 min-h-11 px-2 border border-solid border-xw-line-hi rounded-md bg-transparent text-[#aeb6c5] text-[11px] font-medium hover:border-[#67323b] hover:bg-[#24161d] hover:text-[#ff9ba3]" type="submit">Sign out</button></form>
       </div>
     </header>
     <main id="admin-main" className="admin-main mx-auto w-full max-w-[1320px] px-4 py-6 pb-16 md:px-12 md:py-14">
@@ -926,7 +926,7 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
           <p className="lede mt-2 max-w-[620px] text-sm leading-relaxed text-pretty text-admin-muted">Manage user access, activity, and recoverable storage.</p>
         </div>
       </div>
-      <nav className="admin-tabs mb-5 flex gap-1 overflow-x-auto border-b border-solid border-admin-line" aria-label="Admin sections">
+      <nav className="admin-tabs mb-5 flex gap-1 overflow-x-auto border-0 border-b border-solid border-admin-line" aria-label="Admin sections">
         {TABS.map(entry => <a key={entry.id}
           className={cn("admin-tab inline-flex min-h-11 items-center border-b-2 border-solid px-4 font-sans text-xs font-medium whitespace-nowrap no-underline transition-colors duration-micro",
             entry.id === tab ? "active border-b-admin-accent text-admin-accent-hi" : "border-b-transparent text-admin-muted hover:bg-admin-raised hover:text-admin-text")}

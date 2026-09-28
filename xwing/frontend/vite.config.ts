@@ -42,6 +42,11 @@ export default defineConfig({
         style: path.resolve(__dirname, 'src/style.css'),
       },
       output: {
+        // app.py serves anything under /static/assets that matches
+        // `-[A-Za-z0-9]{8}.js` as immutable. Rollup's default hash is base64url
+        // and can contain `_`, which silently downgraded every entry to
+        // revalidate-on-every-load; hex keeps the contract.
+        hashCharacters: 'hex',
         entryFileNames: '[name]-[hash].js',
         chunkFileNames: 'chunk-[name]-[hash].js',
         assetFileNames: '[name]-[hash][extname]',
