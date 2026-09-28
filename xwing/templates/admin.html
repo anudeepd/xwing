@@ -17,6 +17,6 @@
     <div class="auth-overlay-card"><div class="auth-overlay-row"><span class="auth-pulse"><span></span></span><div><h2 id="auth-overlay-title">Signing out</h2><p id="auth-overlay-message">Ending your session…</p></div></div><button id="auth-overlay-action" class="button primary" type="button" hidden>Sign in now</button></div>
   </div>
   <script type="application/json" id="admin-bootstrap">{{ {"user": user, "ldapConfigured": ldap_configured} | tojson }}</script>
-  <script src="{{ asset("admin.js") }}" defer></script>
+  <script type="module" src="{{ asset("admin.js") }}"></script>
 </body>
 </html>

@@ -12,6 +12,6 @@
   <div id="xwing-editor-root"></div>
   <script type="application/json" id="xwing-editor-bootstrap">{{ editor_bootstrap | tojson }}</script>
   <script src="{{ asset("codemirror-bundle.js") }}"></script>
-  <script src="{{ asset("editor.js") }}" defer></script>
+  <script type="module" src="{{ asset("editor.js") }}"></script>
 </body>
 </html>

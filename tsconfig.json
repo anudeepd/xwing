@@ -1,17 +1,32 @@
 {
   "compilerOptions": {
     "target": "ES2020",
-    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ES2020",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "baseUrl": ".",
     "paths": {
-      "react": ["scripts/node_modules/@types/react/index.d.ts"],
-      "react/jsx-runtime": ["scripts/node_modules/@types/react/jsx-runtime.d.ts"],
-      "react/jsx-dev-runtime": ["scripts/node_modules/@types/react/jsx-dev-runtime.d.ts"],
-      "react-dom/*": ["scripts/node_modules/@types/react-dom/*"]
+      "react": [
+        "xwing/frontend/node_modules/@types/react/index.d.ts"
+      ],
+      "react/jsx-runtime": [
+        "xwing/frontend/node_modules/@types/react/jsx-runtime.d.ts"
+      ],
+      "react/jsx-dev-runtime": [
+        "xwing/frontend/node_modules/@types/react/jsx-dev-runtime.d.ts"
+      ],
+      "react-dom/*": [
+        "xwing/frontend/node_modules/@types/react-dom/*"
+      ]
     },
-    "typeRoots": ["scripts/node_modules/@types"],
+    "typeRoots": [
+      "xwing/frontend/node_modules/@types",
+      "scripts/node_modules/@types"
+    ],
     "jsx": "react-jsx",
     "strict": true,
     "noEmit": true,
@@ -21,5 +36,8 @@
     "allowJs": true,
     "checkJs": false
   },
-  "include": ["xwing/frontend/src/**/*.ts", "xwing/frontend/src/**/*.tsx"]
+  "include": [
+    "xwing/frontend/src/**/*.ts",
+    "xwing/frontend/src/**/*.tsx"
+  ]
 }
