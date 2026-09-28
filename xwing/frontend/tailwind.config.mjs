@@ -8,10 +8,11 @@ export default {
   // purpose — LDAPGate owns that page and its inline stylesheet.
   content: ['./src/**/*.{ts,tsx,js}', '../templates/index.html', '../templates/editor.html', '../templates/admin.html'],
   darkMode: 'class',
-  // Preflight stays off until the surfaces own their own spacing. The hand
-  // written reset in `src/style.css` is already in place, and switching the
-  // element defaults over is a per-surface change with its own visual pass.
-  corePlugins: { preflight: false },
+  // Preflight is on. It is the user-agent reset: without it every <button> keeps
+  // its 2px outset border, its face colour and its `appearance` wherever a
+  // utility does not spell them out, which is exactly how the header sort
+  // controls ended up as white boxes.
+  corePlugins: { preflight: true },
   theme: {
     extend: {
       // Every colour is the CSS custom property the design system already
@@ -55,8 +56,6 @@ export default {
       // The select chevron the console used to draw from admin.css. A data URI
       // is not a colour and not a spacing value, so it lives here, once.
       backgroundImage: {
-        'select-chevron':
-          "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='m7 10 5 5 5-5' fill='none' stroke='%239ca7ba' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E\")",
       },
       fontFamily: {
         sans: ['Inter', 'system-ui', 'sans-serif'],

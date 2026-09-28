@@ -15,7 +15,7 @@ const ROW = "auth-overlay-row flex items-center gap-3";
 const PULSE = "auth-pulse w-9 h-9 flex-none rounded-full border border-solid border-[rgba(124,58,237,.48)] bg-[rgba(124,58,237,.14)] p-2 [&>span]:block [&>span]:w-full [&>span]:h-full [&>span]:rounded-full [&>span]:bg-xw-accent [&>span]:animate-[auth-pulse_1.2s_ease-in-out_infinite]";
 const TITLE = "mb-1 font-sans text-sm font-semibold text-[#f8fafc]";
 const MESSAGE = "text-xw-muted text-xs leading-tight";
-const ACTION = "button inline-flex items-center justify-center gap-2 w-full h-11 min-h-11 px-3 border border-solid border-xw-accent-border rounded-md bg-xw-accent-fill text-white text-xs font-medium no-underline whitespace-nowrap cursor-pointer [&:hover:not(:disabled)]:bg-xw-accent-fill-hover";
+const ACTION = "button inline-flex items-center justify-center gap-2 w-full h-9 min-h-9 px-3 border border-solid border-xw-accent-border rounded-md bg-xw-accent-fill text-white text-xs font-medium no-underline whitespace-nowrap cursor-pointer [&:hover:not(:disabled)]:bg-xw-accent-fill-hover";
 
 export function AuthOverlay({ kind }: { kind: keyof typeof AUTH_OVERLAY_COPY }): React.JSX.Element {
   const copy = AUTH_OVERLAY_COPY[kind];

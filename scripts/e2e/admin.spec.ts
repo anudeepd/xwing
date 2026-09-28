@@ -61,7 +61,9 @@ test("a destructive confirmation opens on Cancel", async ({ page }) => {
   await page.goto("/admin?tab=activity");
   // A retention no event can fall outside, so the purge deletes nothing: this is
   // about which control the dialog hands focus to.
-  await page.getByLabel("Purge older than").fill("36500");
+  // The retention field is labelled "Older than" inside the "Purge audit
+  // history" section, so the destructive action is not the field's label.
+  await page.getByLabel("Older than").fill("36500");
   await page.getByRole("button", { name: "Purge history" }).click();
 
   const dialog = page.getByRole("dialog", { name: "Purge audit history?" });

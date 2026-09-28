@@ -11,6 +11,7 @@ import {
   BRAND_CONTEXT,
   BRAND_NAME,
   CONTROL,
+  CONTROL_ADMIN,
   CONTROL_DANGER,
   CONTROL_PRIMARY,
   CONTROL_SMALL,
@@ -25,10 +26,10 @@ import {
   TOAST_TIMER,
 } from "./ui";
 
-const BTN = CONTROL;
+const BTN = `${CONTROL} ${CONTROL_ADMIN}`;
 const BTN_PRIMARY = CONTROL_PRIMARY;
 const BTN_DANGER = CONTROL_DANGER;
-const BTN_SMALL = CONTROL_SMALL;
+const BTN_SMALL = `${CONTROL} ${CONTROL_ADMIN} ${CONTROL_SMALL}`;
 import { createAuthSession, dismissBootCard } from "./shared.js";
 import { formatBytes, formatDate, prefersReducedMotion } from "./format";
 import { useModalFocus } from "./keyboard";
@@ -216,7 +217,7 @@ const TH = "border-0 border-b border-solid border-admin-line-hi px-3 py-3 font-s
 const TD = "border-0 border-b border-solid border-admin-line px-3 py-3 align-top tabular-nums text-admin-muted";
 const CELL_STRONG = "font-medium text-admin-text";
 const ROW_ACTIONS = "row-actions flex flex-wrap justify-start gap-2 opacity-100 transform-none";
-const FIELD = "min-h-11 w-full rounded border border-solid border-admin-line-hi bg-admin-bg px-3 py-2 font-sans text-[13px] text-admin-text outline-none focus:border-admin-accent focus:ring-2 focus:ring-admin-accent";
+const FIELD = "min-h-9 w-full rounded border border-solid border-admin-line-hi bg-admin-bg px-3 py-2 font-sans text-[13px] text-admin-text outline-none focus:border-admin-accent focus:ring-2 focus:ring-admin-accent";
 const LABEL = "font-sans text-xs font-medium text-admin-muted";
 const FIELD_HELP = "text-[11px] text-admin-faint";
 const FILTER_FIELD = "filter-field flex min-w-0 flex-col gap-1";
@@ -263,7 +264,7 @@ function LoadingCard(): React.JSX.Element {
   return <div className="admin-card loading-card flex flex-col gap-3 shadow-none" role="status">
     <span className="sr-only">Loading admin data…</span>
     <span className={`${bar} skeleton-title h-5 w-[30%] max-w-60`}/>
-    <span className="skeleton-toolbar flex gap-2">{["skeleton-bar flex-1 h-11", "skeleton-bar flex-1 h-11", "skeleton-bar flex-1 h-11"].map((classes, index) => <span key={index} className={cn(bar, classes)}/>)}</span>
+    <span className="skeleton-toolbar flex gap-2">{["skeleton-bar flex-1 h-9", "skeleton-bar flex-1 h-11", "skeleton-bar flex-1 h-11"].map((classes, index) => <span key={index} className={cn(bar, classes)}/>)}</span>
     <span className="skeleton-rows flex flex-col gap-2">{[0, 1, 2, 3, 4, 5].map(index => <span key={index} className={bar}/>)}</span>
   </div>;
 }
@@ -349,7 +350,7 @@ function UsersView({ users, defaultPermissions, ldapConfigured, formError, formT
         <p className={cn("field-help", FIELD_HELP)} id="user-form-help">{help}</p>
         <p className={`form-error m-0 rounded border border-solid border-admin-danger bg-admin-raised px-3 py-2 text-xs leading-snug break-words text-admin-danger`} id="user-form-error" aria-live="polite" hidden={!formError}>{formError || ""}</p>
         <div className="permission-grid my-2 grid grid-cols-2 gap-2 max-[620px]:grid-cols-1" role="group" aria-label="Permissions">
-          {(["read", "write", "delete"] as const).map(permission => <label key={permission} className="check-label flex min-h-11 items-center gap-2 rounded border border-solid border-admin-line bg-admin-panel px-3">
+          {(["read", "write", "delete"] as const).map(permission => <label key={permission} className="check-label flex min-h-9 items-center gap-2 rounded border border-solid border-admin-line bg-admin-panel px-3">
             <input type="checkbox" name={`user-${permission}`} defaultChecked={EMPTY_PERMISSIONS[permission]} className="h-4 w-4 accent-xw-accent-fill"/> {permission.charAt(0).toUpperCase()}{permission.slice(1)}
           </label>)}
         </div>
@@ -373,13 +374,13 @@ type ActivityViewProps = {
 };
 
 function ActivityView({ events, summary, filters, filterRef, onFilterChange, onFilterSubmit, onPurge }: ActivityViewProps): React.JSX.Element {
-  const input = "min-h-11 w-full min-w-0 rounded border border-solid border-admin-line-hi bg-admin-bg px-3 py-2 pr-8 font-sans text-xs text-admin-text outline-none focus:border-admin-accent focus:ring-2 focus:ring-admin-accent";
+  const input = "min-h-9 w-full min-w-0 rounded border border-solid border-admin-line-hi bg-admin-bg px-3 py-1.5 pr-8 font-sans text-xs text-admin-text outline-none focus:border-admin-accent focus:ring-2 focus:ring-admin-accent";
   return <article className={`admin-card ${CARD} p-5`}>
     <div className={CARD_HEADING}>
       <div><p className={EYEBROW}>AUDIT TRAIL</p><h2 className="text-lg font-semibold leading-tight text-balance">User activity</h2></div>
       <span className={COUNT_BADGE}>{summary.event_count}</span>
     </div>
-    <div className="activity-tools grid grid-cols-[minmax(0,1fr)_minmax(280px,.7fr)] items-stretch gap-4 mb-4 max-[980px]:grid-cols-1 max-[980px]:gap-3">
+    <div className="activity-tools flex flex-col gap-3 mb-4">
       <form id="activity-filter" ref={filterRef} className="inline-form activity-filter-form grid grid-cols-[minmax(0,1fr)_150px_minmax(130px,.75fr)_auto] items-end gap-2 mb-0 max-[620px]:grid-cols-1"
         onSubmit={event => { event.preventDefault(); onFilterSubmit(event.currentTarget); }}>
         <div className={FILTER_FIELD}>
@@ -392,7 +393,7 @@ function ActivityView({ events, summary, filters, filterRef, onFilterChange, onF
         </div>
         <div className={FILTER_FIELD}>
           <label className={LABEL} htmlFor="activity-scope">Show</label>
-          <select id="activity-scope" name="scope" className={cn(input, "appearance-none bg-select-chevron bg-[length:14px] bg-[position:right_12px_center] bg-no-repeat pr-8")} value={filters.scope} onChange={event => onFilterChange({ scope: event.target.value })}>
+          <select id="activity-scope" name="scope" className={cn(input, "xw-select")} value={filters.scope} onChange={event => onFilterChange({ scope: event.target.value })}>
             <option value="file">File activity</option>
             <option value="all">All events</option>
             <option value="admin">Administration</option>
@@ -400,17 +401,23 @@ function ActivityView({ events, summary, filters, filterRef, onFilterChange, onF
         </div>
         <button className={cn("button", BTN)} type="submit">Refresh</button>
       </form>
-      <form id="audit-purge-form" className="inline-form purge-form grid grid-cols-[auto_auto] items-end justify-start gap-2 mb-0 border-0 border-l border-solid border-admin-line pl-4 max-[620px]:grid-cols-1 max-[620px]:border-l-0 max-[620px]:border-t max-[620px]:pt-3 max-[620px]:pl-0"
+      <form id="audit-purge-form" className="inline-form purge-form grid grid-cols-[minmax(0,1fr)_auto] items-end gap-x-6 gap-y-3 mb-0 border-0 border-t border-solid border-admin-line pt-4 max-[620px]:grid-cols-1 max-[620px]:gap-x-0"
         onSubmit={event => { event.preventDefault(); onPurge(event.currentTarget); }}>
-        <div className={FILTER_FIELD}>
-          <label className={LABEL} htmlFor="audit-retention">Purge older than</label>
-          <div className="input-with-unit flex min-w-0 items-center gap-2">
-            <input id="audit-retention" name="older_than_days" type="number" min={1} max={36500} defaultValue={90} required inputMode="numeric" autoComplete="off"
-              aria-describedby="audit-retention-unit" className={cn(FIELD, "w-24 min-w-0 flex-none")}/>
-            <span className="unit-label inline-flex items-center whitespace-nowrap font-sans text-[11px] text-admin-faint" id="audit-retention-unit">days</span>
-          </div>
+        <div className="purge-copy min-w-0">
+          <p className="purge-title m-0 font-sans text-[13px] font-medium text-admin-text">Purge audit history</p>
+          <p id="audit-purge-help" className="m-0 mt-1 font-sans text-[11px] leading-normal text-admin-faint text-pretty">Deletes matching events permanently. Files, users and the trash are untouched.</p>
         </div>
-        <button className={cn("button danger", BTN, BTN_DANGER)} type="submit">Purge history</button>
+        <div className="purge-controls flex flex-wrap items-end justify-end gap-2">
+          <div className={FILTER_FIELD}>
+            <label className={LABEL} htmlFor="audit-retention">Older than</label>
+            <div className="input-with-unit flex min-w-0 items-center gap-2">
+              <input id="audit-retention" name="older_than_days" type="number" min={1} max={36500} defaultValue={90} required inputMode="numeric" autoComplete="off"
+                aria-describedby="audit-retention-unit" className={cn(FIELD, "w-24 min-w-0 flex-none")}/>
+              <span className="unit-label inline-flex items-center whitespace-nowrap font-sans text-[11px] text-admin-faint" id="audit-retention-unit">days</span>
+            </div>
+          </div>
+          <button className={cn("button danger", BTN, BTN_DANGER)} type="submit" aria-describedby="audit-purge-help">Purge history</button>
+        </div>
       </form>
     </div>
     <div className="table-wrap relative activity-table">
@@ -481,7 +488,7 @@ function TrashView({ trash, selected, allSelected, onToggle, onToggleAll, onRest
       <table className={`trash-table ${TABLE} max-[620px]:min-w-[680px]`}>
         <thead><tr>
           <th scope="col" className={cn(TH, "trash-select-cell w-[5%] p-0 text-center")}>
-            <label className="trash-select-target grid min-h-11 min-w-11 cursor-pointer place-items-center">
+            <label className="trash-select-target grid min-h-9 min-w-9 cursor-pointer place-items-center">
               <input ref={node => { if (node) node.indeterminate = selectedCount > 0 && !allSelected; }} type="checkbox" id="select-all-trash" aria-label="Select all trash transactions" checked={allSelected} disabled={!hasTrash} onChange={event => onToggleAll(event.target.checked)} className="m-0 h-4 w-4 accent-xw-accent-fill"/>
             </label>
           </th>
@@ -494,7 +501,7 @@ function TrashView({ trash, selected, allSelected, onToggle, onToggleAll, onRest
         <tbody className={TABLE_BODY}>
           {trash.map(transaction => <tr key={transaction.transaction_id}>
             <td className="trash-select-cell p-0 text-center">
-              <label className="trash-select-target grid min-h-11 min-w-11 cursor-pointer place-items-center">
+              <label className="trash-select-target grid min-h-9 min-w-9 cursor-pointer place-items-center">
                 <input type="checkbox" data-select-trash={transaction.transaction_id} className="m-0 h-4 w-4 accent-xw-accent-fill"
                   aria-label={`Select trash transaction for ${transaction.items.map(item => item.path).join(", ")}`}
                   checked={selected.has(transaction.transaction_id)} onChange={event => onToggle(transaction.transaction_id, event.target.checked)}/>
@@ -566,7 +573,7 @@ function AccountMenu({ user, open, onToggle, onLeave }: { user: string; open: bo
     <button className={ACCOUNT_TRIGGER} type="button" aria-haspopup="menu" aria-expanded={open} onClick={onToggle}><span>{user}</span><Chevron/></button>
     {open && <div className="popover absolute right-0 top-[38px] z-popover p-1 border border-solid border-[#3b465c] rounded-[7px] bg-[#111827] shadow-[0_18px_45px_rgba(0,0,0,.46)] origin-top-right animate-[xw-surface-in_var(--xw-surface)_var(--xw-ease)] account-menu min-w-[152px]" role="menu" aria-label="Workspace navigation">
       <a className={MENU_ITEM} href="/" role="menuitem" data-leave="/" onClick={onLeave}>Files</a>
-      <a className="menu-item w-full h-11 min-h-11 flex items-center px-2 border-0 rounded-[5px] bg-transparent text-[#b9c1ce] no-underline cursor-pointer text-xs hover:bg-xw-hover hover:text-xw-text active bg-xw-hover text-xw-text" href="/admin" role="menuitem" aria-current="page">Admin panel</a>
+      <a className="menu-item w-full h-8 min-h-8 flex items-center px-2 border-0 rounded-[5px] bg-transparent text-[#b9c1ce] no-underline cursor-pointer text-xs hover:bg-xw-hover hover:text-xw-text active bg-xw-hover text-xw-text" href="/admin" role="menuitem" aria-current="page">Admin panel</a>
     </div>}
   </div>;
 }

@@ -1,6 +1,12 @@
 @tailwind base;
 @tailwind components;
 
+/* Preflight leaves the pointer alone; every control in this app is clickable. */
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]) { cursor: pointer; }
+}
+
 /* Inter (latin variable subset) — the UI typeface, self-hosted. */
 @font-face{font-family:Inter;src:url('/static/fonts/inter-latin-var.woff2') format('woff2');font-weight:100 900;font-style:normal;font-display:swap}
 
@@ -325,28 +331,24 @@ main:focus-visible {
 .admin-shell .account-trigger,
 .admin-shell .signout-button { font: 400 12px/1.45 Inter, system-ui, sans-serif; }
 
-/* ── Pointer targets ──────────────────────────────────────────────────────────
-   WCAG 2.5.5 (AAA) asks every pointer target for 44x44. Dense chrome keeps its
-   type and icon sizes; only the hit area around them grows. Inline text links
-   (.crumb, .skip-link, statusbar text) stay as they are: 2.5.5 exempts targets
-   that sit inside a sentence. One block, so the floor is easy to drop or tune. */
-.button, .button:link, .button:visited,
-.signout-button, .account-trigger, .filter-input, .parallel-trigger,
-.menu-item, .parallel-option, .toast-action, .editor-back,
-.modal input,
-.editor-canvas .cm-button, .editor-canvas .cm-panels .cm-search .cm-textfield {
- min-height: 44px;
- min-width: 44px;
-}
-
 /* ── Still CSS on purpose ────────────────────────────────────────────────────
-   Targets the utilities cannot reach: CodeMirror's own DOM, the toast action
-   that lives in a portal-free rail, and the file table's date column, which the
-   row drops by class at the mobile breakpoint. */
+   The file table's date column, which the row drops by class at the mobile
+   breakpoint: a rule the utilities cannot express for a descendant. */
 @media(max-width:640px){.cell.date,.table-head .date{display:none}}
-.editor-canvas .cm-button,.editor-canvas .cm-panels .cm-search .cm-textfield{min-height:44px;min-width:44px}
-.toast-action{height:44px}
 
 /* Utilities come last, on purpose: a converted element must be able to
    override the rule it replaced while both are still in the file. */
 @tailwind utilities;
+
+/* The activity filter's chevron. In CSS rather than a `bg-*` utility because
+   tailwind-merge groups every `bg-*` class together and dropped the field's
+   own background when the two met in one cn() call. */
+.xw-select {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='m7 10 5 5 5-5' fill='none' stroke='%239ca7ba' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  background-size: 14px 14px;
+  padding-right: 32px;
+  cursor: pointer;
+}

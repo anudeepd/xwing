@@ -13,15 +13,28 @@
 
 /** Base control: a button, a link that looks like one, or an icon button. */
 export const CONTROL =
-  "h-11 min-h-11 min-w-11 inline-flex items-center justify-center gap-2 px-3 border border-solid border-xw-line-hi rounded-md " +
+  "inline-flex items-center justify-center gap-2 px-3 border border-solid border-xw-line-hi rounded-md " +
   "bg-xw-raised text-xw-text text-xs font-medium leading-normal no-underline whitespace-nowrap appearance-none cursor-pointer " +
   "transition-[transform,border-color,background-color] duration-micro ease-xw " +
   "[&:hover:not(:disabled)]:-translate-y-px [&:hover:not(:disabled)]:border-[#4b5873] [&:hover:not(:disabled)]:bg-[#172034] " +
   "[&:active:not(:disabled)]:scale-[.96] disabled:opacity-[.42] disabled:cursor-not-allowed";
 
+/** Height is per surface: the browser's controls run 31px the way its toolbar
+ *  always has, the console's 36px. Both were 44px for a while and read as
+ *  oversized next to a 42px row. */
+export const CONTROL_FILE = "h-[31px] min-h-[31px]";
+export const CONTROL_ADMIN = "h-9 min-h-9";
+
+/** An icon-only control: 30px square, 28px inside a record row. */
+export const CONTROL_ICON =
+  "w-[30px] h-[30px] min-w-[30px] min-h-[30px] grid place-items-center p-0 border border-solid border-transparent rounded-md " +
+  "bg-transparent text-[#9ca6b8] no-underline transition-colors duration-micro " +
+  "hover:border-xw-line-hi hover:bg-[#172034] hover:text-xw-text";
+export const CONTROL_ICON_ROW = "w-7 h-7 min-w-7 min-h-7";
+
 /** The file browser's toolbar collapses to squares on a phone; the console's
  *  record tables keep their labels, so this is opt-in per surface. */
-export const CONTROL_COMPACT = "max-[640px]:w-11 max-[640px]:p-0 max-[640px]:[&>.label]:hidden";
+export const CONTROL_COMPACT = "max-[640px]:w-[31px] max-[640px]:px-0 max-[640px]:[&>.label]:hidden";
 
 export const CONTROL_PRIMARY =
   "border-xw-accent-border bg-xw-accent-fill text-white [&:hover:not(:disabled)]:bg-xw-accent-fill-hover " +
@@ -35,7 +48,7 @@ export const CONTROL_DANGER =
 
 export const CONTROL_GHOST = "border-transparent bg-transparent text-xw-muted";
 
-export const CONTROL_SMALL = "text-[11px]";
+export const CONTROL_SMALL = "min-h-[34px] px-3 text-[11px]";
 
 /** The notification rail and one toast. */
 export const RAIL =
@@ -60,15 +73,15 @@ export const BRAND_CONTEXT =
   "brand-context h-[13px] inline-flex items-center -translate-y-px text-xw-faint text-[11px] font-medium leading-none";
 export const ACCOUNT_INLINE = "account-inline flex items-center gap-2 text-[#aeb6c5] text-xs";
 export const ACCOUNT_TRIGGER =
-  "account-trigger h-11 min-h-11 flex items-center gap-2 px-2 border border-solid border-transparent rounded-md bg-transparent " +
+  "account-trigger h-8 min-h-8 flex items-center gap-2 px-2 border border-solid border-transparent rounded-md bg-transparent " +
   "text-[#aeb6c5] text-xs hover:border-xw-line-hi hover:bg-xw-raised hover:text-xw-text " +
   "aria-expanded:border-xw-line-hi aria-expanded:bg-xw-raised aria-expanded:text-xw-text";
 export const SIGNOUT =
-  "signout-button h-11 min-h-11 px-2 border border-solid border-xw-line-hi rounded-md bg-transparent text-[#aeb6c5] " +
+  "signout-button h-[29px] min-h-[29px] px-2 border border-solid border-xw-line-hi rounded-md bg-transparent text-[#aeb6c5] " +
   "text-[11px] font-medium hover:border-[#67323b] hover:bg-[#24161d] hover:text-[#ff9ba3]";
 export const POPOVER =
   "popover absolute right-0 top-[38px] z-popover p-1 border border-solid border-[#3b465c] rounded-[7px] bg-[#111827] " +
   "shadow-[0_18px_45px_rgba(0,0,0,.46)] origin-top-right animate-[xw-surface-in_var(--xw-surface)_var(--xw-ease)]";
 export const MENU_ITEM =
-  "menu-item w-full h-11 min-h-11 flex items-center px-2 border-0 rounded-[5px] bg-transparent text-[#b9c1ce] " +
+  "menu-item w-full h-8 min-h-8 flex items-center px-2 border-0 rounded-[5px] bg-transparent text-[#b9c1ce] " +
   "no-underline cursor-pointer text-xs hover:bg-xw-hover hover:text-xw-text";
