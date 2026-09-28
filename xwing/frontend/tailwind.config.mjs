@@ -2,7 +2,11 @@
 export default {
   // The surfaces that carry utility classes: the React roots and the admin
   // console's templates.
-  content: ['./src/**/*.{ts,tsx,js}'],
+  // Templates are content too: Tailwind scans files as text, and the boot card,
+  // the admin console's skip link and its auth overlay are rendered by Jinja, so
+  // their utilities have to be generated from here. `login.html` is left out on
+  // purpose — LDAPGate owns that page and its inline stylesheet.
+  content: ['./src/**/*.{ts,tsx,js}', '../templates/index.html', '../templates/editor.html', '../templates/admin.html'],
   darkMode: 'class',
   // Preflight stays off until the surfaces own their own spacing. The hand
   // written reset in `src/style.css` is already in place, and switching the

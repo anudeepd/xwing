@@ -698,7 +698,6 @@ test("listing controls are named and reachable, and the stylesheet keeps its gua
   // Without this the page rubber-bands when a drag overshoots it.
   expect(css).toContain("overscroll-behavior: none");
   expect(css).toMatch(/@keyframes xw-spin/);
-  expect(css).toContain(".boot-loading::before");
 });
 
 

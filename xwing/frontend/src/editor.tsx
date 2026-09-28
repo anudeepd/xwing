@@ -2,10 +2,11 @@ import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { AnimatePresence, LazyMotion, MotionConfig, domAnimation } from "motion/react";
 import * as m from "motion/react-m";
+import { AuthOverlay } from "./auth-overlay";
 import { cn } from "./lib/cn";
 import { formatBytes, prefersReducedMotion } from "./format";
 import { useModalFocus } from "./keyboard";
-import { AUTH_OVERLAY_COPY, AUTH_REDIRECT_EVENT, beginAuthRedirect, redirectToLoginNow } from "./shared.js";
+import { AUTH_OVERLAY_COPY, AUTH_REDIRECT_EVENT, beginAuthRedirect } from "./shared.js";
 import { UploadClient, UploadError, UploadState, uploadFile } from "./upload-engine";
 
 interface EditorBootstrap {
@@ -290,7 +291,7 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
     </AnimatePresence>
     <main className="editor-body grid min-h-0 grid-cols-[45px_minmax(0,1fr)] max-[700px]:grid-cols-[38px_minmax(0,1fr)]" aria-labelledby="editor-title"><aside className="editor-rail flex flex-col items-center gap-3 border-0 border-r border-solid border-xw-line bg-[#0b1019] pt-2"><button className="editor-back h-[31px] w-[31px] cursor-pointer rounded-md border border-solid border-xw-line-hi bg-xw-raised text-xw-muted hover:bg-xw-hover hover:text-xw-text" onClick={() => requestLeave(boot.directory)} aria-label="Back to files" title="Back to files">←</button><span className="font-mono text-[11px] text-xw-faint [writing-mode:vertical-rl]">{boot.extension || "TXT"}</span></aside><div className="editor-canvas min-h-0 min-w-0 overflow-hidden" ref={mount}/></main>
     <AnimatePresence>{confirmLeave && <DiscardDialog key="discard" onCancel={() => setConfirmLeave(null)} onDiscard={leave}/>}</AnimatePresence>
-    {authOverlay && <div className="auth-overlay" role="status" aria-live="polite"><div className="auth-overlay-card"><div className="auth-overlay-row"><span className="auth-pulse"><span/></span><div><h2>{AUTH_OVERLAY_COPY[authOverlay].title}</h2><p>{AUTH_OVERLAY_COPY[authOverlay].message}</p></div></div>{AUTH_OVERLAY_COPY[authOverlay].action && <button className={cn("button primary", BTN, BTN_PRIMARY)} type="button" onClick={() => redirectToLoginNow()}>{AUTH_OVERLAY_COPY[authOverlay].action}</button>}</div></div>}
+    {authOverlay && <AuthOverlay kind={authOverlay}/>}
   </m.div>;
 }
 

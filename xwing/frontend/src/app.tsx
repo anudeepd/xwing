@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { AnimatePresence, LazyMotion, MotionConfig, domAnimation } from "motion/react";
 import * as m from "motion/react-m";
 import { escapeHtml, formatBytes, formatDate, prefersReducedMotion } from "./format";
+import { AuthOverlay } from "./auth-overlay";
 import { cn } from "./lib/cn";
 import { useModalFocus } from "./keyboard";
 import { nearestSurvivor, selectionRange } from "./selection";
@@ -13,7 +14,7 @@ import { renameDestination } from "./rename";
 import { DIRECTORY_MEDIA_TYPE, encodePath, parseBootstrap } from "./types";
 import type { Parallelism, XwingBootstrapV1, XwingFile } from "./types";
 import { collectDroppedEntries } from "./drop-entries";
-import { AUTH_OVERLAY_COPY, AUTH_REDIRECT_EVENT, beginAuthRedirect, dismissBootCard, redirectToLoginNow } from "./shared.js";
+import { AUTH_OVERLAY_COPY, AUTH_REDIRECT_EVENT, beginAuthRedirect, dismissBootCard } from "./shared.js";
 import { UploadManager } from "./upload-manager";
 import { uploadItemLabel, uploadSummary, uploadSummaryKind } from "./upload-summary";
 
@@ -792,7 +793,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
       {zipPending > 0 && <div className="zip-overlay fixed inset-0 z-popover flex items-center justify-center p-4 bg-[rgba(2,6,23,.72)] animate-[zip-overlay-in_150ms_ease-out]" role="status" aria-live="polite"><div className="zip-overlay-card flex items-center gap-3 w-[min(100%,384px)] p-5 border border-solid border-xw-line-hi rounded-lg bg-[rgba(15,23,42,.96)] shadow-[0_24px_70px_rgba(0,0,0,.45)]"><span className="zip-spinner w-7 h-7 flex-none border-[3px] border-solid border-[rgba(124,58,237,.25)] border-t-xw-accent rounded-full animate-[zip-spin_.8s_linear_infinite]" aria-hidden="true"/><span className="zip-overlay-text font-sans text-sm font-semibold text-[#f8fafc]">Zipping {zipPending} file{zipPending === 1 ? "" : "s"}…</span></div></div>}
     </main>
     <AnimatePresence initial={false}>{dialog && <DialogView key="dialog" dialog={dialog} setDialog={setDialog} onMkdir={() => void createFolder()} onRename={() => void renamePath()} onDelete={() => void deletePaths()}/>}</AnimatePresence> 
-    {authOverlay && <m.div className="auth-overlay" role="status" aria-live="polite" initial={reduced ? false : { opacity: 0 }} animate={{ opacity: 1 }}><div className="auth-overlay-card"><div className="auth-overlay-row"><span className="auth-pulse"><span/></span><div><h2>{AUTH_OVERLAY_COPY[authOverlay].title}</h2><p>{AUTH_OVERLAY_COPY[authOverlay].message}</p></div></div>{AUTH_OVERLAY_COPY[authOverlay].action && <button className={cn("button", BTN, BTN_PRIMARY)} type="button" onClick={() => redirectToLoginNow()}>{AUTH_OVERLAY_COPY[authOverlay].action}</button>}</div></m.div>}
+    {authOverlay && <AuthOverlay kind={authOverlay}/>}
   </m.div>;
 }
 
@@ -986,5 +987,5 @@ try {
 } catch (error) {
   const root = document.getElementById("xwing-root") || document.body;
   dismissBootCard();
-  root.innerHTML = `<div class="boot-error"><strong>X-wing couldn’t start</strong><span>${escapeHtml(errorMessage(error))}</span><button onclick="location.reload()">Reload</button></div>`;
+  root.innerHTML = `<div class="boot-error h-full flex flex-col items-center justify-center gap-2 bg-xw-bg text-xw-muted font-sans [&_strong]:text-xw-text [&_button]:mt-2 [&_button]:px-3 [&_button]:py-2 [&_button]:border [&_button]:border-solid [&_button]:border-xw-line-hi [&_button]:rounded-md [&_button]:bg-xw-raised [&_button]:text-xw-text"><strong>X-wing couldn’t start</strong><span>${escapeHtml(errorMessage(error))}</span><button onclick="location.reload()">Reload</button></div>`;
 }

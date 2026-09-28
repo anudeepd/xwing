@@ -10,7 +10,7 @@
 </head>
 <body data-user="{{ user }}" data-auth-idle-timeout="{{ auth_idle_timeout }}">
   <div id="xwing-root"></div>
-  <div role="region" aria-label="Loading"><div class="boot-loading" role="status">Opening X-wing…</div></div>
+  <div role="region" aria-label="Loading"><div class="boot-loading h-full flex flex-col items-center justify-center gap-2 bg-xw-bg text-xw-muted font-sans fixed inset-0 z-modal pointer-events-none transition-opacity duration-[180ms] ease-out before:content-[''] before:w-[26px] before:h-[26px] before:flex-none before:rounded-full before:border-2 before:border-solid before:border-[#403769] before:border-t-xw-accent-hi before:animate-[xw-spin_.8s_linear_infinite] [&.out]:opacity-0 [&.out]:pointer-events-none" role="status">Opening X-wing…</div></div>
   <script type="application/json" id="xwing-bootstrap">{{ bootstrap | tojson }}</script>
   <script type="module" src="{{ asset("app.js") }}"></script>
 </body>

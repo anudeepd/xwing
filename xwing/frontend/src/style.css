@@ -125,12 +125,10 @@ body:has(.xw-app){overflow:hidden;background:var(--xw-bg);color:var(--xw-text);f
 /* A dialog owns the page while it is open: the scroll container behind it stops
    moving, so a wheel or trackpad flick cannot drift the listing under the card. */
 body:has(.modal-backdrop) .file-table,body:has(.modal-backdrop) .admin-shell{overflow:hidden}
-.boot-loading,.boot-error{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;background:var(--xw-bg);color:var(--xw-muted);font-family:Inter,system-ui,sans-serif}
+
 /* The boot card sits over the app and fades out under it, so the handover has no
    frame where neither the card nor the shell is on screen. */
-.boot-loading{position:fixed;inset:0;z-index:var(--z-modal);pointer-events:none;transition:opacity 180ms ease-out}
-.boot-loading.out{opacity:0;pointer-events:none}.boot-error strong{color:var(--xw-text)}.boot-error button{margin-top:8px;border:1px solid var(--xw-line-hi);border-radius:6px;background:var(--xw-raised);color:var(--xw-text);padding:8px 12px}
-.boot-loading::before{content:"";width:26px;height:26px;flex:0 0 auto;border:2px solid #403769;border-top-color:var(--xw-accent-hi);border-radius:50%;animation:xw-spin .8s linear infinite}
+
 .xw-app :focus-visible{outline:2px solid var(--xw-accent);outline-offset:2px}
 @keyframes xw-page-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}/* Large surfaces rise and fade only; the 2px blur in xw-surface-in is for small cards. */@keyframes xw-view-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}@keyframes xw-surface-in{from{opacity:0;transform:translateY(10px) scale(.97);filter:blur(2px)}to{opacity:1;transform:none;filter:none}}@keyframes xw-toast-in{from{opacity:0;transform:translateY(8px) scale(.96)}to{opacity:1;transform:none}}@keyframes xw-toast-timer{from{transform:scaleX(1)}to{transform:scaleX(0)}}@keyframes xw-row-arrive{from{opacity:0;transform:translateY(5px);background:#241d42}55%{background:#1c1732}to{opacity:1;transform:none;background:transparent}}
 @keyframes xw-search-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}@keyframes xw-search-out{to{opacity:0;transform:translateY(6px)}}
@@ -141,7 +139,7 @@ body:has(.modal-backdrop) .file-table,body:has(.modal-backdrop) .admin-shell{ove
  /* The row drops its whole date cell; the header only dropped the button, so the empty cell stayed and wrapped the header into a second grid row. */.table-head [role="columnheader"]:has(> .date){display:none}}
 @media(prefers-reduced-motion:reduce){.xw-app,.editor-app,.xw-app *,.editor-app *,.xw-app *::before,.editor-app *::before,.xw-app *::after,.editor-app *::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
 @keyframes xw-spin{to{transform:rotate(360deg)}}
-@media(prefers-reduced-motion:reduce){.boot-loading::before{animation-duration:.01ms!important}}
+@media(prefers-reduced-motion:reduce){}
 /* CodeMirror's own DOM keeps its styling here: the editor surface and its
    search panel are not our markup, so no utility can reach them. */
 .editor-canvas>.cm-editor{height:100%;font:12px/1.6 var(--xw-mono)}.editor-canvas .cm-gutters{background:#0b1019;border-right-color:var(--xw-line)}.editor-canvas .cm-editor,.editor-canvas .cm-scroller{background:#0d111b}
@@ -187,96 +185,14 @@ header {
  margin-bottom: 16px;
 }
 
-.skip-link {
- position: fixed;
- top: 10px;
- left: 10px;
- z-index: var(--z-modal);
- transform: translateY(-160%);
- border: 1px solid var(--xw-accent-border);
- border-radius: 6px;
- background: var(--xw-panel);
- color: var(--xw-text);
- padding:8px 12px;
- font-family: Inter, system-ui, sans-serif;
- font-size: 12px;
- text-decoration: none;
- transition: transform 0.12s;
-}
-.skip-link:focus-visible {
- transform: translateY(0);
- outline: 2px solid #c4b5fd;
- outline-offset: 2px;
-}
 main:focus-visible {
  outline: 2px solid #c4b5fd;
  outline-offset: 4px;
 }
 
-.auth-overlay {
- position: fixed;
- inset: 0;
- z-index: var(--z-modal);
- display: flex;
- align-items: center;
- justify-content: center;
- padding:16px;
- background: rgba(2, 6, 23, 0.7);
-}
-.auth-overlay[hidden] { display: none; }
-.auth-overlay-card {
- display: flex;
- flex-direction: column;
- align-items: stretch;
- gap:16px;
- width: min(100%, 384px);
- border: 1px solid var(--xw-line-hi);
- border-radius: 8px;
- background: rgba(15, 23, 42, 0.96);
- box-shadow: 0 24px 70px rgba(0, 0, 0, 0.45);
- padding:20px;
-}
-.auth-overlay-row {
- display: flex;
- align-items: center;
- gap:12px;
-}
 /* The expired state offers the same escape hatch lagun and torrus do; the
    logout state has no action, so the row is the whole card. */
-.auth-overlay-card .button {
- height: 36px;
- width: 100%;
- justify-content: center;
-}
-.auth-overlay-card h2 {
- margin-bottom: 4px;
- font-family: Inter, system-ui, sans-serif;
- font-size: 14px;
- font-weight: 600;
- color: #f8fafc;
-}
-.auth-overlay-card p {
- color: var(--xw-muted);
- font-size: 12px;
- line-height: 1.25;
-}
-.auth-pulse {
- width: 36px;
- height: 36px;
- border: 1px solid rgba(124, 58, 237, 0.48);
- border-radius: 999px;
- background: rgba(124, 58, 237, 0.14);
- padding:8px;
- flex: 0 0 auto;
-}
-.auth-pulse span {
- display: block;
- width: 100%;
- height: 100%;
- border-radius: inherit;
- background: #a78bfa;
- animation: auth-pulse 1.2s ease-in-out infinite;
-}
+
 @keyframes auth-pulse {
  0%, 100% { opacity: 0.45; transform: scale(0.82); }
  50% { opacity: 1; transform: scale(1); }
