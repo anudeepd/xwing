@@ -88,7 +88,7 @@
 
 /* Typographic wrapping: headings balance, body copy stays pretty. */
 .xw-app h1,.xw-app h2,.xw-app h3,.editor-app h1,.editor-app h2,.modal h2{text-wrap:balance}
-.xw-app p,.editor-app p,.modal p,
+.xw-app p,.editor-app p,.modal p{text-wrap:pretty}
 
 /* Visually hidden helper (browser and editor pages load this stylesheet only). */
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
@@ -120,11 +120,11 @@ body:has(.xw-app){overflow:hidden;background:var(--xw-bg);color:var(--xw-text);f
 @keyframes xw-veil-in{from{opacity:0}to{opacity:1}}@keyframes xw-veil-out{to{opacity:0}}@keyframes xw-pill-in{from{opacity:0;transform:scale(.92)}to{opacity:1;transform:none}}@keyframes xw-pill-out{to{opacity:0;transform:scale(.94)}}
 
 .drop-wait .button{height:30px}
-.upload-line strong{font-size:11px;font-weight:600;color:var(--xw-accent-hi)}.upload-item.completed .upload-item.failed 
-.upload-item.cancelled 
-/* Single notification rail: toasts stack above the upload dock, one live region. */
-
-.notify-rail 
+.upload-line strong{font-size:11px;font-weight:600;color:var(--xw-accent-hi)}
+/* Mutation hooks (`.upload-item.failed`, `.uploading`, …) carry no rules of their
+   own: the fill colour is a utility that reads the item's status, and the rail
+   owns its own box. Keep them out of this file — a bare selector line with no
+   block silently adopts the next rule's declarations. */
 
 .modal-backdrop{position:fixed;inset:0;display:grid;place-items:center;padding:16px;background:rgba(5,8,14,.72);z-index:var(--z-modal);overscroll-behavior:contain}.modal{width:min(420px,100%);display:flex;flex-direction:column;gap:12px;border:1px solid #3b465c;border-radius:9px;background:#111722;padding:20px;box-shadow:0 30px 90px rgba(0,0,0,.58);}.modal h2{font:600 16px Inter,sans-serif;color:var(--xw-text)}.modal p{color:var(--xw-muted)}.modal label{display:flex;flex-direction:column;gap:4px;color:#aeb7c7;font-size:11px}.modal input{height:36px;border:1px solid var(--xw-line-hi);border-radius:6px;background:#0b1019;color:var(--xw-text);padding:0 12px;font:13px Inter,system-ui,sans-serif}.modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:4px}.dialog-error{border:1px solid #a65260;border-radius:6px;background:#24161d;color:#ff9ba3;padding:8px 12px;font-size:11px}
 .modal-backdrop.closing .modal{animation:xw-surface-out 160ms ease-in forwards}

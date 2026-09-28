@@ -670,6 +670,30 @@ test("shows an in-flight overlay while the archive is built", async ({ page }) =
   await expect(overlay).toHaveCount(0);
 });
 
+test("a dialog owns the viewport and explains itself", async ({ page }) => {
+  // `.modal-backdrop` carries no utility: it is hand-written CSS, and a rule
+  // whose declarations go missing does not fail the build — the next rule's
+  // block silently adopts its selector. That is how the dialog ended up in the
+  // document flow at the bottom of the page with its description clipped.
+  await page.goto("/");
+  await page.getByRole("button", { name: "Rename README.md" }).click();
+
+  const backdrop = page.locator(".modal-backdrop");
+  await expect(backdrop).toBeVisible();
+  const view = await page.evaluate(() => ({ w: innerWidth, h: innerHeight }));
+  const back = (await backdrop.boundingBox())!;
+  const card = (await page.locator(".modal").boundingBox())!;
+  const description = (await page.locator("#dialog-description").boundingBox())!;
+
+  expect(await backdrop.evaluate(node => getComputedStyle(node).position)).toBe("fixed");
+  expect(Math.round(back.width)).toBe(view.w);
+  expect(Math.round(back.height)).toBe(view.h);
+  expect(Math.abs(card.x + card.width / 2 - view.w / 2)).toBeLessThanOrEqual(1);
+  expect(Math.abs(card.y + card.height / 2 - view.h / 2)).toBeLessThanOrEqual(1);
+  // The sr-only block must not be styling the paragraph: 1px tall is the failure.
+  expect(description.height).toBeGreaterThan(10);
+});
+
 test("listing controls are named and reachable, and the stylesheet keeps its guards", async ({ page }) => {
   await page.goto("/");
 
