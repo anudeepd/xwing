@@ -7,13 +7,6 @@
   <title>X-wing — {{ current_path }}</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg"/>
   <link rel="stylesheet" href="{{ asset("style.css") }}"/>
-  <script>
-    // Another panel handed over to this one: that surface already faded the
-    // screen dark, so the boot card would be a spinner flashing over the shell
-    // that is about to arrive. Read the marker the outgoing surface left and
-    // let the stylesheet keep the card off; a cold load leaves it unset.
-    try { if (sessionStorage.getItem("xw-handover")) document.documentElement.dataset.arriving = "1"; } catch (e) {}
-  </script>
 </head>
 <body data-user="{{ user }}" data-auth-idle-timeout="{{ auth_idle_timeout }}">
   <div id="xwing-root"></div>

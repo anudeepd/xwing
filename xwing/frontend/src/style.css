@@ -159,10 +159,14 @@ body:has(.modal-backdrop) .file-table,body:has(.modal-backdrop) .admin-shell{ove
  font-display: swap;
 }
 
-/* Arriving from another panel (see `consumeHandover`): the card would be a
-   spinner flashing over the shell the previous surface already made room for.
-   The templates set `data-arriving` before the first paint. */
-html[data-arriving] .boot-loading { opacity: 0; visibility: hidden; }
+/* The card is for a load that is actually slow. It stays invisible for the
+   first 200ms — the bundle beats that inside the app every time — and only then
+   fades in, so no panel switch paints a spinner over the arriving shell. The
+   templates cannot decide this themselves: the app's Content-Security-Policy is
+   `script-src 'self'`, which drops any inline script they would use to ask. */
+@keyframes xw-boot-in{to{opacity:1}}
+.boot-loading { opacity: 0; animation: xw-boot-in 180ms ease-out 200ms forwards; }
+.boot-loading.out { animation: none; opacity: 0; }
 
 /* ── Design tokens ─────────────────────────────────────────────────────────── */
 

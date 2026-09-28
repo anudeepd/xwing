@@ -356,6 +356,17 @@ class TestAuth:
         assert "'unsafe-inline'" not in csp
         assert "data-csp-style-nonce=" in r.text
 
+    def test_app_templates_carry_no_inline_script(self):
+        """`script-src 'self'` drops an inline script without failing anything:
+        the page loads, the script never runs, and whatever it was meant to do
+        is simply missing. The boot card used one to ask whether the load was a
+        panel handover, and kept painting its spinner because it never ran."""
+        templates = Path(__file__).parents[1] / "xwing" / "templates"
+        executable = re.compile(r"<script(?![^>]*\bsrc=)(?![^>]*application/json)[^>]*>", re.I)
+        for name in ("index.html", "admin.html", "editor.html"):
+            source = (templates / name).read_text()
+            assert not executable.search(source), f"{name} carries an inline script"
+
     def test_login_template_avoids_inline_style_attributes(self):
         template = (
             Path(__file__).parents[1] / "xwing" / "templates" / "login.html"

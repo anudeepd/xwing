@@ -374,7 +374,6 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   // The shell is on screen, so the boot card can fade out under it.
   useEffect(() => {
     dismissBootCard(document, window, handover);
-    document.documentElement.removeAttribute("data-arriving");
   }, []);
 
   useEffect(() => {

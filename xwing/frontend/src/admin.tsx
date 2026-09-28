@@ -710,7 +710,6 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
    *  first left the console on a blank boot card for the slowest request. */
   useEffect(() => {
     dismissBootCard(document, window, handover);
-    document.documentElement.removeAttribute("data-arriving");
     const cleanupIdle = authSession.wireAuthIdleTimer();
     authSession.wireLogoutForm();
     void (async () => {
