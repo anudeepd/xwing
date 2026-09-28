@@ -191,6 +191,12 @@ const TH = "border-b border-solid border-admin-line-hi px-3 py-3 font-sans text-
 const TD = "border-b border-solid border-admin-line px-3 py-3 align-top tabular-nums text-admin-muted";
 const CELL_STRONG = "font-medium text-admin-text";
 const ROW_ACTIONS = "row-actions flex flex-wrap justify-start gap-2 opacity-100 transform-none";
+// The console's controls, translated from admin.css. They are utilities now, so
+// every `button` hook in this file carries them explicitly.
+const BTN = "h-11 min-h-11 min-w-11 inline-flex items-center justify-center gap-2 px-3 border border-solid border-xw-line-hi rounded-md bg-xw-raised text-xw-text text-xs font-medium leading-normal no-underline whitespace-nowrap appearance-none cursor-pointer transition-[transform,border-color,background-color] duration-micro ease-xw [&:hover:not(:disabled)]:-translate-y-px [&:hover:not(:disabled)]:border-[#4b5873] [&:hover:not(:disabled)]:bg-[#172034] [&:active:not(:disabled)]:scale-[.96] disabled:opacity-[.42] disabled:cursor-not-allowed";
+const BTN_PRIMARY = "border-xw-accent-border bg-xw-accent-fill text-white [&:hover:not(:disabled)]:bg-xw-accent-fill-hover [&:hover:not(:disabled)]:border-xw-accent [&:hover:not(:disabled)]:text-white";
+const BTN_DANGER = "text-[#ff9ba3] border-[#67323b] bg-[#24161d] [&:hover:not(:disabled)]:border-[#a65260] [&:hover:not(:disabled)]:bg-[#421e28]";
+const BTN_SMALL = "text-[11px]";
 const FIELD = "min-h-11 w-full rounded border border-solid border-admin-line-hi bg-admin-bg px-3 py-2 font-sans text-[13px] text-admin-text outline-none focus:border-admin-accent focus:ring-2 focus:ring-admin-accent";
 const LABEL = "font-sans text-xs font-medium text-admin-muted";
 const FIELD_HELP = "text-[11px] text-admin-faint";
@@ -298,8 +304,8 @@ function UsersView({ users, defaultPermissions, ldapConfigured, formError, formT
                 <td className={TD}><strong className={CELL_STRONG}>{user.username}</strong></td>
                 <td className={TD}><PermissionBadges permissions={user.permissions}/></td>
                 <td className={TD}><div className={ROW_ACTIONS}>
-                  <button type="button" className="button small" aria-label={`Edit user ${user.username}`} onClick={() => onEdit(user.username)}>Edit</button>
-                  <button type="button" className="button small danger" aria-label={`Remove user ${user.username}`} onClick={() => onDelete(user.username)}>Remove</button>
+                  <button type="button" className={`button small ${{BTN}} ${{BTN_SMALL}}`} aria-label={`Edit user ${user.username}`} onClick={() => onEdit(user.username)}>Edit</button>
+                  <button type="button" className={`button small danger ${{BTN}} ${{BTN_SMALL}} ${{BTN_DANGER}}`} aria-label={`Remove user ${user.username}`} onClick={() => onDelete(user.username)}>Remove</button>
                 </div></td>
               </tr>)
               : <tr><td colSpan={3} className="empty-cell px-4 py-8 text-center text-admin-faint">No explicit users configured.</td></tr>}
@@ -329,8 +335,8 @@ function UsersView({ users, defaultPermissions, ldapConfigured, formError, formT
           </label>)}
         </div>
         <div className="form-actions mt-2 flex flex-wrap gap-2">
-          <button className="button primary" type="submit">Save user</button>
-          <button className="button" type="button" id="clear-user" onClick={onClear}>Clear</button>
+          <button className={`button primary ${{BTN}} ${{BTN_PRIMARY}}`} type="submit">Save user</button>
+          <button className={`button ${{BTN}}`} type="button" id="clear-user" onClick={onClear}>Clear</button>
         </div>
       </form>
     </article>
@@ -373,7 +379,7 @@ function ActivityView({ events, summary, filters, filterRef, onFilterChange, onF
             <option value="admin">Administration</option>
           </select>
         </div>
-        <button className="button" type="submit">Refresh</button>
+        <button className={`button ${{BTN}}`} type="submit">Refresh</button>
       </form>
       <form id="audit-purge-form" className="inline-form purge-form grid grid-cols-[auto_auto] items-end justify-start gap-2 mb-0 border-l border-solid border-admin-line pl-4 max-[620px]:grid-cols-1 max-[620px]:border-l-0 max-[620px]:border-t max-[620px]:pt-3 max-[620px]:pl-0"
         onSubmit={event => { event.preventDefault(); onPurge(event.currentTarget); }}>
@@ -385,7 +391,7 @@ function ActivityView({ events, summary, filters, filterRef, onFilterChange, onF
             <span className="unit-label inline-flex items-center whitespace-nowrap font-sans text-[11px] text-admin-faint" id="audit-retention-unit">days</span>
           </div>
         </div>
-        <button className="button danger" type="submit">Purge history</button>
+        <button className={`button danger ${{BTN}} ${{BTN_DANGER}}`} type="submit">Purge history</button>
       </form>
     </div>
     <div className="table-wrap relative activity-table">
@@ -446,9 +452,9 @@ function TrashView({ trash, selected, allSelected, onToggle, onToggleAll, onRest
     <div className={cn(CARD_HEADING, "max-[620px]:block")}>
       <div><p className={EYEBROW}>RECOVERY</p><h2 className="text-lg font-semibold leading-tight text-balance">Recoverable trash</h2></div>
       <div className={cn(ROW_ACTIONS, "trash-card-actions max-[620px]:mt-4")}>
-        <button type="button" className="button small primary" id="restore-selected-trash" disabled={selectedCount === 0} onClick={onRestoreSelected}>Restore selected{selectedCount ? ` (${selectedCount})` : ""}</button>
-        <button type="button" className="button small danger" id="empty-trash" disabled={!hasTrash} onClick={onEmpty}>Empty trash</button>
-        {hasTrash && <button type="button" className="button small" onClick={onRefresh}>Refresh</button>}
+        <button type="button" className={`button small primary ${{BTN}} ${{BTN_SMALL}} ${{BTN_PRIMARY}}`} id="restore-selected-trash" disabled={selectedCount === 0} onClick={onRestoreSelected}>Restore selected{selectedCount ? ` (${selectedCount})` : ""}</button>
+        <button type="button" className={`button small danger ${{BTN}} ${{BTN_SMALL}} ${{BTN_DANGER}}`} id="empty-trash" disabled={!hasTrash} onClick={onEmpty}>Empty trash</button>
+        {hasTrash && <button type="button" className={`button small ${{BTN}} ${{BTN_SMALL}}`} onClick={onRefresh}>Refresh</button>}
       </div>
     </div>
     <p className={`field-help trash-help mb-4 ${FIELD_HELP}`}>Select deleted transactions to restore in bulk. Deleted items stay here until restored or permanently removed.</p>
@@ -482,14 +488,14 @@ function TrashView({ trash, selected, allSelected, onToggle, onToggleAll, onRest
             <td className={TD}>{formatDate(transaction.created)}</td>
             <td className={TD}>{formatBytes(transaction.size)}</td>
             <td className={TD}><div className={cn(ROW_ACTIONS, "justify-end whitespace-nowrap")}>
-              <button type="button" className="button small" aria-label="Restore deleted items" onClick={() => onRestore(transaction.transaction_id)}>Restore</button>
-              <button type="button" className="button small danger" aria-label="Permanently delete items" onClick={() => onDelete(transaction.transaction_id)}>Delete permanently</button>
+              <button type="button" className={`button small ${{BTN}} ${{BTN_SMALL}}`} aria-label="Restore deleted items" onClick={() => onRestore(transaction.transaction_id)}>Restore</button>
+              <button type="button" className={`button small danger ${{BTN}} ${{BTN_SMALL}} ${{BTN_DANGER}}`} aria-label="Permanently delete items" onClick={() => onDelete(transaction.transaction_id)}>Delete permanently</button>
             </div></td>
           </tr>)}
           {!hasTrash && <tr><td colSpan={6} className="empty-cell px-4 py-8 text-center text-admin-faint max-[620px]:text-left">
             <div className="empty-state flex flex-col items-center gap-3">
               <span>Trash is empty. Deleted items stay recoverable here until restored or purged.</span>
-              <button type="button" className="button small" onClick={onRefresh}>Refresh</button>
+              <button type="button" className={`button small ${{BTN}} ${{BTN_SMALL}}`} onClick={onRefresh}>Refresh</button>
             </div>
           </td></tr>}
         </tbody>
@@ -509,8 +515,8 @@ function ConfirmDialog({ request, onClose }: { request: ConfirmRequest; onClose:
       <h2 id="admin-dialog-title">{request.title}</h2>
       <p id="admin-dialog-description">{request.message}</p>
       <div className="modal-actions">
-        <button type="button" className="button" data-autofocus="" onClick={() => onClose(false)}>Cancel</button>
-        <button type="submit" className="button danger">{request.confirmText}</button>
+        <button type="button" className={`button ${{BTN}}`} data-autofocus="" onClick={() => onClose(false)}>Cancel</button>
+        <button type="submit" className={`button danger ${{BTN}} ${{BTN_DANGER}}`}>{request.confirmText}</button>
       </div>
     </form>
   </m.div>;
@@ -901,7 +907,7 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
   if (fatal) return <div className="admin-fatal flex min-h-dvh flex-col items-center justify-center gap-3 p-6 text-center text-admin-muted" role="alert">
     <strong className="text-xl text-admin-text">Admin console unavailable</strong>
     <span>{fatal}</span>
-    <a className="button mt-2" href="/">Return to files</a>
+    <a className={`button ${{BTN}} mt-2`} href="/">Return to files</a>
   </div>;
 
   return <m.div className="admin-shell h-dvh overflow-y-auto [scrollbar-gutter:stable]" initial={{ opacity: 0, y: 6 }} animate={leaving ? { opacity: 0, y: -5 } : { opacity: 1, y: 0 }} transition={leaving ? SHELL_LEAVE : SHELL_ENTER}>

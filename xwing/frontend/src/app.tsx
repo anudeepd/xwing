@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { escapeHtml, formatBytes, formatDate, prefersReducedMotion } from "./format";
+import { cn } from "./lib/cn";
 import { useModalFocus } from "./keyboard";
 import { nearestSurvivor, selectionRange } from "./selection";
 import { nextSort, normalizeSortPreference, sortFiles } from "./sort";
@@ -98,6 +99,13 @@ function Logo(): React.JSX.Element {
     </g><circle className="brand-core" cx="100" cy="100" r="4.5" />
   </svg>;
 }
+
+/** The workspace's control set. Variants compose through `cn`, so a variant's
+ *  colour always beats the base one instead of racing it in the stylesheet. */
+const BTN = "h-11 min-h-11 min-w-11 inline-flex items-center justify-center gap-2 px-3 border border-solid border-xw-line-hi rounded-md bg-xw-raised text-xw-text text-xs font-medium leading-normal no-underline whitespace-nowrap appearance-none cursor-pointer transition-[transform,border-color,background-color] duration-micro ease-xw [&:hover:not(:disabled)]:-translate-y-px [&:hover:not(:disabled)]:border-[#4b5873] [&:hover:not(:disabled)]:bg-[#172034] [&:active:not(:disabled)]:scale-[.96] disabled:opacity-[.42] disabled:cursor-not-allowed max-[640px]:w-11 max-[640px]:p-0 max-[640px]:[&>.label]:hidden";
+const BTN_PRIMARY = "border-xw-accent-border bg-xw-accent-fill text-white [&:hover:not(:disabled)]:bg-xw-accent-fill-hover [&:hover:not(:disabled)]:border-xw-accent [&:hover:not(:disabled)]:text-white max-[640px]:w-auto max-[640px]:px-3 max-[640px]:[&>.label]:inline";
+const BTN_DANGER = "text-[#ff9ba3] border-[#67323b] bg-[#24161d]";
+const BTN_GHOST = "border-transparent bg-transparent text-xw-muted";
 
 function Icon({ name }: { name: string }): React.JSX.Element {
   const paths: Record<string, React.ReactNode> = {
@@ -677,63 +685,63 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
       ? "You don't have permission to add files here."
       : "You have read-only access here.";
 
-  return <div className={`xw-app ${pageLeaving ? "page-leaving" : ""}`}
+  return <div className={`xw-app h-full grid grid-rows-[52px_minmax(0,1fr)] isolate bg-xw-bg max-[640px]:grid-rows-[48px_minmax(0,1fr)] ${pageLeaving ? "page-leaving" : ""}`}
     onDragEnter={event => { event.preventDefault(); if (!directory.permissions.write) return; dragDepth.current += 1; refreshDropFeedback(); }}
     onDragOver={event => { if (!directory.permissions.write) return; event.preventDefault(); refreshDropFeedback(); }}
     onDragLeave={event => { event.preventDefault(); dragDepth.current = Math.max(0, dragDepth.current - 1); if (!dragDepth.current) clearDropFeedback(); }}
     onDrop={event => { event.preventDefault(); clearDropFeedback(); void queueDrop(event.dataTransfer); }}>
     <TransitionVeil active={transitioning} label="Switching" />
-    <a className="skip-link" href="#file-list">Skip to files</a>
+    <a className="skip-link fixed top-2.5 left-2.5 z-modal -translate-y-[160%] min-h-11 border border-solid border-xw-accent-border rounded-md bg-xw-panel text-xw-text px-3 py-2 text-xs no-underline transition-transform duration-[120ms] focus-visible:translate-y-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#c4b5fd] max-[640px]:[&>span]:hidden" href="#file-list">Skip to files</a>
     {/* The browser's view heading. The visible label is the breadcrumb, which
         cannot itself become a heading without breaking the crumb row's layout. */}
     <h1 className="sr-only">{crumbLabel(directory.breadcrumbs[directory.breadcrumbs.length - 1]?.name ?? "")}</h1>
-    <header className="topbar">
-      <a className="brand" href="/" aria-label="X-wing FILES, home" onClick={() => setPageLeaving(true)}><Logo/><span>X-wing</span><small className="brand-context">FILES</small></a>
-      {directory.user.authenticated ? <div className="account-inline">{directory.admin ? <div className="account" ref={accountRef}>
-        <button className="account-trigger" type="button" aria-haspopup="menu" aria-expanded={accountOpen} onClick={() => setAccountOpen(value => !value)}>
+    <header className="topbar h-[52px] flex items-center justify-between m-0 px-4 border-b border-solid border-xw-line bg-[rgba(13,17,27,.94)] z-sticky max-[640px]:h-12 max-[640px]:px-3">
+      <a className="brand flex items-center gap-2 min-h-11 text-inherit no-underline rounded-md" href="/" aria-label="X-wing FILES, home" onClick={() => setPageLeaving(true)}><Logo/><span className="font-sans text-[13px] font-semibold leading-none text-[#f1f3f7]">X-wing</span><small className="brand-context h-[13px] inline-flex items-center -translate-y-px text-xw-faint text-[11px] font-medium leading-none">FILES</small></a>
+      {directory.user.authenticated ? <div className="account-inline flex items-center gap-2 text-[#aeb6c5] text-xs">{directory.admin ? <div className="account relative" ref={accountRef}>
+        <button className="account-trigger h-11 min-h-11 flex items-center gap-2 px-2 border border-solid border-transparent rounded-md bg-transparent text-[#aeb6c5] text-xs hover:border-xw-line-hi hover:bg-xw-raised hover:text-xw-text aria-expanded:border-xw-line-hi aria-expanded:bg-xw-raised aria-expanded:text-xw-text max-[640px]:[&>span]:hidden" type="button" aria-haspopup="menu" aria-expanded={accountOpen} onClick={() => setAccountOpen(value => !value)}>
           <span>{directory.user.name}</span><Icon name="chevron"/>
         </button>
-        {accountOpen && <div className="popover account-menu" role="menu" aria-label="Workspace navigation">
-          <a className="menu-item active" href="/" role="menuitem" aria-current="page">Files</a>
-          <a className="menu-item" href="/admin" role="menuitem" onClick={() => setPageLeaving(true)}>Admin panel</a>
+        {accountOpen && <div className="popover account-menu absolute right-0 top-[38px] z-popover min-w-[152px] p-1 border border-solid border-[#3b465c] rounded-[7px] bg-[#111827] shadow-[0_18px_45px_rgba(0,0,0,.46)] origin-top-right animate-[xw-surface-in_var(--xw-surface)_var(--xw-ease)]" role="menu" aria-label="Workspace navigation">
+          <a className={cn("menu-item w-full h-11 min-h-11 flex items-center px-2 border-0 rounded-[5px] bg-transparent text-[#b9c1ce] no-underline cursor-pointer text-xs hover:bg-xw-hover hover:text-xw-text", "active bg-xw-hover text-xw-text")} href="/" role="menuitem" aria-current="page">Files</a>
+          <a className="menu-item w-full h-11 min-h-11 flex items-center px-2 border-0 rounded-[5px] bg-transparent text-[#b9c1ce] no-underline cursor-pointer text-xs hover:bg-xw-hover hover:text-xw-text" href="/admin" role="menuitem" onClick={() => setPageLeaving(true)}>Admin panel</a>
         </div>}
-      </div> : <span>{directory.user.name}</span>}<form id="logout-form" method="post" action="/_auth/logout" onSubmit={event => { event.preventDefault(); setAuthOverlay("logout"); const form = event.currentTarget; window.setTimeout(() => form.submit(), AUTH_REDIRECT_DELAY_MS); }}><button className="signout-button" type="submit">Sign out</button></form></div> : <span className="anonymous-label">anonymous</span>}
+      </div> : <span>{directory.user.name}</span>}<form id="logout-form" className="m-0" method="post" action="/_auth/logout" onSubmit={event => { event.preventDefault(); setAuthOverlay("logout"); const form = event.currentTarget; window.setTimeout(() => form.submit(), AUTH_REDIRECT_DELAY_MS); }}><button className="signout-button h-11 min-h-11 px-2 border border-solid border-xw-line-hi rounded-md bg-transparent text-[#aeb6c5] text-[11px] font-medium hover:border-[#67323b] hover:bg-[#24161d] hover:text-[#ff9ba3]" type="submit">Sign out</button></form></div> : <span className="anonymous-label px-2 text-[#a0a9b9] text-xs font-medium">anonymous</span>}
     </header>
 
-    <main className={`workspace ${dragging ? "dragging" : ""}`}>
-      <section className="location" aria-label="Current location">
-        <nav className="crumbs" aria-label="Breadcrumb">{directory.breadcrumbs.map((crumb, index) => <React.Fragment key={crumb.path}>
-          {index > 0 && <span className="slash">/</span>}
-          {index === directory.breadcrumbs.length - 1 ? <span className="crumb current">{crumbLabel(crumb.name)}</span> : <a className="crumb" href={crumb.path} onClick={event => { event.preventDefault(); void navigate(crumb.path); }}>{crumbLabel(crumb.name)}</a>}
+    <main className={`workspace relative min-h-0 grid grid-rows-[auto_auto_minmax(0,1fr)] p-4 gap-3 max-w-none m-0 max-[640px]:p-2 max-[640px]:gap-2 ${dragging ? "dragging" : ""}`}>
+      <section className="location flex items-center justify-between min-w-0" aria-label="Current location">
+        <nav className="crumbs flex items-center gap-1 min-w-0 text-xw-muted text-xs font-mono" aria-label="Breadcrumb">{directory.breadcrumbs.map((crumb, index) => <React.Fragment key={crumb.path}>
+          {index > 0 && <span className="slash text-[#444f63]">/</span>}
+          {index === directory.breadcrumbs.length - 1 ? <span className="crumb current text-[#aab3c2] no-underline rounded-[4px] px-1 py-0.5 whitespace-nowrap max-w-[260px] overflow-hidden text-ellipsis text-xw-text font-semibold">{crumbLabel(crumb.name)}</span> : <a className="crumb text-[#aab3c2] no-underline rounded-[4px] px-1 py-0.5 whitespace-nowrap max-w-[260px] overflow-hidden text-ellipsis hover:bg-xw-hover hover:text-xw-text" href={crumb.path} onClick={event => { event.preventDefault(); void navigate(crumb.path); }}>{crumbLabel(crumb.name)}</a>}
         </React.Fragment>)}</nav>
-        <div className="location-meta"><span>{query.trim() ? `${files.length} of ${directory.files.length} items` : `${directory.files.length} items`}</span></div>
+        <div className="location-meta flex gap-3 text-xw-faint text-[11px] font-mono tabular-nums max-[900px]:hidden"><span>{query.trim() ? `${files.length} of ${directory.files.length} items` : `${directory.files.length} items`}</span></div>
       </section>
 
-      <div className="workspace-controls">
-      {notice && <div id="permission-notice" className="readonly-notice" role="status">{notice}</div>}
-      <section className="actionbar" aria-label="File actions" aria-describedby={policyHint}>
-        <div className="toolbar-group">
-          <button className="button primary" disabled={!directory.permissions.write} aria-describedby={policyHint} onClick={() => fileInput.current?.click()}><Icon name="upload"/><span className="label">Upload files</span></button>
-          <button className="button hide-tablet" aria-label="Upload folder" disabled={!directory.permissions.write} aria-describedby={policyHint} onClick={() => folderInput.current?.click()}><Icon name="folderUpload"/><span className="label">Upload folder</span></button>
-          <button className="button" aria-label="New folder" disabled={!directory.permissions.write} aria-describedby={policyHint} onClick={() => setDialog({ kind: "mkdir", value: "" })}><Icon name="folderAdd"/><span className="label">New folder</span></button>
+      <div className="workspace-controls min-w-0 flex flex-col gap-3">
+      {notice && <div id="permission-notice" className="readonly-notice m-0 px-3 py-2 border border-solid border-[#544829] rounded-lg bg-[#211d14] text-[#e6c77f] text-xs" role="status">{notice}</div>}
+      <section className="actionbar min-h-11 flex items-center justify-between gap-3 p-1 border border-solid border-xw-line rounded bg-xw-panel max-[640px]:overflow-x-auto max-[640px]:gap-1" aria-label="File actions" aria-describedby={policyHint}>
+        <div className="toolbar-group flex items-center gap-2 min-w-0">
+          <button className={cn("button", BTN, BTN_PRIMARY)} disabled={!directory.permissions.write} aria-describedby={policyHint} onClick={() => fileInput.current?.click()}><Icon name="upload"/><span className="label">Upload files</span></button>
+          <button className={cn("button hide-tablet max-[900px]:hidden", BTN)} aria-label="Upload folder" disabled={!directory.permissions.write} aria-describedby={policyHint} onClick={() => folderInput.current?.click()}><Icon name="folderUpload"/><span className="label">Upload folder</span></button>
+          <button className={cn("button", BTN)} aria-label="New folder" disabled={!directory.permissions.write} aria-describedby={policyHint} onClick={() => setDialog({ kind: "mkdir", value: "" })}><Icon name="folderAdd"/><span className="label">New folder</span></button>
           <input ref={fileInput} type="file" multiple hidden onChange={event => { if (event.target.files) { clearDropFeedback(); queueFiles(event.target.files); } event.currentTarget.value = ""; }}/>
           <input ref={folderInput} type="file" multiple hidden {...({ webkitdirectory: "" } as React.InputHTMLAttributes<HTMLInputElement>)} onChange={event => { if (event.target.files) { clearDropFeedback(); queueFiles(event.target.files); } event.currentTarget.value = ""; }}/>
         </div>
-        <div className={`toolbar-group selection-actions ${selected.size ? "visible" : ""}`} aria-hidden={!selected.size}>
-          <span className="selection-pill"><i/>{selected.size} selected</span>
-          <button className="button" aria-label="Download selected as zip" disabled={!selected.size || zipPending > 0} aria-busy={zipPending > 0} onClick={() => void downloadSelected()}><Icon name="download"/><span className="label">Download zip</span></button>
-          <button className="button danger" aria-label="Delete selected" disabled={!selected.size || !directory.permissions.delete} aria-describedby={!directory.permissions.delete ? policyHint : undefined} onClick={() => setDialog({ kind: "delete", paths: [...selected], pending: false })}><Icon name="trash"/><span className="label">Delete</span></button>
-          <button className="button ghost" disabled={!selected.size} onClick={() => { const focusPath = lastSelected ?? selected.values().next().value ?? null; setSelected(new Set()); setLastSelected(null); focusFileRow(focusPath); }}>Clear</button>
+        <div className={`toolbar-group selection-actions flex items-center gap-2 min-w-0 opacity-0 pointer-events-none translate-y-[3px] transition-[opacity,transform] duration-micro ease-xw max-[640px]:absolute max-[640px]:left-1.5 max-[640px]:right-1.5 max-[640px]:bg-xw-panel max-[640px]:z-base ${selected.size ? "visible opacity-100 pointer-events-auto translate-y-0" : ""}`} aria-hidden={!selected.size}>
+          <span className="selection-pill h-11 min-h-11 inline-flex items-center gap-2 px-3 rounded-full border border-solid border-xw-accent-border bg-xw-accent-lo text-xw-accent-hi text-[11px] font-semibold tabular-nums max-[900px]:hidden max-[640px]:flex"><i/>{selected.size} selected</span>
+          <button className={cn("button", BTN)} aria-label="Download selected as zip" disabled={!selected.size || zipPending > 0} aria-busy={zipPending > 0} onClick={() => void downloadSelected()}><Icon name="download"/><span className="label">Download zip</span></button>
+          <button className={cn("button danger", BTN, BTN_DANGER)} aria-label="Delete selected" disabled={!selected.size || !directory.permissions.delete} aria-describedby={!directory.permissions.delete ? policyHint : undefined} onClick={() => setDialog({ kind: "delete", paths: [...selected], pending: false })}><Icon name="trash"/><span className="label">Delete</span></button>
+          <button className={cn("button ghost", BTN, BTN_GHOST)} disabled={!selected.size} onClick={() => { const focusPath = lastSelected ?? selected.values().next().value ?? null; setSelected(new Set()); setLastSelected(null); focusFileRow(focusPath); }}>Clear</button>
         </div>
-        <div className="toolbar-group toolbar-end">
-          <input className="filter-input" type="search" aria-label="Filter files by name" placeholder="Filter files" value={query} onChange={event => updateQuery(event.target.value)}/>
-          <div className="parallel-wrap" ref={parallelRef}>
-            <button className="parallel-trigger" aria-label={`Parallel uploads: ${upload.parallel}`} aria-haspopup="dialog" aria-expanded={parallelOpen} onClick={() => parallelOpen ? closeParallel(true) : setParallelOpen(true)}>
-              <span className="parallel-copy"><span>Parallel</span><strong>{upload.parallel}</strong></span><Icon name="chevron"/>
+        <div className="toolbar-group toolbar-end flex items-center gap-2 min-w-0 ml-auto">
+          <input className="filter-input w-[132px] h-11 min-h-11 px-3 border border-solid border-xw-line-hi rounded-md bg-xw-raised text-xw-text text-xs appearance-none placeholder:text-xw-faint max-[640px]:w-[112px] max-[640px]:px-2 max-[640px]:text-base" type="search" aria-label="Filter files by name" placeholder="Filter files" value={query} onChange={event => updateQuery(event.target.value)}/>
+          <div className="parallel-wrap relative" ref={parallelRef}>
+            <button className="parallel-trigger w-[126px] h-11 min-h-11 grid grid-cols-[1fr_auto] items-center gap-2 pl-3 pr-2 border border-solid border-xw-line-hi rounded-md bg-xw-raised hover:border-xw-accent-border hover:bg-[#171d2e] aria-expanded:border-xw-accent-border aria-expanded:bg-[#171d2e] [&[aria-expanded=true]>.ui-icon]:rotate-180 max-[640px]:w-[76px]" aria-label={`Parallel uploads: ${upload.parallel}`} aria-haspopup="dialog" aria-expanded={parallelOpen} onClick={() => parallelOpen ? closeParallel(true) : setParallelOpen(true)}>
+              <span className="parallel-copy flex items-baseline justify-between gap-2 font-sans [&>span]:text-[#7f8a9e] [&>span]:text-[11px] [&>span]:font-medium [&>span]:uppercase [&>span]:max-[640px]:hidden [&>strong]:text-[#eef0f5] [&>strong]:text-xs [&>strong]:font-medium [&>strong]:font-mono"><span>Parallel</span><strong>{upload.parallel}</strong></span><Icon name="chevron"/>
             </button>
-            {parallelOpen && <div ref={parallelMenu} className="popover parallel-menu" role="dialog" aria-label="Concurrent uploads" tabIndex={-1}>
-              <div className="menu-title">Concurrent uploads</div>
-              <div role="radiogroup">{PARALLEL_VALUES.map(value => <label className={`parallel-option ${upload.parallel === value ? "selected" : ""}`} key={value}>
+            {parallelOpen && <div ref={parallelMenu} className="popover parallel-menu absolute right-0 top-[36px] z-popover min-w-[184px] p-1 border border-solid border-[#3b465c] rounded-[7px] bg-[#111827] shadow-[0_18px_45px_rgba(0,0,0,.46)] origin-top-right animate-[xw-surface-in_var(--xw-surface)_var(--xw-ease)]" role="dialog" aria-label="Concurrent uploads" tabIndex={-1}>
+              <div className="menu-title px-2 pt-1 pb-2 text-[#788499] text-[11px] font-medium uppercase">Concurrent uploads</div>
+              <div role="radiogroup">{PARALLEL_VALUES.map(value => <label className={cn("parallel-option min-h-11 flex items-center justify-between px-2 rounded-[5px] text-[#b9c1ce] cursor-pointer text-[11px] hover:bg-xw-hover [&>input]:absolute [&>input]:opacity-0 [&>span]:flex [&>span]:items-baseline [&>span]:gap-2 [&>strong]:min-w-3 [&>strong]:text-[#eef0f5] [&>small]:text-[#8792a5] [&>small]:text-[11px]", upload.parallel === value && "selected bg-xw-accent-lo text-xw-accent-hi")} key={value}>
                 <input type="radio" name="parallel" value={value} checked={upload.parallel === value} onChange={() => { uploadManager.setParallel(value); closeParallel(true); }}/>
                 <span><strong>{value}</strong><small>at a time</small></span>{upload.parallel === value && <Icon name="check"/>}
               </label>)}</div>
@@ -751,8 +759,8 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
         <div className="file-table" role="table" aria-label="Files" aria-rowcount={files.length + 1} aria-describedby={policyHint}>
         <div className="table-head" role="rowgroup"><span role="row" style={ROW_CONTENTS}><label className="select-all" role="columnheader"><SelectionCheckbox label={selected.size === files.length ? "Deselect all" : "Select all"} checked={files.length > 0 && selected.size === files.length} indeterminate={selected.size > 0 && selected.size < files.length} onToggle={() => { setSelected(selected.size === files.length ? new Set() : new Set(files.map(file => file.path))); setLastSelected(null); }}/></label><span role="columnheader"/>{(["name", "size", "modified"] as SortKey[]).map(key => { const index = sort.findIndex(entry => entry.key === key); const entry = sort[index]; const label = key === "modified" ? "Modified" : key[0]!.toUpperCase() + key.slice(1); return <span key={key} className="sort-cell" role="columnheader" aria-sort={entry ? (entry.direction === "asc" ? "ascending" : "descending") : "none"} style={SORT_CELL}><button className={`sort ${key === "modified" ? "date" : ""} ${entry ? "active" : ""}`} aria-label={`${label}, ${entry ? `${entry.direction === "asc" ? "ascending" : "descending"}, priority ${index + 1}` : "not sorted"}`} onClick={() => updateSort(key)}>{label} {entry && <span>{entry.direction === "asc" ? "▲" : "▼"}{sort.length > 1 ? index + 1 : ""}</span>}</button></span>; })}<span role="columnheader"/></span></div>
         <div id="file-list" className="file-list" role="rowgroup" tabIndex={-1}>
-          {directoryState === "error" && <div className="state-panel"><strong>Couldn’t open this folder</strong><span>{directoryError}</span><button className="button" onClick={() => void refresh()}>Retry</button></div>}
-          {!files.length && directoryState !== "error" && <div className="state-panel empty"><span className="empty-icon"><Icon name="folder"/></span><strong>{query.trim() ? "No matches" : "This folder is empty"}</strong><span>{query.trim() ? `Nothing here matches “${query.trim()}”.` : emptyStateHint}</span>{directory.permissions.write && !query.trim() && <button className="button primary" onClick={() => fileInput.current?.click()}><Icon name="upload"/><span className="label">Upload files</span></button>}</div>}
+          {directoryState === "error" && <div className="state-panel"><strong>Couldn’t open this folder</strong><span>{directoryError}</span><button className={cn("button", BTN)} onClick={() => void refresh()}>Retry</button></div>}
+          {!files.length && directoryState !== "error" && <div className="state-panel empty"><span className="empty-icon"><Icon name="folder"/></span><strong>{query.trim() ? "No matches" : "This folder is empty"}</strong><span>{query.trim() ? `Nothing here matches “${query.trim()}”.` : emptyStateHint}</span>{directory.permissions.write && !query.trim() && <button className={cn("button", BTN, BTN_PRIMARY)} onClick={() => fileInput.current?.click()}><Icon name="upload"/><span className="label">Upload files</span></button>}</div>}
           {files.map((file, index) => <FileRow key={file.path} file={file} index={index} selected={selected.has(file.path)} loading={directoryState === "loading"} arriving={arrivingNames.has(file.name)} permissions={directory.permissions} policyHint={policyHint} onSelect={(gesture) => toggleSelection(file, index, gesture)} onOpen={() => file.kind === "directory" ? void navigate(file.path) : openDocument(`${file.path}${file.editable ? "?edit" : ""}`)} onRename={() => { if (directory.permissions.write && directory.permissions.delete) setDialog({ kind: "rename", path: file.path, name: file.name, value: file.name, pending: false }); }} onDelete={() => setDialog({ kind: "delete", paths: [file.path], pending: false })} onDeleteKey={() => { if (directory.permissions.delete) setDialog({ kind: "delete", paths: selected.size ? [...selected] : [file.path], pending: false }); }} onClear={() => { setSelected(new Set()); setLastSelected(null); }}/>) }
           {/* Space the rail's height, so the last rows can scroll clear of it. */}
           <div className="rail-clearance" aria-hidden="true"/>
@@ -771,7 +779,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
             ? <span className="drop-wait-spinner" aria-hidden="true"/>
             : <span className="drop-wait-icon" aria-hidden="true"><Icon name="upload"/></span>}
           <span role="status" aria-live="polite">{dropWaitState === "preparing" ? "Preparing upload…" : "Upload hasn't started yet."}</span>
-          {dropWaitState === "delayed" && <button className="button" type="button" onClick={() => fileInput.current?.click()}>Choose files</button>}
+          {dropWaitState === "delayed" && <button className={cn("button", BTN)} type="button" onClick={() => fileInput.current?.click()}>Choose files</button>}
           <button className="icon-button" type="button" aria-label="Dismiss upload status" onClick={clearDropFeedback}><Icon name="close"/></button>
         </div>}
         <div className="toast-stack">{toasts.map(toast => <ToastView key={toast.id} toast={toast} onDismiss={() => dismissToast(toast.id)}/>)}</div>
@@ -780,7 +788,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
       {zipPending > 0 && <div className="zip-overlay" role="status" aria-live="polite"><div className="zip-overlay-card"><span className="zip-spinner" aria-hidden="true"/><span className="zip-overlay-text">Zipping {zipPending} file{zipPending === 1 ? "" : "s"}…</span></div></div>}
     </main>
     {dialog && <DialogView dialog={dialog} setDialog={setDialog} onMkdir={() => void createFolder()} onRename={() => void renamePath()} onDelete={() => void deletePaths()}/>} 
-    {authOverlay && <div className="auth-overlay" role="status" aria-live="polite"><div className="auth-overlay-card"><div className="auth-overlay-row"><span className="auth-pulse"><span/></span><div><h2>{AUTH_OVERLAY_COPY[authOverlay].title}</h2><p>{AUTH_OVERLAY_COPY[authOverlay].message}</p></div></div>{AUTH_OVERLAY_COPY[authOverlay].action && <button className="button primary" type="button" onClick={() => redirectToLoginNow()}>{AUTH_OVERLAY_COPY[authOverlay].action}</button>}</div></div>}
+    {authOverlay && <div className="auth-overlay" role="status" aria-live="polite"><div className="auth-overlay-card"><div className="auth-overlay-row"><span className="auth-pulse"><span/></span><div><h2>{AUTH_OVERLAY_COPY[authOverlay].title}</h2><p>{AUTH_OVERLAY_COPY[authOverlay].message}</p></div></div>{AUTH_OVERLAY_COPY[authOverlay].action && <button className={cn("button", BTN, BTN_PRIMARY)} type="button" onClick={() => redirectToLoginNow()}>{AUTH_OVERLAY_COPY[authOverlay].action}</button>}</div></div>}
   </div>;
 }
 
@@ -923,7 +931,7 @@ function DialogView({ dialog, setDialog, onMkdir, onRename, onDelete }: { dialog
     <p id="dialog-description">{description}</p>
     {"value" in dialog && <label>{kind === "mkdir" ? "Folder name" : "New name"}<input data-autofocus value={dialog.value} aria-invalid={dialog.error ? "true" : undefined} aria-describedby={dialog.error ? "dialog-error" : undefined} onChange={event => setDialog({ ...dialog, value: event.target.value, error: undefined })}/></label>}
     {dialog.error && <div id="dialog-error" className="dialog-error" role="alert">{dialog.error}</div>}
-    <div className="modal-actions"><button type="button" className="button" disabled={pending || closing} onClick={close}>Cancel</button><button ref={confirmRef} data-autofocus={textDialog ? undefined : "true"} className={`button ${textDialog ? "primary" : "danger"}`} disabled={pending || closing}>{submitLabel}</button></div>
+    <div className="modal-actions"><button type="button" className={cn("button", BTN)} disabled={pending || closing} onClick={close}>Cancel</button><button ref={confirmRef} data-autofocus={textDialog ? undefined : "true"} className={`button ${textDialog ? "primary" : "danger"}`} disabled={pending || closing}>{submitLabel}</button></div>
   </form></div>;
 }
 

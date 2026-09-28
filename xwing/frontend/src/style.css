@@ -92,26 +92,16 @@
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 html,body,#xwing-root{height:100%}
 body:has(.xw-app){overflow:hidden;background:var(--xw-bg);color:var(--xw-text);font:13px/1.45 Inter,system-ui,sans-serif}
-.xw-app{height:100%;display:grid;grid-template-rows:52px minmax(0,1fr);isolation:isolate;background:var(--xw-bg)}
+
 .xw-app{animation:xw-page-in var(--xw-page-in) var(--xw-ease);transition:opacity 150ms ease-in,transform 170ms ease-in}
 .xw-app.page-leaving{opacity:0;transform:translateY(-5px);pointer-events:none}
 :where(.xw-app) :where(button, input){font:inherit}.xw-app button{color:inherit}
-.topbar{height:52px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;border-bottom:1px solid var(--xw-line);background:rgba(13,17,27,.94);z-index:var(--z-sticky);margin:0}
-.brand{display:flex;align-items:center;gap:8px;color:inherit;text-decoration:none;border-radius:6px}.brand>span{font-family:Inter,system-ui,sans-serif;font-size:13px;font-weight:600;line-height:1;color:#f1f3f7}.brand small{height:13px;display:inline-flex;align-items:center;color:var(--xw-faint);font:500 11px/1 Inter,system-ui,sans-serif;transform:translateY(-1px)}
+
 .file-surface .statusbar{justify-content:flex-end}
 .brand-mark{width:30px;height:30px;flex:0 0 auto}.brand-mark>rect{fill:#f5f3ff}.brand-mark polygon{stroke:#7c3aed;stroke-width:3}.brand-mark polyline{stroke:#8b5cf6;stroke-width:1.5}.brand-mark path{stroke:#7c3aed;stroke-width:2.5}.brand-mark circle:not(.brand-core){stroke:#7c3aed;stroke-width:3}.brand-mark circle:nth-last-of-type(1):not(.brand-core){stroke:#8b5cf6;stroke-width:2.5}.brand-core{fill:#a78bfa}
-.account,.parallel-wrap{position:relative}.account-trigger,.parallel-trigger,.button,.icon-button,.row-check,.sort,.select-all{border:0;cursor:pointer}.account-trigger{height:32px;display:flex;align-items:center;gap:8px;border:1px solid transparent;border-radius:6px;background:transparent;padding:0 8px;color:#aeb6c5;font-size:12px}.account-trigger:hover,.account-trigger[aria-expanded=true]{border-color:var(--xw-line-hi);background:var(--xw-raised);color:var(--xw-text)}.account-inline{display:flex;align-items:center;gap:8px;color:#aeb6c5;font-size:12px}.account-inline form{margin:0}.signout-button{height:29px;border:1px solid var(--xw-line-hi);border-radius:6px;background:transparent;padding:0 8px;color:#aeb6c5;font:500 11px Inter,system-ui,sans-serif;cursor:pointer}.signout-button:hover{border-color:#67323b;background:#24161d;color:#ff9ba3}.anonymous-label{padding:0 8px;color:#a0a9b9;font-size:12px;font-weight:500}
 
 .ui-icon{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;flex:0 0 auto}
-.workspace{position:relative;min-height:0;display:grid;grid-template-rows:auto auto minmax(0,1fr);padding:16px;gap:12px;max-width:none;margin:0}
-.workspace-controls{min-width:0;display:flex;flex-direction:column;gap:12px}.workspace-controls .readonly-notice{margin-bottom:0}
-.location{display:flex;align-items:center;justify-content:space-between;min-width:0}.crumbs{display:flex;align-items:center;gap:4px;min-width:0;color:var(--xw-muted);font:12px 'JetBrains Mono',monospace}.crumb{color:#aab3c2;text-decoration:none;border-radius:4px;padding:2px 4px;white-space:nowrap;max-width:260px;overflow:hidden;text-overflow:ellipsis}.crumb:hover{background:var(--xw-hover);color:var(--xw-text)}.crumb.current{color:var(--xw-text);font-weight:600}.slash{color:#444f63}.location-meta{display:flex;gap:12px;color:var(--xw-faint);font:11px 'JetBrains Mono',monospace;font-variant-numeric:tabular-nums}
-.actionbar{min-height:44px;display:flex;align-items:center;justify-content:space-between;gap:12px;border:1px solid var(--xw-line);border-radius:var(--xw-radius);background:var(--xw-panel);padding:4px}.toolbar-group{display:flex;align-items:center;gap:4px;min-width:0}.toolbar-end{margin-left:auto}
-.filter-input{width:132px;height:31px;border:1px solid var(--xw-line-hi);border-radius:6px;background:var(--xw-raised);color:var(--xw-text);font:12px Inter,system-ui,sans-serif;padding:0 12px;appearance:none;-webkit-appearance:none}
-.filter-input::placeholder{color:var(--xw-faint)}.button,.button:link,.button:visited{height:31px;padding:0 12px;display:inline-flex;align-items:center;justify-content:center;gap:8px;border:1px solid var(--xw-line-hi);border-radius:6px;background:var(--xw-raised);color:var(--xw-text);font-size:12px;font-weight:500;line-height:normal;text-decoration:none;white-space:nowrap;appearance:none;-webkit-appearance:none;transition:transform var(--xw-micro) var(--xw-ease),border-color var(--xw-micro),background-color var(--xw-micro)}.button:hover:not(:disabled){transform:translateY(-1px);border-color:#4b5873;background:#172034;color:var(--xw-text)}.button:active:not(:disabled){transform:scale(.96)}.button:disabled{opacity:.42;cursor:not-allowed}.button.primary{border-color:var(--xw-accent-border);background:var(--xw-accent-fill);color:white}.button.primary:hover:not(:disabled){background:var(--xw-accent-fill-hover);border-color:var(--xw-accent);color:white}.button.ghost{border-color:transparent;background:transparent;color:var(--xw-muted)}.button.danger{color:#ff9ba3;border-color:#67323b;background:#24161d}
-.selection-actions{opacity:0;pointer-events:none;transform:translateY(3px);transition:opacity var(--xw-micro),transform var(--xw-micro) var(--xw-ease)}.selection-actions.visible{opacity:1;pointer-events:auto;transform:none}.selection-pill{height:28px;display:inline-flex;align-items:center;gap:8px;padding:0 12px;border-radius:999px;background:var(--xw-accent-lo);border:1px solid var(--xw-accent-border);color:var(--xw-accent-hi);font:600 11px Inter,system-ui,sans-serif;font-variant-numeric:tabular-nums}.selection-pill i{width:6px;height:6px;border-radius:50%;background:var(--xw-accent);box-shadow:0 0 0 4px rgba(167,139,250,.1)}
-.parallel-trigger{width:126px;height:31px;display:grid;grid-template-columns:1fr auto;align-items:center;gap:8px;border:1px solid var(--xw-line-hi);border-radius:6px;background:var(--xw-raised);padding:0 8px 0 12px}.parallel-trigger:hover,.parallel-trigger[aria-expanded=true]{border-color:var(--xw-accent-border);background:#171d2e}.parallel-trigger[aria-expanded=true]>.ui-icon{transform:rotate(180deg)}.parallel-copy{display:flex;align-items:baseline;justify-content:space-between;gap:8px;font-family:Inter,system-ui,sans-serif}.parallel-copy>span{color:#7f8a9e;font:500 11px Inter,system-ui,sans-serif;text-transform:uppercase}.parallel-copy strong{color:#eef0f5;font:500 12px 'JetBrains Mono',monospace}
-.popover{position:absolute;right:0;top:38px;border:1px solid #3b465c;border-radius:7px;background:#111827;padding:4px;box-shadow:0 18px 45px rgba(0,0,0,.46);transform-origin:top right;animation:xw-surface-in var(--xw-surface) var(--xw-ease);z-index:var(--z-popover)}.account-menu{min-width:152px}.account-menu form{margin:0}.menu-item{width:100%;height:32px;display:flex;align-items:center;border:0;border-radius:5px;background:transparent;color:#b9c1ce;padding:0 8px;text-decoration:none;cursor:pointer}.menu-item:hover{background:var(--xw-hover);color:var(--xw-text)}.parallel-menu{top:36px;min-width:184px;padding:4px}.menu-title{padding:4px 8px 8px;color:#788499;font:500 11px Inter,system-ui,sans-serif;text-transform:uppercase}.parallel-option{height:34px;display:flex;align-items:center;justify-content:space-between;border-radius:5px;padding:0 8px;color:#b9c1ce;cursor:pointer;font:11px Inter,system-ui,sans-serif}.parallel-option:hover{background:var(--xw-hover)}.parallel-option.selected{background:var(--xw-accent-lo);color:var(--xw-accent-hi)}.parallel-option input{position:absolute;opacity:0}.parallel-option>span{display:flex;align-items:baseline;gap:8px}.parallel-option strong{min-width:12px;color:#eef0f5}.parallel-option small{color:#8792a5;font-size:11px}
+
 .menu-item.active { background:var(--xw-hover); color:var(--xw-text); }
 .file-surface{position:relative;min-height:0;display:grid;grid-template-rows:minmax(0,1fr) 30px;border:1px solid var(--xw-line);border-radius:var(--xw-radius);overflow:hidden;background:var(--xw-panel)}
 .file-table{display:grid;grid-template-rows:45px minmax(0,1fr);min-height:0;overflow:auto;scrollbar-gutter:stable}.table-head,.file-row{display:grid;grid-template-columns:44px 34px minmax(200px,1fr) 112px 168px 140px;align-items:center;padding:0 8px}.table-head{position:sticky;top:0;z-index:var(--z-raise);align-items:stretch;border-bottom:1px solid var(--xw-line);background:#0b101a;color:var(--xw-faint);font:500 11px 'JetBrains Mono',monospace;text-transform:uppercase}.table-head .sort{height:100%;width:100%;display:flex;align-items:center;gap:4px;background:transparent;color:inherit;text-align:left;text-transform:uppercase}.table-head .sort:hover{color:#aab5c9}.select-all,.row-check{height:100%;display:grid;place-items:center;background:transparent}.file-list{min-height:0}.file-row{position:relative;min-height:44px;border-bottom:1px solid #1c2433;transition:background var(--xw-micro) var(--xw-ease),opacity var(--xw-micro),box-shadow var(--xw-micro)}.file-row:hover{background:var(--xw-hover)}.file-row.selected{background:#1c1732;box-shadow:inset 3px 0 var(--xw-accent)}.file-row.selected:hover{background:#211a3a}.file-row.muted{opacity:.58}.file-icon{width:24px;height:24px;border-radius:5px;display:grid;place-items:center;color:#9ba6ba}.file-icon.directory{color:#d8b963;background:#241f15}.file-icon.file{color:var(--xw-accent);background:#19162b}.filename{min-width:0;color:#dfe4ec;font:12px 'JetBrains Mono',monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-decoration:none}.filename.directory{color:#ece1b6}.cell{color:#818da2;font:11px 'JetBrains Mono',monospace;font-variant-numeric:tabular-nums}.row-actions{display:flex;justify-content:flex-end;gap:2px;opacity:0;transform:translateX(5px);transition:opacity var(--xw-micro),transform var(--xw-micro) var(--xw-ease)}.file-row:hover .row-actions,.file-row:focus-within .row-actions{opacity:1;transform:none}.row-actions .icon-button{width:28px;height:28px}.icon-button{width:30px;height:30px;display:grid;place-items:center;padding:0;border:1px solid transparent;border-radius:6px;background:transparent;color:#9ca6b8;text-decoration:none}.icon-button:hover{border-color:var(--xw-line-hi);background:#172034;color:var(--xw-text)}.danger-icon:hover{color:var(--xw-danger)}
@@ -149,7 +139,7 @@ body:has(.xw-app){overflow:hidden;background:var(--xw-bg);color:var(--xw-text);f
 /* A dialog owns the page while it is open: the scroll container behind it stops
    moving, so a wheel or trackpad flick cannot drift the listing under the card. */
 body:has(.modal-backdrop) .file-table,body:has(.modal-backdrop) .admin-shell{overflow:hidden}
-.readonly-notice{margin:0;border-color:#544829;background:#211d14;color:#e6c77f}.boot-loading,.boot-error{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;background:var(--xw-bg);color:var(--xw-muted);font-family:Inter,system-ui,sans-serif}
+.boot-loading,.boot-error{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;background:var(--xw-bg);color:var(--xw-muted);font-family:Inter,system-ui,sans-serif}
 /* The boot card sits over the app and fades out under it, so the handover has no
    frame where neither the card nor the shell is on screen. */
 .boot-loading{position:fixed;inset:0;z-index:var(--z-modal);pointer-events:none;transition:opacity 180ms ease-out}
@@ -160,9 +150,9 @@ body:has(.modal-backdrop) .file-table,body:has(.modal-backdrop) .admin-shell{ove
 @keyframes xw-search-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}@keyframes xw-search-out{to{opacity:0;transform:translateY(6px)}}
 @keyframes xw-surface-out{to{opacity:0;transform:translateY(7px) scale(.98);filter:blur(1px)}}@keyframes xw-backdrop-in{from{opacity:0}to{opacity:1}}@keyframes xw-backdrop-out{to{opacity:0}}@keyframes xw-drop-in{from{opacity:0;transform:scale(.985)}to{opacity:1;transform:none}}
 @keyframes xw-toast-out{to{opacity:0;transform:translateY(6px) scale(.97)}}
-@media(max-width:900px){.location-meta,.actionbar .hide-tablet{display:none}.table-head,.file-row{grid-template-columns:44px 34px minmax(180px,1fr) 90px 120px 140px}.upload-dock{width:330px}.selection-pill{display:none}}
-@media(max-width:640px){.xw-app input:not([type="checkbox"]):not([type="radio"]){font-size:16px}.xw-app{grid-template-rows:48px minmax(0,1fr)}.topbar{height:48px;padding:0 12px}.workspace{padding:8px;gap:8px}.account-trigger>span,.button .label,.cell.date,.table-head .date{display:none}
- /* The row drops its whole date cell; the header only dropped the button, so the empty cell stayed and wrapped the header into a second grid row. */.table-head [role="columnheader"]:has(> .date){display:none}.button{width:32px;padding:0}.button.primary{width:auto;padding:0 12px}.button.primary .label{display:inline}.actionbar{overflow-x:auto;gap:4px}.filter-input{width:112px;padding:0 8px}.toolbar-end{margin-left:auto}.parallel-trigger{width:76px}.parallel-copy>span{display:none}.table-head,.file-row{grid-template-columns:44px 30px minmax(120px,1fr) 64px 56px}.row-actions{opacity:1;transform:none}.row-actions .danger-icon{display:none}.upload-dock{width:auto}.notify-rail{right:12px;bottom:16px}.statusbar{justify-content:center}.statusbar>span{display:none}.selection-actions{position:absolute;left:6px;right:6px;background:var(--xw-panel);z-index:var(--z-base)}.selection-actions .selection-pill{display:flex}}
+@media(max-width:900px){.table-head,.file-row{grid-template-columns:44px 34px minmax(180px,1fr) 90px 120px 140px}.upload-dock{width:330px}}
+@media(max-width:640px){.xw-app input:not([type="checkbox"]):not([type="radio"]){font-size:16px}.xw-app{grid-template-rows:48px minmax(0,1fr)}
+ /* The row drops its whole date cell; the header only dropped the button, so the empty cell stayed and wrapped the header into a second grid row. */.table-head [role="columnheader"]:has(> .date){display:none}.table-head,.file-row{grid-template-columns:44px 30px minmax(120px,1fr) 64px 56px}.row-actions{opacity:1;transform:none}.row-actions .danger-icon{display:none}.upload-dock{width:auto}.notify-rail{right:12px;bottom:16px}.statusbar{justify-content:center}.statusbar>span{display:none}}
 @media(prefers-reduced-motion:reduce){.xw-app,.editor-app,.xw-app *,.editor-app *,.xw-app *::before,.editor-app *::before,.xw-app *::after,.editor-app *::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
 @keyframes xw-spin{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.boot-loading::before{animation-duration:.01ms!important}}
@@ -427,7 +417,6 @@ main:focus-visible {
  outline: none;
 }
 
-
 .cm-editor {
  height: 100%;
  font-size: 13px;
@@ -460,8 +449,6 @@ main:focus-visible {
 /* Keep Admin account navigation aligned with Files shell. */
 .admin-shell .account-trigger,
 .admin-shell .signout-button { font: 400 12px/1.45 Inter, system-ui, sans-serif; }
-.xw-app .account-menu .menu-item,
-.admin-shell .account-menu .menu-item { font: 400 12px/1.4 Inter, system-ui, sans-serif; }
 
 /* ── Pointer targets ──────────────────────────────────────────────────────────
    WCAG 2.5.5 (AAA) asks every pointer target for 44x44. Dense chrome keeps its
@@ -477,7 +464,14 @@ main:focus-visible {
  min-width: 44px;
 }
 .icon-button, .row-actions .icon-button, .drop-wait .icon-button { width:44px; height:44px; min-width:44px; min-height:44px; }
-.brand, .skip-link { min-height: 44px; }
+
+/* ── Still CSS on purpose ────────────────────────────────────────────────────
+   Targets the utilities cannot reach: CodeMirror's own DOM, the toast action
+   that lives in a portal-free rail, and the file table's date column, which the
+   row drops by class at the mobile breakpoint. */
+@media(max-width:640px){.cell.date,.table-head .date{display:none}}
+.editor-canvas .cm-button,.editor-canvas .cm-panels .cm-search .cm-textfield{min-height:44px;min-width:44px}
+.toast-action{height:44px}
 
 /* Utilities come last, on purpose: a converted element must be able to
    override the rule it replaced while both are still in the file. */

@@ -42,6 +42,12 @@ declare global { interface Window { CM: CodeMirrorApi } }
 
 const AUTH_REDIRECT_DELAY_MS = 1500;
 
+// The editor's controls, translated from the shared `.button` rules: they are
+// utilities now, so the hooks below carry them explicitly.
+const BTN = "h-11 min-h-11 min-w-11 inline-flex items-center justify-center gap-2 px-3 border border-solid border-xw-line-hi rounded-md bg-xw-raised text-xw-text text-xs font-medium leading-normal no-underline whitespace-nowrap appearance-none cursor-pointer transition-[transform,border-color,background-color] duration-micro ease-xw [&:hover:not(:disabled)]:-translate-y-px [&:hover:not(:disabled)]:border-[#4b5873] [&:hover:not(:disabled)]:bg-[#172034] [&:active:not(:disabled)]:scale-[.96] disabled:opacity-[.42] disabled:cursor-not-allowed";
+const BTN_PRIMARY = "border-xw-accent-border bg-xw-accent-fill text-white [&:hover:not(:disabled)]:bg-xw-accent-fill-hover [&:hover:not(:disabled)]:border-xw-accent [&:hover:not(:disabled)]:text-white";
+const BTN_DANGER = "text-[#ff9ba3] border-[#67323b] bg-[#24161d] [&:hover:not(:disabled)]:border-[#a65260] [&:hover:not(:disabled)]:bg-[#421e28]";
+
 // Saves that fit in one chunk go out as a single PUT. Larger saves go through
 // the shared resumable upload engine (see `saveDocument`), which chunks at this
 // size and retries only the bytes the server has not accepted yet.
@@ -268,7 +274,7 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
     {/* `.topbar` still declares the flex display and the phone padding for both
         shells, so the editor's grid override carries the important marker until
         the file panel drops that shared rule. */}
-    <header className="topbar editor-topbar !grid grid-cols-[1fr_minmax(220px,2fr)_1fr] max-[700px]:grid-cols-[auto_minmax(0,1fr)_auto] max-[700px]:!px-3"><a className="brand" href="/" aria-label="X-wing EDITOR, home" onClick={event => { event.preventDefault(); requestLeave("/"); }}><Logo/><span className="max-[700px]:hidden">X-wing</span><small className="max-[700px]:!hidden">EDITOR</small></a><div className="editor-heading flex min-w-0 flex-col items-center leading-tight max-[700px]:items-start max-[700px]:pl-2"><strong className="max-w-full truncate font-mono text-xs font-medium">{boot.filename}</strong><span className="max-w-full truncate font-mono text-[11px] text-xw-faint" role="status" aria-live="polite">{status || (dirty ? "Unsaved changes" : boot.displayPath)}</span></div><div className="editor-actions flex items-center justify-end gap-1"><a className="button max-[700px]:!hidden" href={boot.path} download>Download</a><button className="button primary" disabled={!canEdit || !dirty} onClick={() => void save()}>Save</button>{boot.user.authenticated ? <div className="account-inline"><span>{boot.user.name}</span><form ref={logoutForm} id="logout-form" method="post" action="/_auth/logout" onSubmit={event => { event.preventDefault(); if (dirty) setConfirmLeave("__logout__"); else { setAuthOverlay("logout"); const form = event.currentTarget; window.setTimeout(() => form.submit(), AUTH_REDIRECT_DELAY_MS); } }}><button className="signout-button" type="submit">Sign out</button></form></div> : <span className="anonymous-label">anonymous</span>}</div></header>
+    <header className="topbar editor-topbar !grid grid-cols-[1fr_minmax(220px,2fr)_1fr] max-[700px]:grid-cols-[auto_minmax(0,1fr)_auto] max-[700px]:!px-3"><a className="brand" href="/" aria-label="X-wing EDITOR, home" onClick={event => { event.preventDefault(); requestLeave("/"); }}><Logo/><span className="max-[700px]:hidden">X-wing</span><small className="max-[700px]:!hidden">EDITOR</small></a><div className="editor-heading flex min-w-0 flex-col items-center leading-tight max-[700px]:items-start max-[700px]:pl-2"><strong className="max-w-full truncate font-mono text-xs font-medium">{boot.filename}</strong><span className="max-w-full truncate font-mono text-[11px] text-xw-faint" role="status" aria-live="polite">{status || (dirty ? "Unsaved changes" : boot.displayPath)}</span></div><div className="editor-actions flex items-center justify-end gap-1"><a className={cn("button max-[700px]:!hidden", BTN)} href={boot.path} download>Download</a><button className={cn("button primary", BTN, BTN_PRIMARY)} disabled={!canEdit || !dirty} onClick={() => void save()}>Save</button>{boot.user.authenticated ? <div className="account-inline"><span>{boot.user.name}</span><form ref={logoutForm} id="logout-form" method="post" action="/_auth/logout" onSubmit={event => { event.preventDefault(); if (dirty) setConfirmLeave("__logout__"); else { setAuthOverlay("logout"); const form = event.currentTarget; window.setTimeout(() => form.submit(), AUTH_REDIRECT_DELAY_MS); } }}><button className="signout-button" type="submit">Sign out</button></form></div> : <span className="anonymous-label">anonymous</span>}</div></header>
     <AnimatePresence>
       {(!boot.canWrite || boot.truncated) && <m.div
         key="notices"
@@ -278,13 +284,13 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
         exit={{ opacity: 0, y: 7, scale: 0.98, transition: { duration: reduceMotion ? 0 : SURFACE_EXIT_SECONDS, ease: "easeIn" } }}
         transition={{ duration: reduceMotion ? 0 : SURFACE_ENTER_SECONDS, ease: XW_EASE }}
       >
-        {!boot.canWrite && <div className="readonly-notice !m-0">Read-only access. Saving changes is disabled.</div>}
-        {boot.truncated && <div className="readonly-notice !m-0">Showing first {formatBytes(boot.previewBytes)} of {formatBytes(boot.totalSize)}. File too large to edit here — use Download for the full file.</div>}
+        {!boot.canWrite && <div className="readonly-notice m-0 px-3 py-2 border border-solid border-[#544829] rounded-lg bg-[#211d14] text-[#e6c77f] text-xs">Read-only access. Saving changes is disabled.</div>}
+        {boot.truncated && <div className="readonly-notice m-0 px-3 py-2 border border-solid border-[#544829] rounded-lg bg-[#211d14] text-[#e6c77f] text-xs">Showing first {formatBytes(boot.previewBytes)} of {formatBytes(boot.totalSize)}. File too large to edit here — use Download for the full file.</div>}
       </m.div>}
     </AnimatePresence>
     <main className="editor-body grid min-h-0 grid-cols-[45px_minmax(0,1fr)] max-[700px]:grid-cols-[38px_minmax(0,1fr)]" aria-labelledby="editor-title"><aside className="editor-rail flex flex-col items-center gap-3 border-r border-solid border-xw-line bg-[#0b1019] pt-2"><button className="editor-back h-[31px] w-[31px] cursor-pointer rounded-md border border-solid border-xw-line-hi bg-xw-raised text-xw-muted hover:bg-xw-hover hover:text-xw-text" onClick={() => requestLeave(boot.directory)} aria-label="Back to files" title="Back to files">←</button><span className="font-mono text-[11px] text-xw-faint [writing-mode:vertical-rl]">{boot.extension || "TXT"}</span></aside><div className="editor-canvas min-h-0 min-w-0 overflow-hidden" ref={mount}/></main>
     <AnimatePresence>{confirmLeave && <DiscardDialog key="discard" onCancel={() => setConfirmLeave(null)} onDiscard={leave}/>}</AnimatePresence>
-    {authOverlay && <div className="auth-overlay" role="status" aria-live="polite"><div className="auth-overlay-card"><div className="auth-overlay-row"><span className="auth-pulse"><span/></span><div><h2>{AUTH_OVERLAY_COPY[authOverlay].title}</h2><p>{AUTH_OVERLAY_COPY[authOverlay].message}</p></div></div>{AUTH_OVERLAY_COPY[authOverlay].action && <button className="button primary" type="button" onClick={() => redirectToLoginNow()}>{AUTH_OVERLAY_COPY[authOverlay].action}</button>}</div></div>}
+    {authOverlay && <div className="auth-overlay" role="status" aria-live="polite"><div className="auth-overlay-card"><div className="auth-overlay-row"><span className="auth-pulse"><span/></span><div><h2>{AUTH_OVERLAY_COPY[authOverlay].title}</h2><p>{AUTH_OVERLAY_COPY[authOverlay].message}</p></div></div>{AUTH_OVERLAY_COPY[authOverlay].action && <button className={cn("button primary", BTN, BTN_PRIMARY)} type="button" onClick={() => redirectToLoginNow()}>{AUTH_OVERLAY_COPY[authOverlay].action}</button>}</div></div>}
   </m.div>;
 }
 
@@ -300,7 +306,7 @@ function DiscardDialog({ onCancel, onDiscard }: { onCancel: () => void; onDiscar
   const exit = reduceMotion ? { duration: 0 } : { duration: SURFACE_EXIT_SECONDS, ease: "easeIn" } as const;
   return <m.div ref={modalRef} className="modal-backdrop" initial={false} animate={{ opacity: 1 }} exit={{ opacity: 0, transition: exit }}>
     <m.div className="modal" role="dialog" aria-modal="true" aria-labelledby="discard-title" aria-describedby="discard-description" initial={false} animate={{ opacity: 1 }} exit={{ opacity: 0, y: 7, scale: 0.98, transition: exit }}>
-      <h2 id="discard-title">Discard unsaved changes?</h2><p id="discard-description">This file has unsaved edits. Leave without saving?</p><div className="modal-actions"><button className="button" onClick={onCancel}>Keep editing</button><button data-autofocus className="button danger" onClick={onDiscard}>Discard changes</button></div>
+      <h2 id="discard-title">Discard unsaved changes?</h2><p id="discard-description">This file has unsaved edits. Leave without saving?</p><div className="modal-actions"><button className={cn("button", BTN)} onClick={onCancel}>Keep editing</button><button data-autofocus className={cn("button danger", BTN, BTN_DANGER)} onClick={onDiscard}>Discard changes</button></div>
     </m.div>
   </m.div>;
 }
