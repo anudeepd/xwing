@@ -3,7 +3,19 @@ import { createRoot } from "react-dom/client";
 import { AnimatePresence, LazyMotion, MotionConfig, domAnimation } from "motion/react";
 import * as m from "motion/react-m";
 import { AuthOverlay } from "./auth-overlay";
+const BTN = CONTROL;
+const BTN_PRIMARY = CONTROL_PRIMARY;
+const BTN_DANGER = CONTROL_DANGER;
 import { cn } from "./lib/cn";
+import {
+  ACCOUNT_INLINE,
+  BRAND,
+  CONTROL,
+  CONTROL_DANGER,
+  CONTROL_PRIMARY,
+  SIGNOUT,
+} from "./ui";
+
 import { formatBytes, prefersReducedMotion } from "./format";
 import { useModalFocus } from "./keyboard";
 import { AUTH_OVERLAY_COPY, AUTH_REDIRECT_EVENT, beginAuthRedirect } from "./shared.js";
@@ -43,11 +55,6 @@ declare global { interface Window { CM: CodeMirrorApi } }
 
 const AUTH_REDIRECT_DELAY_MS = 1500;
 
-// The editor's controls, translated from the shared `.button` rules: they are
-// utilities now, so the hooks below carry them explicitly.
-const BTN = "h-11 min-h-11 min-w-11 inline-flex items-center justify-center gap-2 px-3 border border-solid border-xw-line-hi rounded-md bg-xw-raised text-xw-text text-xs font-medium leading-normal no-underline whitespace-nowrap appearance-none cursor-pointer transition-[transform,border-color,background-color] duration-micro ease-xw [&:hover:not(:disabled)]:-translate-y-px [&:hover:not(:disabled)]:border-[#4b5873] [&:hover:not(:disabled)]:bg-[#172034] [&:active:not(:disabled)]:scale-[.96] disabled:opacity-[.42] disabled:cursor-not-allowed";
-const BTN_PRIMARY = "border-xw-accent-border bg-xw-accent-fill text-white [&:hover:not(:disabled)]:bg-xw-accent-fill-hover [&:hover:not(:disabled)]:border-xw-accent [&:hover:not(:disabled)]:text-white";
-const BTN_DANGER = "text-[#ff9ba3] border-[#67323b] bg-[#24161d] [&:hover:not(:disabled)]:border-[#a65260] [&:hover:not(:disabled)]:bg-[#421e28]";
 
 // Saves that fit in one chunk go out as a single PUT. Larger saves go through
 // the shared resumable upload engine (see `saveDocument`), which chunks at this
@@ -275,7 +282,7 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
     {/* `.topbar` still declares the flex display and the phone padding for both
         shells, so the editor's grid override carries the important marker until
         the file panel drops that shared rule. */}
-    <header className="topbar editor-topbar !grid grid-cols-[1fr_minmax(220px,2fr)_1fr] max-[700px]:grid-cols-[auto_minmax(0,1fr)_auto] max-[700px]:!px-3"><a className="brand flex items-center gap-2 min-h-11 text-inherit no-underline rounded-md" href="/" aria-label="X-wing EDITOR, home" onClick={event => { event.preventDefault(); requestLeave("/"); }}><Logo/><span className="max-[700px]:hidden font-sans text-[13px] font-semibold leading-none text-[#f1f3f7]">X-wing</span><small className="max-[700px]:!hidden brand-context h-[13px] inline-flex items-center -translate-y-px text-xw-faint text-[11px] font-medium leading-none">EDITOR</small></a><div className="editor-heading flex min-w-0 flex-col items-center leading-tight max-[700px]:items-start max-[700px]:pl-2"><strong className="max-w-full truncate font-mono text-xs font-medium">{boot.filename}</strong><span className="max-w-full truncate font-mono text-[11px] text-xw-faint" role="status" aria-live="polite">{status || (dirty ? "Unsaved changes" : boot.displayPath)}</span></div><div className="editor-actions flex items-center justify-end gap-1"><a className={cn("button max-[700px]:!hidden", BTN)} href={boot.path} download>Download</a><button className={cn("button primary", BTN, BTN_PRIMARY)} disabled={!canEdit || !dirty} onClick={() => void save()}>Save</button>{boot.user.authenticated ? <div className="account-inline flex items-center gap-2 text-[#aeb6c5] text-xs"><span>{boot.user.name}</span><form ref={logoutForm} id="logout-form" method="post" action="/_auth/logout" onSubmit={event => { event.preventDefault(); if (dirty) setConfirmLeave("__logout__"); else { setAuthOverlay("logout"); const form = event.currentTarget; window.setTimeout(() => form.submit(), AUTH_REDIRECT_DELAY_MS); } }}><button className="signout-button h-11 min-h-11 px-2 border border-solid border-xw-line-hi rounded-md bg-transparent text-[#aeb6c5] text-[11px] font-medium hover:border-[#67323b] hover:bg-[#24161d] hover:text-[#ff9ba3]" type="submit">Sign out</button></form></div> : <span className="anonymous-label">anonymous</span>}</div></header>
+    <header className="topbar editor-topbar !grid grid-cols-[1fr_minmax(220px,2fr)_1fr] max-[700px]:grid-cols-[auto_minmax(0,1fr)_auto] max-[700px]:!px-3"><a className={BRAND} href="/" aria-label="X-wing EDITOR, home" onClick={event => { event.preventDefault(); requestLeave("/"); }}><Logo/><span className="max-[700px]:hidden font-sans text-[13px] font-semibold leading-none text-[#f1f3f7]">X-wing</span><small className="max-[700px]:!hidden brand-context h-[13px] inline-flex items-center -translate-y-px text-xw-faint text-[11px] font-medium leading-none">EDITOR</small></a><div className="editor-heading flex min-w-0 flex-col items-center leading-tight max-[700px]:items-start max-[700px]:pl-2"><strong className="max-w-full truncate font-mono text-xs font-medium">{boot.filename}</strong><span className="max-w-full truncate font-mono text-[11px] text-xw-faint" role="status" aria-live="polite">{status || (dirty ? "Unsaved changes" : boot.displayPath)}</span></div><div className="editor-actions flex items-center justify-end gap-1"><a className={cn("button max-[700px]:!hidden", BTN)} href={boot.path} download>Download</a><button className={cn("button primary", BTN, BTN_PRIMARY)} disabled={!canEdit || !dirty} onClick={() => void save()}>Save</button>{boot.user.authenticated ? <div className={ACCOUNT_INLINE}><span>{boot.user.name}</span><form ref={logoutForm} id="logout-form" method="post" action="/_auth/logout" onSubmit={event => { event.preventDefault(); if (dirty) setConfirmLeave("__logout__"); else { setAuthOverlay("logout"); const form = event.currentTarget; window.setTimeout(() => form.submit(), AUTH_REDIRECT_DELAY_MS); } }}><button className={SIGNOUT} type="submit">Sign out</button></form></div> : <span className="anonymous-label">anonymous</span>}</div></header>
     <AnimatePresence>
       {(!boot.canWrite || boot.truncated) && <m.div
         key="notices"

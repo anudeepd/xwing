@@ -367,12 +367,15 @@ test("successful deletion focuses the nearest surviving row", async ({ page }) =
   await expect(page.getByRole("row", { name: /^README\.md,/ })).toBeFocused();
   const deletedToast = page.getByRole("status").filter({ hasText: "1 item deleted" });
   await expect(deletedToast).toHaveClass(/deleted/);
-  await expect(deletedToast.locator(".toast-timer")).toHaveCSS("animation-duration", "15s");
+  // The bar carries the countdown for the toast's own lifetime. Its computed
+  // duration is clamped to nothing when the user asks for less motion, so assert
+  // the value the app sets rather than the one the stylesheet may lower.
+  await expect(deletedToast.locator(".toast-timer")).toHaveAttribute("style", /animation-duration:\s*15000ms/);
   await deletedToast.getByRole("button", { name: "Undo" }).click();
   await expect(deletedToast).not.toBeVisible();
   const restoredToast = page.getByRole("status").filter({ hasText: "1 item restored" });
   await expect(restoredToast).toHaveClass(/restored/);
-  await expect(restoredToast.locator(".toast-timer")).toHaveCSS("animation-duration", "15s");
+  await expect(restoredToast.locator(".toast-timer")).toHaveAttribute("style", /animation-duration:\s*15000ms/);
   await expect(page.getByRole("row", { name: /^releases,/ })).toBeVisible();
 });
 

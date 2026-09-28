@@ -4,6 +4,31 @@ import { createPortal, flushSync } from "react-dom";
 import * as m from "motion/react-m";
 import { AnimatePresence, LazyMotion, MotionConfig, domAnimation, useAnimate, type Transition } from "motion/react";
 import { cn } from "./lib/cn";
+import {
+  ACCOUNT_INLINE,
+  ACCOUNT_TRIGGER,
+  BRAND,
+  BRAND_CONTEXT,
+  BRAND_NAME,
+  CONTROL,
+  CONTROL_DANGER,
+  CONTROL_PRIMARY,
+  CONTROL_SMALL,
+  MENU_ITEM,
+  RAIL,
+  SIGNOUT,
+  TOAST,
+  TOAST_ERROR,
+  TOAST_ICON,
+  TOAST_MESSAGE,
+  TOAST_SUCCESS,
+  TOAST_TIMER,
+} from "./ui";
+
+const BTN = CONTROL;
+const BTN_PRIMARY = CONTROL_PRIMARY;
+const BTN_DANGER = CONTROL_DANGER;
+const BTN_SMALL = CONTROL_SMALL;
 import { createAuthSession, dismissBootCard } from "./shared.js";
 import { formatBytes, formatDate, prefersReducedMotion } from "./format";
 import { useModalFocus } from "./keyboard";
@@ -191,12 +216,6 @@ const TH = "border-0 border-b border-solid border-admin-line-hi px-3 py-3 font-s
 const TD = "border-0 border-b border-solid border-admin-line px-3 py-3 align-top tabular-nums text-admin-muted";
 const CELL_STRONG = "font-medium text-admin-text";
 const ROW_ACTIONS = "row-actions flex flex-wrap justify-start gap-2 opacity-100 transform-none";
-// The console's controls, translated from admin.css. They are utilities now, so
-// every `button` hook in this file carries them explicitly.
-const BTN = "h-11 min-h-11 min-w-11 inline-flex items-center justify-center gap-2 px-3 border border-solid border-xw-line-hi rounded-md bg-xw-raised text-xw-text text-xs font-medium leading-normal no-underline whitespace-nowrap appearance-none cursor-pointer transition-[transform,border-color,background-color] duration-micro ease-xw [&:hover:not(:disabled)]:-translate-y-px [&:hover:not(:disabled)]:border-[#4b5873] [&:hover:not(:disabled)]:bg-[#172034] [&:active:not(:disabled)]:scale-[.96] disabled:opacity-[.42] disabled:cursor-not-allowed";
-const BTN_PRIMARY = "border-xw-accent-border bg-xw-accent-fill text-white [&:hover:not(:disabled)]:bg-xw-accent-fill-hover [&:hover:not(:disabled)]:border-xw-accent [&:hover:not(:disabled)]:text-white";
-const BTN_DANGER = "text-[#ff9ba3] border-[#67323b] bg-[#24161d] [&:hover:not(:disabled)]:border-[#a65260] [&:hover:not(:disabled)]:bg-[#421e28]";
-const BTN_SMALL = "text-[11px]";
 const FIELD = "min-h-11 w-full rounded border border-solid border-admin-line-hi bg-admin-bg px-3 py-2 font-sans text-[13px] text-admin-text outline-none focus:border-admin-accent focus:ring-2 focus:ring-admin-accent";
 const LABEL = "font-sans text-xs font-medium text-admin-muted";
 const FIELD_HELP = "text-[11px] text-admin-faint";
@@ -544,9 +563,9 @@ function AccountMenu({ user, open, onToggle, onLeave }: { user: string; open: bo
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [open, onToggle]);
   return <div className="account" id="account-control" ref={controlRef}>
-    <button className="account-trigger h-11 min-h-11 flex items-center gap-2 px-2 border border-solid border-transparent rounded-md bg-transparent text-[#aeb6c5] text-xs hover:border-xw-line-hi hover:bg-xw-raised hover:text-xw-text aria-expanded:border-xw-line-hi aria-expanded:bg-xw-raised aria-expanded:text-xw-text" type="button" aria-haspopup="menu" aria-expanded={open} onClick={onToggle}><span>{user}</span><Chevron/></button>
+    <button className={ACCOUNT_TRIGGER} type="button" aria-haspopup="menu" aria-expanded={open} onClick={onToggle}><span>{user}</span><Chevron/></button>
     {open && <div className="popover absolute right-0 top-[38px] z-popover p-1 border border-solid border-[#3b465c] rounded-[7px] bg-[#111827] shadow-[0_18px_45px_rgba(0,0,0,.46)] origin-top-right animate-[xw-surface-in_var(--xw-surface)_var(--xw-ease)] account-menu min-w-[152px]" role="menu" aria-label="Workspace navigation">
-      <a className="menu-item w-full h-11 min-h-11 flex items-center px-2 border-0 rounded-[5px] bg-transparent text-[#b9c1ce] no-underline cursor-pointer text-xs hover:bg-xw-hover hover:text-xw-text" href="/" role="menuitem" data-leave="/" onClick={onLeave}>Files</a>
+      <a className={MENU_ITEM} href="/" role="menuitem" data-leave="/" onClick={onLeave}>Files</a>
       <a className="menu-item w-full h-11 min-h-11 flex items-center px-2 border-0 rounded-[5px] bg-transparent text-[#b9c1ce] no-underline cursor-pointer text-xs hover:bg-xw-hover hover:text-xw-text active bg-xw-hover text-xw-text" href="/admin" role="menuitem" aria-current="page">Admin panel</a>
     </div>}
   </div>;
@@ -912,10 +931,10 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
 
   return <m.div className="admin-shell h-dvh overflow-y-auto [scrollbar-gutter:stable]" initial={{ opacity: 0, y: 6 }} animate={leaving ? { opacity: 0, y: -5 } : { opacity: 1, y: 0 }} transition={leaving ? SHELL_LEAVE : SHELL_ENTER}>
     <header className="topbar admin-topbar">
-      <a className="brand flex items-center gap-2 min-h-11 text-inherit no-underline rounded-md" href="/" aria-label="X-wing ADMIN, home" data-leave="/" onClick={event => leaveTo(event, "/")}><Logo/><span className="font-sans text-[13px] font-semibold leading-none text-[#f1f3f7]">X-wing</span><small className="brand-context h-[13px] inline-flex items-center -translate-y-px text-xw-faint text-[11px] font-medium leading-none">ADMIN</small></a>
-      <div className="account-inline flex items-center gap-2 text-[#aeb6c5] text-xs">
+      <a className={BRAND} href="/" aria-label="X-wing ADMIN, home" data-leave="/" onClick={event => leaveTo(event, "/")}><Logo/><span className={BRAND_NAME}>X-wing</span><small className={BRAND_CONTEXT}>ADMIN</small></a>
+      <div className={ACCOUNT_INLINE}>
         <AccountMenu user={bootstrap.user} open={accountOpen} onToggle={onAccountToggle} onLeave={event => leaveTo(event, "/")}/>
-        <form id="logout-form" className="m-0" method="post" action="/_auth/logout"><button className="signout-button h-11 min-h-11 px-2 border border-solid border-xw-line-hi rounded-md bg-transparent text-[#aeb6c5] text-[11px] font-medium hover:border-[#67323b] hover:bg-[#24161d] hover:text-[#ff9ba3]" type="submit">Sign out</button></form>
+        <form id="logout-form" className="m-0" method="post" action="/_auth/logout"><button className={SIGNOUT} type="submit">Sign out</button></form>
       </div>
     </header>
     <main id="admin-main" className="admin-main mx-auto w-full max-w-[1320px] px-4 py-6 pb-16 md:px-12 md:py-14">
@@ -943,12 +962,12 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
       </section>
       <p id="admin-status" className="sr-only" role="status">{status}</p>
     </main>
-    <div className="notify-rail fixed right-8 bottom-8 flex flex-col items-end gap-2 z-rail pb-[env(safe-area-inset-bottom)] max-h-[calc(100vh-96px)] pointer-events-none [&>*]:pointer-events-auto max-[640px]:right-3 max-[640px]:bottom-4">
+    <div className={RAIL}>
       <AnimatePresence initial={false}>
-        {toast && <m.div key={toast.id} className={cn("toast relative min-h-[46px] grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-2 overflow-hidden border border-solid border-[#3a465c] rounded-lg bg-[#141b2a] px-3 pb-1 shadow-[0_16px_42px_rgba(0,0,0,.48)] text-[11px]", toast.kind, toast.kind === "error" ? "border-[#743943] bg-[#29171d] text-[#ffc1c7]" : "border-[#326d55] bg-[#10251e] text-[#b8f2d5]")} role={toast.kind === "error" ? "alert" : "status"} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0, transition: TOAST_ENTER }} exit={{ opacity: 0, y: 6, transition: TOAST_EXIT }}>
-          <span className="toast-icon w-6 h-6 grid place-items-center rounded-full bg-[rgba(255,255,255,.06)]"><svg className="ui-icon" viewBox="0 0 24 24" aria-hidden="true">{TOAST_ICONS[toast.kind]}</svg></span>
-          <span className="toast-message flex-1 min-w-0 [overflow-wrap:anywhere] font-semibold">{toast.message}</span>
-          <span className="toast-timer absolute inset-x-0 bottom-0 h-1 bg-current origin-left animate-[xw-toast-timer_linear_forwards]" aria-hidden="true" style={{ animationDuration: `${FEEDBACK_DURATION_MS}ms` }}/>
+        {toast && <m.div key={toast.id} className={cn(TOAST, toast.kind, toast.kind === "error" ? TOAST_ERROR : TOAST_SUCCESS)} role={toast.kind === "error" ? "alert" : "status"} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0, transition: TOAST_ENTER }} exit={{ opacity: 0, y: 6, transition: TOAST_EXIT }}>
+          <span className={TOAST_ICON}><svg className="ui-icon" viewBox="0 0 24 24" aria-hidden="true">{TOAST_ICONS[toast.kind]}</svg></span>
+          <span className={TOAST_MESSAGE}>{toast.message}</span>
+          <span className={TOAST_TIMER} aria-hidden="true" style={{ animationDuration: `${FEEDBACK_DURATION_MS}ms` }}/>
         </m.div>}
       </AnimatePresence>
     </div>

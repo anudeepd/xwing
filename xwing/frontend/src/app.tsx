@@ -4,7 +4,33 @@ import { AnimatePresence, LazyMotion, MotionConfig, domAnimation } from "motion/
 import * as m from "motion/react-m";
 import { escapeHtml, formatBytes, formatDate, prefersReducedMotion } from "./format";
 import { AuthOverlay } from "./auth-overlay";
+const BTN = `${CONTROL} ${CONTROL_COMPACT}`;
+const BTN_PRIMARY = `${CONTROL_PRIMARY} ${CONTROL_PRIMARY_COMPACT}`;
+const BTN_DANGER = CONTROL_DANGER;
+const BTN_GHOST = CONTROL_GHOST;
 import { cn } from "./lib/cn";
+import {
+  ACCOUNT_INLINE,
+  BRAND,
+  BRAND_CONTEXT,
+  BRAND_NAME,
+  CONTROL,
+  CONTROL_COMPACT,
+  CONTROL_DANGER,
+  CONTROL_GHOST,
+  CONTROL_PRIMARY,
+  CONTROL_PRIMARY_COMPACT,
+  MENU_ITEM,
+  RAIL,
+  SIGNOUT,
+  TOAST,
+  TOAST_ERROR,
+  TOAST_ICON,
+  TOAST_MESSAGE,
+  TOAST_SUCCESS,
+  TOAST_TIMER,
+} from "./ui";
+
 import { useModalFocus } from "./keyboard";
 import { nearestSurvivor, selectionRange } from "./selection";
 import { nextSort, normalizeSortPreference, sortFiles } from "./sort";
@@ -98,12 +124,6 @@ function Logo(): React.JSX.Element {
   </svg>;
 }
 
-/** The workspace's control set. Variants compose through `cn`, so a variant's
- *  colour always beats the base one instead of racing it in the stylesheet. */
-const BTN = "h-11 min-h-11 min-w-11 inline-flex items-center justify-center gap-2 px-3 border border-solid border-xw-line-hi rounded-md bg-xw-raised text-xw-text text-xs font-medium leading-normal no-underline whitespace-nowrap appearance-none cursor-pointer transition-[transform,border-color,background-color] duration-micro ease-xw [&:hover:not(:disabled)]:-translate-y-px [&:hover:not(:disabled)]:border-[#4b5873] [&:hover:not(:disabled)]:bg-[#172034] [&:active:not(:disabled)]:scale-[.96] disabled:opacity-[.42] disabled:cursor-not-allowed max-[640px]:w-11 max-[640px]:p-0 max-[640px]:[&>.label]:hidden";
-const BTN_PRIMARY = "border-xw-accent-border bg-xw-accent-fill text-white [&:hover:not(:disabled)]:bg-xw-accent-fill-hover [&:hover:not(:disabled)]:border-xw-accent [&:hover:not(:disabled)]:text-white max-[640px]:w-auto max-[640px]:px-3 max-[640px]:[&>.label]:inline";
-const BTN_DANGER = "text-[#ff9ba3] border-[#67323b] bg-[#24161d]";
-const BTN_GHOST = "border-transparent bg-transparent text-xw-muted";
 
 function Icon({ name }: { name: string }): React.JSX.Element {
   const paths: Record<string, React.ReactNode> = {
@@ -698,16 +718,16 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
         cannot itself become a heading without breaking the crumb row's layout. */}
     <h1 className="sr-only">{crumbLabel(directory.breadcrumbs[directory.breadcrumbs.length - 1]?.name ?? "")}</h1>
     <header className="topbar h-[52px] flex items-center justify-between m-0 px-4 border-0 border-b border-solid border-xw-line bg-[rgba(13,17,27,.94)] z-sticky max-[640px]:h-12 max-[640px]:px-3">
-      <a className="brand flex items-center gap-2 min-h-11 text-inherit no-underline rounded-md" href="/" aria-label="X-wing FILES, home" onClick={() => setPageLeaving(true)}><Logo/><span className="font-sans text-[13px] font-semibold leading-none text-[#f1f3f7]">X-wing</span><small className="brand-context h-[13px] inline-flex items-center -translate-y-px text-xw-faint text-[11px] font-medium leading-none">FILES</small></a>
-      {directory.user.authenticated ? <div className="account-inline flex items-center gap-2 text-[#aeb6c5] text-xs">{directory.admin ? <div className="account relative" ref={accountRef}>
+      <a className={BRAND} href="/" aria-label="X-wing FILES, home" onClick={() => setPageLeaving(true)}><Logo/><span className={BRAND_NAME}>X-wing</span><small className={BRAND_CONTEXT}>FILES</small></a>
+      {directory.user.authenticated ? <div className={ACCOUNT_INLINE}>{directory.admin ? <div className="account relative" ref={accountRef}>
         <button className="account-trigger h-11 min-h-11 flex items-center gap-2 px-2 border border-solid border-transparent rounded-md bg-transparent text-[#aeb6c5] text-xs hover:border-xw-line-hi hover:bg-xw-raised hover:text-xw-text aria-expanded:border-xw-line-hi aria-expanded:bg-xw-raised aria-expanded:text-xw-text max-[640px]:[&>span]:hidden" type="button" aria-haspopup="menu" aria-expanded={accountOpen} onClick={() => setAccountOpen(value => !value)}>
           <span>{directory.user.name}</span><Icon name="chevron"/>
         </button>
         {accountOpen && <div className="popover account-menu absolute right-0 top-[38px] z-popover min-w-[152px] p-1 border border-solid border-[#3b465c] rounded-[7px] bg-[#111827] shadow-[0_18px_45px_rgba(0,0,0,.46)] origin-top-right animate-[xw-surface-in_var(--xw-surface)_var(--xw-ease)]" role="menu" aria-label="Workspace navigation">
-          <a className={cn("menu-item w-full h-11 min-h-11 flex items-center px-2 border-0 rounded-[5px] bg-transparent text-[#b9c1ce] no-underline cursor-pointer text-xs hover:bg-xw-hover hover:text-xw-text", "active bg-xw-hover text-xw-text")} href="/" role="menuitem" aria-current="page">Files</a>
-          <a className="menu-item w-full h-11 min-h-11 flex items-center px-2 border-0 rounded-[5px] bg-transparent text-[#b9c1ce] no-underline cursor-pointer text-xs hover:bg-xw-hover hover:text-xw-text" href="/admin" role="menuitem" onClick={() => setPageLeaving(true)}>Admin panel</a>
+          <a className={cn(MENU_ITEM, "active bg-xw-hover text-xw-text")} href="/" role="menuitem" aria-current="page">Files</a>
+          <a className={MENU_ITEM} href="/admin" role="menuitem" onClick={() => setPageLeaving(true)}>Admin panel</a>
         </div>}
-      </div> : <span>{directory.user.name}</span>}<form id="logout-form" className="m-0" method="post" action="/_auth/logout" onSubmit={event => { event.preventDefault(); setAuthOverlay("logout"); const form = event.currentTarget; window.setTimeout(() => form.submit(), AUTH_REDIRECT_DELAY_MS); }}><button className="signout-button h-11 min-h-11 px-2 border border-solid border-xw-line-hi rounded-md bg-transparent text-[#aeb6c5] text-[11px] font-medium hover:border-[#67323b] hover:bg-[#24161d] hover:text-[#ff9ba3]" type="submit">Sign out</button></form></div> : <span className="anonymous-label px-2 text-[#a0a9b9] text-xs font-medium">anonymous</span>}
+      </div> : <span>{directory.user.name}</span>}<form id="logout-form" className="m-0" method="post" action="/_auth/logout" onSubmit={event => { event.preventDefault(); setAuthOverlay("logout"); const form = event.currentTarget; window.setTimeout(() => form.submit(), AUTH_REDIRECT_DELAY_MS); }}><button className={SIGNOUT} type="submit">Sign out</button></form></div> : <span className="anonymous-label px-2 text-[#a0a9b9] text-xs font-medium">anonymous</span>}
     </header>
 
     <main className={`workspace relative min-h-0 grid grid-rows-[auto_auto_minmax(0,1fr)] p-4 gap-3 max-w-none m-0 max-[640px]:p-2 max-[640px]:gap-2 ${dragging ? "dragging" : ""}`}>
@@ -777,7 +797,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
           stack and the upload dock. They stack instead of overlapping, and each
           one carries its own status/alert role so a message is announced
           exactly once. */}
-      <div className="notify-rail fixed right-8 bottom-8 flex flex-col items-end gap-2 z-rail pb-[env(safe-area-inset-bottom)] max-h-[calc(100vh-96px)] pointer-events-none [&>*]:pointer-events-auto max-[640px]:right-3 max-[640px]:bottom-4" ref={railRef}>
+      <div className={RAIL} ref={railRef}>
         <AnimatePresence initial={false}>{dropWaitState && <m.div key="drop-wait" className={cn("drop-wait w-[min(420px,calc(100vw-56px))] min-h-[42px] flex items-center gap-2 px-2 py-1 border border-solid rounded-[7px] bg-[rgba(20,24,39,.97)] shadow-[0_12px_32px_rgba(0,0,0,.38)] text-[11px]", dropWaitState === "delayed" ? "delayed border-[#6b5b38] text-[#e4c986]" : "border-xw-accent-border text-[#c9c2ef]")}
           initial={reduced ? false : { opacity: 0, y: 10, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={reduced ? { opacity: 1 } : { opacity: 0, y: 7, scale: 0.98 }} transition={{ duration: presenceDuration(reduced) }}>
           {dropWaitState === "preparing"
@@ -817,12 +837,12 @@ function ToastView({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
   }, [toast.id, toast.duration, dismiss]);
 
   const icon = toast.kind === "deleted" || toast.kind === "error" ? "trash" : "check";
-  return <m.div className={cn("toast relative min-h-[46px] grid grid-cols-[24px_minmax(0,1fr)_auto] items-center gap-2 overflow-hidden border border-solid border-[#3a465c] rounded-lg bg-[#141b2a] px-3 pb-1 shadow-[0_16px_42px_rgba(0,0,0,.48)] text-[11px]", toast.kind, toast.kind === "error" || toast.kind === "deleted" ? "border-[#743943] bg-[#29171d] text-[#ffc1c7]" : "border-[#326d55] bg-[#10251e] text-[#b8f2d5]")} role={toast.kind === "error" ? "alert" : "status"} layout
+  return <m.div className={cn(TOAST, toast.kind, toast.kind === "error" || toast.kind === "deleted" ? TOAST_ERROR : TOAST_SUCCESS)} role={toast.kind === "error" ? "alert" : "status"} layout
     initial={reduced ? false : { opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={reduced ? { opacity: 1 } : { opacity: 0, y: 6 }} transition={{ duration: presenceDuration(reduced) }}>
-    <span className="toast-icon w-6 h-6 grid place-items-center rounded-full bg-[rgba(255,255,255,.06)]"><Icon name={icon}/></span>
-    <span className="toast-message flex-1 min-w-0 [overflow-wrap:anywhere] font-semibold">{toast.message}</span>
+    <span className={TOAST_ICON}><Icon name={icon}/></span>
+    <span className={TOAST_MESSAGE}>{toast.message}</span>
     {toast.action && <button className="toast-action flex-none h-11 min-h-11 min-w-11 px-2 py-1 border border-solid border-[rgba(124,58,237,.58)] rounded-md bg-xw-accent-lo text-[#ddd6fe] cursor-pointer text-[11px] font-medium leading-none uppercase hover:border-xw-accent-border hover:bg-[rgba(124,58,237,.26)] focus-visible:border-xw-accent-border focus-visible:bg-[rgba(124,58,237,.26)] focus-visible:outline-none" onClick={() => { dismiss(); toast.action?.run(); }}>{toast.action.label}</button>}
-    <span className="toast-timer absolute inset-x-0 bottom-0 h-1 bg-current origin-left animate-[xw-toast-timer_linear_forwards]" aria-hidden="true" style={{ animationDuration: `${toast.duration}ms` }}/>
+    <span className={TOAST_TIMER} aria-hidden="true" style={{ animationDuration: `${toast.duration}ms` }}/>
   </m.div>;
 }
 

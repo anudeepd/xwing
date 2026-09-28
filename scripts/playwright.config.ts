@@ -7,7 +7,11 @@ export default defineConfig({
   expect: { timeout: 5_000, toHaveScreenshot: { animations: "disabled", caret: "hide", maxDiffPixelRatio: 0.01 } },
   fullyParallel: true,
   forbidOnly: true,
-  use: { baseURL: "http://127.0.0.1:8990", colorScheme: "dark", reducedMotion: "reduce", trace: "retain-on-failure" },
+  // `reducedMotion` is a context option, not a top-level `use` key: spelled at
+  // the top level it is ignored without a warning, and then every presence
+  // animation runs — which stalls whenever the headless page stops painting
+  // frames, leaving elements that should have gone.
+  use: { baseURL: "http://127.0.0.1:8990", colorScheme: "dark", contextOptions: { reducedMotion: "reduce" }, trace: "retain-on-failure" },
   webServer: [
     {
       command: "uv run xwing serve --root e2e/fixtures --port 8990 --no-open --users-config e2e/users.yaml",
