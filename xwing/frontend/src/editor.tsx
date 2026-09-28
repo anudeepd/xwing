@@ -1,5 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { AnimatePresence, LazyMotion, MotionConfig, domAnimation } from "motion/react";
+import * as m from "motion/react-m";
+import { cn } from "./lib/cn";
 import { formatBytes, prefersReducedMotion } from "./format";
 import { useModalFocus } from "./keyboard";
 import { AUTH_OVERLAY_COPY, AUTH_REDIRECT_EVENT, beginAuthRedirect, redirectToLoginNow } from "./shared.js";
@@ -44,6 +47,17 @@ const AUTH_REDIRECT_DELAY_MS = 1500;
 // size and retries only the bytes the server has not accepted yet.
 const SAVE_CHUNK_BYTES = 8 * 1024 * 1024;
 
+// The motion numbers the editor's stylesheet used to own: the 340ms page
+// entrance (`xw-page-in`), the 150/170ms page-leaving pair the handover waits
+// on, and the 180ms/160ms surface pair a card appears and leaves with. A
+// reduced-motion user gets the same states with no travel and no delay.
+const PAGE_ENTER_SECONDS = 0.34;
+const LEAVING_OPACITY_SECONDS = 0.15;
+const LEAVING_MOVE_SECONDS = 0.17;
+const SURFACE_ENTER_SECONDS = 0.18;
+const SURFACE_EXIT_SECONDS = 0.16;
+const XW_EASE: [number, number, number, number] = [0.16, 1, 0.3, 1];
+
 function saveChunkBytes(boot: EditorBootstrap): number {
   const serverMax = boot.maxChunkBytes > 0 ? boot.maxChunkBytes : SAVE_CHUNK_BYTES;
   return Math.max(1, Math.min(SAVE_CHUNK_BYTES, serverMax));
@@ -66,6 +80,7 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
   const [authOverlay, setAuthOverlay] = useState<keyof typeof AUTH_OVERLAY_COPY | null>(null);
   const [pageLeaving, setPageLeaving] = useState(false);
   const canEdit = boot.canWrite && !boot.truncated;
+  const reduceMotion = prefersReducedMotion();
 
   // A 401, a rejected upload or the idle timer all announce through one event,
   // so the editor shows the same overlay the file browser does.
@@ -237,23 +252,57 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
 
   const leave = (): void => { if (!confirmLeave) return; allowLeave.current = true; if (confirmLeave === "__logout__") { setAuthOverlay("logout"); window.setTimeout(() => logoutForm.current?.submit(), AUTH_REDIRECT_DELAY_MS); } else navigateAway(confirmLeave); };
 
-  return <div className={`editor-app ${pageLeaving ? "page-leaving" : ""}`}>
+  return <m.div
+    className={cn(
+      "editor-app grid h-full grid-rows-[52px_minmax(0,1fr)] bg-xw-bg font-sans text-xw-text",
+      pageLeaving && "pointer-events-none",
+    )}
+    initial={reduceMotion ? false : { opacity: 0, y: 6 }}
+    animate={pageLeaving ? { opacity: 0, y: -5 } : { opacity: 1, y: 0 }}
+    transition={pageLeaving
+      ? { opacity: { duration: reduceMotion ? 0 : LEAVING_OPACITY_SECONDS }, y: { duration: reduceMotion ? 0 : LEAVING_MOVE_SECONDS } }
+      : { duration: reduceMotion ? 0 : PAGE_ENTER_SECONDS, ease: XW_EASE }}
+  >
     {/* The editor's view heading; the visible file name sits in the topbar. */}
     <h1 id="editor-title" className="sr-only">{boot.filename}</h1>
-    <header className="topbar editor-topbar"><a className="brand" href="/" aria-label="X-wing EDITOR, home" onClick={event => { event.preventDefault(); requestLeave("/"); }}><Logo/><span>X-wing</span><small>EDITOR</small></a><div className="editor-heading"><strong>{boot.filename}</strong><span role="status" aria-live="polite">{status || (dirty ? "Unsaved changes" : boot.displayPath)}</span></div><div className="editor-actions"><a className="button" href={boot.path} download>Download</a><button className="button primary" disabled={!canEdit || !dirty} onClick={() => void save()}>Save</button>{boot.user.authenticated ? <div className="account-inline"><span>{boot.user.name}</span><form ref={logoutForm} id="logout-form" method="post" action="/_auth/logout" onSubmit={event => { event.preventDefault(); if (dirty) setConfirmLeave("__logout__"); else { setAuthOverlay("logout"); const form = event.currentTarget; window.setTimeout(() => form.submit(), AUTH_REDIRECT_DELAY_MS); } }}><button className="signout-button" type="submit">Sign out</button></form></div> : <span className="anonymous-label">anonymous</span>}</div></header>
-    {(!boot.canWrite || boot.truncated) && <div className="editor-notices">
-      {!boot.canWrite && <div className="readonly-notice">Read-only access. Saving changes is disabled.</div>}
-      {boot.truncated && <div className="readonly-notice">Showing first {formatBytes(boot.previewBytes)} of {formatBytes(boot.totalSize)}. File too large to edit here — use Download for the full file.</div>}
-    </div>}
-    <main className="editor-body" aria-labelledby="editor-title"><aside className="editor-rail"><button className="editor-back" onClick={() => requestLeave(boot.directory)} aria-label="Back to files" title="Back to files">←</button><span>{boot.extension || "TXT"}</span></aside><div className="editor-canvas" ref={mount}/></main>
-    {confirmLeave && <DiscardDialog onCancel={() => setConfirmLeave(null)} onDiscard={leave}/>} 
+    {/* `.topbar` still declares the flex display and the phone padding for both
+        shells, so the editor's grid override carries the important marker until
+        the file panel drops that shared rule. */}
+    <header className="topbar editor-topbar !grid grid-cols-[1fr_minmax(220px,2fr)_1fr] max-[700px]:grid-cols-[auto_minmax(0,1fr)_auto] max-[700px]:!px-3"><a className="brand" href="/" aria-label="X-wing EDITOR, home" onClick={event => { event.preventDefault(); requestLeave("/"); }}><Logo/><span className="max-[700px]:hidden">X-wing</span><small className="max-[700px]:!hidden">EDITOR</small></a><div className="editor-heading flex min-w-0 flex-col items-center leading-tight max-[700px]:items-start max-[700px]:pl-2"><strong className="max-w-full truncate font-mono text-xs font-medium">{boot.filename}</strong><span className="max-w-full truncate font-mono text-[11px] text-xw-faint" role="status" aria-live="polite">{status || (dirty ? "Unsaved changes" : boot.displayPath)}</span></div><div className="editor-actions flex items-center justify-end gap-1"><a className="button max-[700px]:!hidden" href={boot.path} download>Download</a><button className="button primary" disabled={!canEdit || !dirty} onClick={() => void save()}>Save</button>{boot.user.authenticated ? <div className="account-inline"><span>{boot.user.name}</span><form ref={logoutForm} id="logout-form" method="post" action="/_auth/logout" onSubmit={event => { event.preventDefault(); if (dirty) setConfirmLeave("__logout__"); else { setAuthOverlay("logout"); const form = event.currentTarget; window.setTimeout(() => form.submit(), AUTH_REDIRECT_DELAY_MS); } }}><button className="signout-button" type="submit">Sign out</button></form></div> : <span className="anonymous-label">anonymous</span>}</div></header>
+    <AnimatePresence>
+      {(!boot.canWrite || boot.truncated) && <m.div
+        key="notices"
+        className="editor-notices absolute right-3 top-[62px] z-raise flex flex-col items-end gap-1"
+        initial={reduceMotion ? false : { opacity: 0, y: 8, scale: 0.97 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: 7, scale: 0.98, transition: { duration: reduceMotion ? 0 : SURFACE_EXIT_SECONDS, ease: "easeIn" } }}
+        transition={{ duration: reduceMotion ? 0 : SURFACE_ENTER_SECONDS, ease: XW_EASE }}
+      >
+        {!boot.canWrite && <div className="readonly-notice !m-0">Read-only access. Saving changes is disabled.</div>}
+        {boot.truncated && <div className="readonly-notice !m-0">Showing first {formatBytes(boot.previewBytes)} of {formatBytes(boot.totalSize)}. File too large to edit here — use Download for the full file.</div>}
+      </m.div>}
+    </AnimatePresence>
+    <main className="editor-body grid min-h-0 grid-cols-[45px_minmax(0,1fr)] max-[700px]:grid-cols-[38px_minmax(0,1fr)]" aria-labelledby="editor-title"><aside className="editor-rail flex flex-col items-center gap-3 border-r border-solid border-xw-line bg-[#0b1019] pt-2"><button className="editor-back h-[31px] w-[31px] cursor-pointer rounded-md border border-solid border-xw-line-hi bg-xw-raised text-xw-muted hover:bg-xw-hover hover:text-xw-text" onClick={() => requestLeave(boot.directory)} aria-label="Back to files" title="Back to files">←</button><span className="font-mono text-[11px] text-xw-faint [writing-mode:vertical-rl]">{boot.extension || "TXT"}</span></aside><div className="editor-canvas min-h-0 min-w-0 overflow-hidden" ref={mount}/></main>
+    <AnimatePresence>{confirmLeave && <DiscardDialog key="discard" onCancel={() => setConfirmLeave(null)} onDiscard={leave}/>}</AnimatePresence>
     {authOverlay && <div className="auth-overlay" role="status" aria-live="polite"><div className="auth-overlay-card"><div className="auth-overlay-row"><span className="auth-pulse"><span/></span><div><h2>{AUTH_OVERLAY_COPY[authOverlay].title}</h2><p>{AUTH_OVERLAY_COPY[authOverlay].message}</p></div></div>{AUTH_OVERLAY_COPY[authOverlay].action && <button className="button primary" type="button" onClick={() => redirectToLoginNow()}>{AUTH_OVERLAY_COPY[authOverlay].action}</button>}</div></div>}
-  </div>;
+  </m.div>;
 }
 
+/**
+ * The unsaved-changes dialog. Its markup is the shared `.modal-backdrop` /
+ * `.modal` shell, which owns the entrance (and is shared with the file
+ * browser), so only the departure is the editor's: `AnimatePresence` holds it
+ * for the 160ms `xw-surface-out` the dialog used to cut short.
+ */
 function DiscardDialog({ onCancel, onDiscard }: { onCancel: () => void; onDiscard: () => void }): React.JSX.Element {
   const modalRef = useModalFocus<HTMLDivElement>(onCancel);
-  return <div ref={modalRef} className="modal-backdrop"><div className="modal" role="dialog" aria-modal="true" aria-labelledby="discard-title" aria-describedby="discard-description"><h2 id="discard-title">Discard unsaved changes?</h2><p id="discard-description">This file has unsaved edits. Leave without saving?</p><div className="modal-actions"><button className="button" onClick={onCancel}>Keep editing</button><button data-autofocus className="button danger" onClick={onDiscard}>Discard changes</button></div></div></div>;
+  const reduceMotion = prefersReducedMotion();
+  const exit = reduceMotion ? { duration: 0 } : { duration: SURFACE_EXIT_SECONDS, ease: "easeIn" } as const;
+  return <m.div ref={modalRef} className="modal-backdrop" initial={false} animate={{ opacity: 1 }} exit={{ opacity: 0, transition: exit }}>
+    <m.div className="modal" role="dialog" aria-modal="true" aria-labelledby="discard-title" aria-describedby="discard-description" initial={false} animate={{ opacity: 1 }} exit={{ opacity: 0, y: 7, scale: 0.98, transition: exit }}>
+      <h2 id="discard-title">Discard unsaved changes?</h2><p id="discard-description">This file has unsaved edits. Leave without saving?</p><div className="modal-actions"><button className="button" onClick={onCancel}>Keep editing</button><button data-autofocus className="button danger" onClick={onDiscard}>Discard changes</button></div>
+    </m.div>
+  </m.div>;
 }
 
 
@@ -267,4 +316,10 @@ function detectLanguage(cm: CodeMirrorApi, extension: string): unknown[] {
 
 const node = document.getElementById("xwing-editor-bootstrap");
 const root = document.getElementById("xwing-editor-root");
-if (node?.textContent && root) createRoot(root).render(<EditorApp boot={JSON.parse(node.textContent) as EditorBootstrap}/>);
+if (node?.textContent && root) createRoot(root).render(
+  <LazyMotion features={domAnimation} strict>
+    <MotionConfig reducedMotion="user">
+      <EditorApp boot={JSON.parse(node.textContent) as EditorBootstrap}/>
+    </MotionConfig>
+  </LazyMotion>,
+);

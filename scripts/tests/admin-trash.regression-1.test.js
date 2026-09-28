@@ -28,6 +28,8 @@ describe("admin trash selection labels", () => {
     vi.resetModules();
     window.history.replaceState(null, "", "?tab=trash");
     document.body.dataset.authIdleTimeout = "0";
+    window.__xwingAdminRoot?.unmount();
+    window.__xwingAdminRoot = undefined;
     document.body.innerHTML = `
       <div id="admin-root"></div>
       <div id="auth-overlay" hidden>
@@ -53,7 +55,7 @@ describe("admin trash selection labels", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    await import("../../xwing/frontend/src/admin.ts?admin-trash-labels-regression");
+    await import("../../xwing/frontend/src/admin.tsx?admin-trash-labels-regression");
     await vi.waitFor(() => expect(document.querySelectorAll("[data-select-trash]")).toHaveLength(3));
 
     expect([...document.querySelectorAll("[data-select-trash]")].map(input => input.getAttribute("aria-label"))).toEqual([

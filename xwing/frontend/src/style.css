@@ -1,6 +1,5 @@
 @tailwind base;
 @tailwind components;
-@tailwind utilities;
 
 /* Inter (latin variable subset) — the UI typeface, self-hosted. */
 @font-face{font-family:Inter;src:url('/static/fonts/inter-latin-var.woff2') format('woff2');font-weight:100 900;font-style:normal;font-display:swap}
@@ -53,8 +52,6 @@
 .editor-canvas .cm-searchMatch{background:rgba(167,139,250,.26)}
 .editor-app :focus-visible{outline:2px solid var(--xw-accent);outline-offset:2px}
 
-/* React shell polish overrides legacy editor defaults. */
-.editor-app .account-trigger{font-size:12px}
 @media(max-width:640px){.drop-target{inset:8px}}
 
 /* ── 2026 React workspace ─────────────────────────────────────────────────── */
@@ -69,6 +66,22 @@
  --xw-mono:'JetBrains Mono',ui-monospace,monospace;
  --xw-ease:cubic-bezier(.16,1,.3,1);color-scheme:dark;
  --z-base:1;--z-raise:10;--z-sticky:30;--z-popover:60;--z-drag:70;--z-rail:80;--z-modal:100;
+ /* The admin console's panel palette: the same accent roles as the app, one
+    step darker for the record tables. Tailwind's `admin-*` colours read these. */
+ --admin-bg: #080b12;
+ --admin-panel: #111722;
+ --admin-raised: #171e2d;
+ --admin-line: #2b3548;
+ --admin-line-hi: #3b4961;
+ --admin-text: #eef0f5;
+ --admin-muted: #9ca7ba;
+ --admin-faint: #788397;
+ --admin-accent: #a78bfa;
+ --admin-accent-hi: #c4b5fd;
+ --admin-good: #75d6a4;
+ --admin-warn: #edc979;
+ --admin-danger: #ff9ba3;
+ --admin-radius: 10px;
 }
 
 /* Typographic wrapping: headings balance, body copy stays pretty. */
@@ -80,8 +93,8 @@
 html,body,#xwing-root{height:100%}
 body:has(.xw-app){overflow:hidden;background:var(--xw-bg);color:var(--xw-text);font:13px/1.45 Inter,system-ui,sans-serif}
 .xw-app{height:100%;display:grid;grid-template-rows:52px minmax(0,1fr);isolation:isolate;background:var(--xw-bg)}
-.xw-app,.editor-app{animation:xw-page-in var(--xw-page-in) var(--xw-ease);transition:opacity 150ms ease-in,transform 170ms ease-in}
-.xw-app.page-leaving,.editor-app.page-leaving{opacity:0;transform:translateY(-5px);pointer-events:none}
+.xw-app{animation:xw-page-in var(--xw-page-in) var(--xw-ease);transition:opacity 150ms ease-in,transform 170ms ease-in}
+.xw-app.page-leaving{opacity:0;transform:translateY(-5px);pointer-events:none}
 :where(.xw-app) :where(button, input){font:inherit}.xw-app button{color:inherit}
 .topbar{height:52px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;border-bottom:1px solid var(--xw-line);background:rgba(13,17,27,.94);z-index:var(--z-sticky);margin:0}
 .brand{display:flex;align-items:center;gap:8px;color:inherit;text-decoration:none;border-radius:6px}.brand>span{font-family:Inter,system-ui,sans-serif;font-size:13px;font-weight:600;line-height:1;color:#f1f3f7}.brand small{height:13px;display:inline-flex;align-items:center;color:var(--xw-faint);font:500 11px/1 Inter,system-ui,sans-serif;transform:translateY(-1px)}
@@ -153,8 +166,10 @@ body:has(.modal-backdrop) .file-table,body:has(.modal-backdrop) .admin-shell{ove
 @media(prefers-reduced-motion:reduce){.xw-app,.editor-app,.xw-app *,.editor-app *,.xw-app *::before,.editor-app *::before,.xw-app *::after,.editor-app *::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
 @keyframes xw-spin{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.boot-loading::before{animation-duration:.01ms!important}}
-.editor-app{height:100%;display:grid;grid-template-rows:52px minmax(0,1fr);background:var(--xw-bg);color:var(--xw-text);font-family:Inter,system-ui,sans-serif}.editor-topbar{display:grid;grid-template-columns:1fr minmax(220px,2fr) 1fr}.editor-heading{min-width:0;display:flex;flex-direction:column;align-items:center;line-height:1.25}.editor-heading strong{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:500 12px 'JetBrains Mono',monospace}.editor-heading span{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--xw-faint);font:11px 'JetBrains Mono',monospace}.editor-actions{display:flex;align-items:center;justify-content:flex-end;gap:4px}.editor-actions .account{margin-left:2px}.editor-body{min-height:0;display:grid;grid-template-columns:45px minmax(0,1fr)}.editor-rail{display:flex;flex-direction:column;align-items:center;gap:12px;border-right:1px solid var(--xw-line);background:#0b1019;padding-top:8px}.editor-rail span{writing-mode:vertical-rl;color:var(--xw-faint);font:11px 'JetBrains Mono',monospace}.editor-back{width:31px;height:31px;border:1px solid var(--xw-line-hi);border-radius:6px;background:var(--xw-raised);color:var(--xw-muted);cursor:pointer}.editor-back:hover{color:var(--xw-text);background:var(--xw-hover)}.editor-canvas{min-width:0;min-height:0;overflow:hidden}.editor-canvas>.cm-editor{height:100%;font:12px/1.6 var(--xw-mono)}.editor-canvas .cm-gutters{background:#0b1019;border-right-color:var(--xw-line)}.editor-canvas .cm-editor,.editor-canvas .cm-scroller{background:#0d111b}.editor-app .account-trigger{font-size:11px}
-@media(max-width:700px){.editor-canvas .cm-panels .cm-search .cm-textfield{font-size:16px}.editor-topbar{grid-template-columns:auto minmax(0,1fr) auto;padding:0 12px}.editor-topbar .brand>span,.editor-topbar .brand small,.editor-actions>a,.editor-actions .account{display:none}.editor-heading{align-items:flex-start;padding-left:8px}.editor-body{grid-template-columns:38px minmax(0,1fr)}.editor-actions .button{width:auto}.editor-rail{padding-top:8px}}
+/* CodeMirror's own DOM keeps its styling here: the editor surface and its
+   search panel are not our markup, so no utility can reach them. */
+.editor-canvas>.cm-editor{height:100%;font:12px/1.6 var(--xw-mono)}.editor-canvas .cm-gutters{background:#0b1019;border-right-color:var(--xw-line)}.editor-canvas .cm-editor,.editor-canvas .cm-scroller{background:#0d111b}
+@media(max-width:700px){.editor-canvas .cm-panels .cm-search .cm-textfield{font-size:16px}}
 #xwing-editor-root{height:100%}
 @font-face {
  font-family: 'JetBrains Mono';
@@ -360,6 +375,23 @@ main:focus-visible {
  min-width: 0;
 }
 
+/* ── Admin console ───────────────────────────────────────────────────────────
+   The console itself is styled with utilities (see src/admin.tsx); only what
+   the utilities cannot express lives here: the page surface it is mounted on,
+   the focus ring it shares with the other surfaces, and the two rules that have
+   to outrank the file browser's own class rules. */
+.admin-body {
+ min-height: 100dvh;
+ margin: 0;
+ background: var(--admin-bg);
+ color: var(--admin-text);
+ font-family: Inter, system-ui, sans-serif;
+}
+.admin-body :focus-visible { outline: 2px solid var(--admin-accent); outline-offset: 2px; }
+/* The app caps toast width inside `.toast-stack`; the console's rail holds the
+   bare toast, so the toast takes the cap itself. */
+.notify-rail > .toast { max-width: min(420px, calc(100vw - 56px)); }
+
 /* ── File table ─────────────────────────────────────────────────────────────── */
 .table-wrap {
  overflow-x: auto;
@@ -395,19 +427,6 @@ main:focus-visible {
  outline: none;
 }
 
-.editor-notices {
- position: absolute;
- top: 62px;
- right: 12px;
- z-index: var(--z-raise);
- display: flex;
- flex-direction: column;
- gap:4px;
- align-items: flex-end;
-}
-.editor-notices .readonly-notice {
- margin: 0;
-}
 
 .cm-editor {
  height: 100%;
@@ -436,7 +455,6 @@ main:focus-visible {
 .editor-canvas .cm-gutters{color:#4f5c72}
 .editor-canvas .cm-activeLine{background:rgba(124,106,210,.07)}
 .editor-canvas .cm-activeLineGutter{background:#111827;color:#8995aa}
-.editor-app .account-trigger{font-size:12px}
 @media(max-width:640px){.drop-target{inset:8px}}
 
 /* Keep Admin account navigation aligned with Files shell. */
@@ -460,3 +478,7 @@ main:focus-visible {
 }
 .icon-button, .row-actions .icon-button, .drop-wait .icon-button { width:44px; height:44px; min-width:44px; min-height:44px; }
 .brand, .skip-link { min-height: 44px; }
+
+/* Utilities come last, on purpose: a converted element must be able to
+   override the rule it replaced while both are still in the file. */
+@tailwind utilities;

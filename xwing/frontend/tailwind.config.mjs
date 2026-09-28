@@ -48,6 +48,12 @@ export default {
           danger: 'var(--admin-danger)',
         },
       },
+      // The select chevron the console used to draw from admin.css. A data URI
+      // is not a colour and not a spacing value, so it lives here, once.
+      backgroundImage: {
+        'select-chevron':
+          "url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='m7 10 5 5 5-5' fill='none' stroke='%239ca7ba' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E\")",
+      },
       fontFamily: {
         sans: ['Inter', 'system-ui', 'sans-serif'],
         mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace'],

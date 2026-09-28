@@ -39,6 +39,8 @@ describe("admin toast shape", () => {
     document.body.dataset.authIdleTimeout = "0";
     // The confirm dialog reads the reduced-motion preference before it resolves.
     window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+    window.__xwingAdminRoot?.unmount();
+    window.__xwingAdminRoot = undefined;
     document.body.innerHTML = `
       <div id="admin-root"></div>
       <div id="auth-overlay" hidden>
@@ -52,7 +54,7 @@ describe("admin toast shape", () => {
   /** Drives the purge form, which is the shortest path to a real admin toast. */
   async function purge(handler) {
     vi.stubGlobal("fetch", fetchMock(handler));
-    await import("../../xwing/frontend/src/admin.ts?admin-toast-regression");
+    await import("../../xwing/frontend/src/admin.tsx?admin-toast-regression");
     await vi.waitFor(() => expect(document.querySelector("#audit-purge-form")).not.toBeNull());
 
     const form = document.querySelector("#audit-purge-form");

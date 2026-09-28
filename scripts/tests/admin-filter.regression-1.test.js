@@ -22,6 +22,8 @@ describe("admin activity filters", () => {
     vi.resetModules();
     window.history.replaceState(null, "", "?tab=activity");
     document.body.dataset.authIdleTimeout = "0";
+    window.__xwingAdminRoot?.unmount();
+    window.__xwingAdminRoot = undefined;
     document.body.innerHTML = `
       <div id="admin-root"></div>
       <div id="auth-overlay" hidden>
@@ -45,7 +47,7 @@ describe("admin activity filters", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    await import("../../xwing/frontend/src/admin.ts?admin-filter-regression");
+    await import("../../xwing/frontend/src/admin.tsx?admin-filter-regression");
     await vi.waitFor(() => expect(document.getElementById("activity-filter")).not.toBeNull());
 
     const username = document.getElementById("activity-user");

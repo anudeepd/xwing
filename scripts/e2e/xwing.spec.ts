@@ -542,6 +542,16 @@ test("responsive browser has no horizontal overflow", async ({ page }) => {
   await expect(page.getByRole("button", { name: "New folder" })).toBeVisible();
 });
 
+// The editor and the console animate their entrance with motion. A missing
+// `LazyMotion` provider leaves every `m.*` component at its initial state, so the
+// surface renders, passes every DOM assertion, and is still invisible. Paint is
+// the assertion that catches that.
+test("a motion-driven surface is painted, not just mounted", async ({ page }) => {
+  await page.goto("/README.md?edit");
+  await expect(page.locator(".editor-app")).toHaveCSS("opacity", "1");
+  await expect(page.locator(".editor-app")).toHaveCSS("transform", "none");
+});
+
 test("editor controls keep the same appearance across browser engines", async ({ page }) => {
   await page.goto("/README.md?edit");
   const download = page.getByRole("link", { name: "Download" });

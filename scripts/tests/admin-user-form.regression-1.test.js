@@ -33,6 +33,8 @@ describe("admin user form errors", () => {
     window.history.replaceState(null, "", "?tab=users");
     document.body.dataset.authIdleTimeout = "0";
     window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+    window.__xwingAdminRoot?.unmount();
+    window.__xwingAdminRoot = undefined;
     document.body.innerHTML = `
       <div id="admin-root"></div>
       <div id="auth-overlay" hidden>
@@ -46,7 +48,7 @@ describe("admin user form errors", () => {
   async function mount({ save } = {}) {
     const { mock, calls } = routeMock({ save });
     vi.stubGlobal("fetch", mock);
-    await import("../../xwing/frontend/src/admin.ts?admin-user-form-regression");
+    await import("../../xwing/frontend/src/admin.tsx?admin-user-form-regression");
     await vi.waitFor(() => expect(document.querySelector("#user-form")).not.toBeNull());
     return calls;
   }

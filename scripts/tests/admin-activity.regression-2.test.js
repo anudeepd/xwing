@@ -44,6 +44,8 @@ describe("admin bulk activity details", () => {
     vi.resetModules();
     window.history.replaceState(null, "", "?tab=activity");
     document.body.dataset.authIdleTimeout = "0";
+    window.__xwingAdminRoot?.unmount();
+    window.__xwingAdminRoot = undefined;
     document.body.innerHTML = `
       <div id="admin-root"></div>
       <div id="auth-overlay" hidden>
@@ -66,7 +68,7 @@ describe("admin bulk activity details", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    await import("../../xwing/frontend/src/admin.ts?admin-activity-details-regression");
+    await import("../../xwing/frontend/src/admin.tsx?admin-activity-details-regression");
     await vi.waitFor(() => expect(document.querySelectorAll(".activity-action")).toHaveLength(2));
 
     expect([...document.querySelectorAll(".activity-action")].map(element => element.textContent)).toEqual([

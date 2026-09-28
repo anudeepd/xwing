@@ -37,6 +37,8 @@ describe("admin console announcements and confirm focus", () => {
     window.history.replaceState(null, "", "?tab=activity");
     document.body.dataset.authIdleTimeout = "0";
     window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+    window.__xwingAdminRoot?.unmount();
+    window.__xwingAdminRoot = undefined;
     document.body.innerHTML = `
       <div id="admin-root"></div>
       <div id="auth-overlay" hidden>
@@ -49,7 +51,7 @@ describe("admin console announcements and confirm focus", () => {
   });
 
   async function mount() {
-    await import("../../xwing/frontend/src/admin.ts?admin-a11y-regression");
+    await import("../../xwing/frontend/src/admin.tsx?admin-a11y-regression");
     await vi.waitFor(() => expect(document.querySelector("#audit-purge-form")).not.toBeNull());
   }
 

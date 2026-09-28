@@ -1453,9 +1453,6 @@ class TestAdminConsole:
             assert bootstrap(directory)["admin"] is True
             assert "admin-bootstrap" in page.text
             assert asset_url("admin.js") in page.text
-            admin_css = client.get(asset_url("admin.css"))
-            assert admin_css.status_code == 200
-            assert admin_css.headers["content-type"].startswith("text/css")
             admin_js = client.get(asset_url("admin.js"))
             assert admin_js.status_code == 200
             assert admin_js.headers["content-type"].startswith("text/javascript")

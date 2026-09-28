@@ -3,10 +3,10 @@
 // `asset()` expects.
 //
 // The Python app owns the HTML, so Vite runs without an index.html: the entries
-// are the three React/vanilla roots plus the two stylesheets the Jinja
-// templates link. The emitted JS keeps Vite's own hashed names, because its
-// chunk graph references them; only the CSS is renamed here, after the bundled
-// font URLs inside it have been rewritten.
+// are the three React roots plus the stylesheet the Jinja templates link. The
+// emitted JS keeps Vite's own hashed names, because its chunk graph references
+// them; only the CSS is renamed here, after the bundled font URLs inside it have
+// been rewritten.
 //
 // Run with: node build-frontend.mjs
 
@@ -67,7 +67,7 @@ const entryFile = (source) => {
 const manifest = {
   "app.js": entryFile("src/app.tsx"),
   "editor.js": entryFile("src/editor.tsx"),
-  "admin.js": entryFile("src/admin.ts"),
+  "admin.js": entryFile("src/admin.tsx"),
   "codemirror-bundle.js": codemirrorHashed,
 };
 
@@ -75,7 +75,6 @@ const manifest = {
 // bytes, so a font change moves the stylesheet's cache key with it.
 const CSS_ENTRIES = [
   { input: "style", key: "style.css", stem: "style" },
-  { input: "admin-styles", key: "admin.css", stem: "admin" },
 ];
 for (const name of readdirSync(outDir)) {
   if (!name.endsWith(".css")) continue;
@@ -92,7 +91,7 @@ for (const name of readdirSync(outDir)) {
   manifest[key] = hashed;
 }
 
-for (const target of ["app.js", "editor.js", "admin.js", "style.css", "admin.css"]) {
+for (const target of ["app.js", "editor.js", "admin.js", "style.css"]) {
   if (!manifest[target]) throw new Error(`Build produced no file for ${target}`);
 }
 

@@ -38,9 +38,8 @@ export default defineConfig({
       input: {
         app: path.resolve(__dirname, 'src/app.tsx'),
         editor: path.resolve(__dirname, 'src/editor.tsx'),
-        admin: path.resolve(__dirname, 'src/admin.ts'),
+        admin: path.resolve(__dirname, 'src/admin.tsx'),
         style: path.resolve(__dirname, 'src/style.css'),
-        'admin-styles': path.resolve(__dirname, 'src/admin.css'),
       },
       output: {
         entryFileNames: '[name]-[hash].js',
