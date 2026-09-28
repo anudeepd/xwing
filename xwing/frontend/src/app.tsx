@@ -32,6 +32,7 @@ import {
   TOAST_MESSAGE,
   TOAST_SUCCESS,
   TOAST_TIMER,
+  TOPBAR,
 } from "./ui";
 
 import { useModalFocus } from "./keyboard";
@@ -720,7 +721,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     {/* The browser's view heading. The visible label is the breadcrumb, which
         cannot itself become a heading without breaking the crumb row's layout. */}
     <h1 className="sr-only">{crumbLabel(directory.breadcrumbs[directory.breadcrumbs.length - 1]?.name ?? "")}</h1>
-    <header className="topbar h-[52px] flex items-center justify-between m-0 px-4 border-0 border-b border-solid border-xw-line bg-[rgba(13,17,27,.94)] z-sticky max-[640px]:h-12 max-[640px]:px-3">
+    <header className={cn("topbar", TOPBAR)}>
       <a className={BRAND} href="/" aria-label="X-wing FILES, home" onClick={() => setPageLeaving(true)}><Logo/><span className={BRAND_NAME}>X-wing</span><small className={BRAND_CONTEXT}>FILES</small></a>
       {directory.user.authenticated ? <div className={ACCOUNT_INLINE}>{directory.admin ? <div className="account relative" ref={accountRef}>
         <button className="account-trigger h-8 min-h-8 flex items-center gap-2 px-2 border border-solid border-transparent rounded-md bg-transparent text-[#aeb6c5] text-xs hover:border-xw-line-hi hover:bg-xw-raised hover:text-xw-text aria-expanded:border-xw-line-hi aria-expanded:bg-xw-raised aria-expanded:text-xw-text max-[640px]:[&>span]:hidden" type="button" aria-haspopup="menu" aria-expanded={accountOpen} onClick={() => setAccountOpen(value => !value)}>

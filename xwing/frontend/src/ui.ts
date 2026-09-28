@@ -66,6 +66,16 @@ export const TOAST_ICON = "toast-icon w-6 h-6 grid place-items-center rounded-fu
 export const TOAST_MESSAGE = "toast-message flex-1 min-w-0 [overflow-wrap:anywhere] font-semibold";
 export const TOAST_TIMER = "toast-timer absolute inset-x-0 bottom-0 h-1 bg-current origin-left animate-[xw-toast-timer_linear_forwards]";
 
+/**
+ * The header bar, shared by all three surfaces. It replaced a `.topbar` rule
+ * that all three inherited; when that rule went, only the file browser kept the
+ * values inline and the console and the editor fell through to a bare
+ * `header {}` reset with a lighter rule, no background and a stray margin.
+ */
+export const TOPBAR =
+  "h-[52px] max-[640px]:h-12 flex items-center justify-between m-0 px-4 max-[640px]:px-3 " +
+  "border-0 border-b border-solid border-xw-line bg-[rgba(13,17,27,.94)] z-sticky";
+
 /** Header chrome, shared by all three surfaces. */
 export const BRAND = "brand flex items-center gap-2 min-h-11 text-inherit no-underline rounded-md";
 export const BRAND_NAME = "font-sans text-[13px] font-semibold leading-none text-[#f1f3f7]";

@@ -181,16 +181,6 @@ body {
 ::-webkit-scrollbar-thumb { background: var(--xw-line-hi); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: #475569; }
 
-/* ── Header ─────────────────────────────────────────────────────────────────── */
-header {
- display: flex;
- align-items: center;
- justify-content: space-between;
- padding:12px 16px;
- border-bottom: 1px solid var(--xw-line-hi);
- margin-bottom: 16px;
-}
-
 main:focus-visible {
  outline: 2px solid #c4b5fd;
  outline-offset: 4px;

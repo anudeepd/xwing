@@ -24,6 +24,7 @@ import {
   TOAST_MESSAGE,
   TOAST_SUCCESS,
   TOAST_TIMER,
+  TOPBAR,
 } from "./ui";
 
 const BTN = `${CONTROL} ${CONTROL_ADMIN}`;
@@ -937,7 +938,7 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
   </div>;
 
   return <m.div className="admin-shell h-dvh overflow-y-auto [scrollbar-gutter:stable]" initial={{ opacity: 0, y: 6 }} animate={leaving ? { opacity: 0, y: -5 } : { opacity: 1, y: 0 }} transition={leaving ? SHELL_LEAVE : SHELL_ENTER}>
-    <header className="topbar admin-topbar">
+    <header className={cn("topbar admin-topbar", TOPBAR)}>
       <a className={BRAND} href="/" aria-label="X-wing ADMIN, home" data-leave="/" onClick={event => leaveTo(event, "/")}><Logo/><span className={BRAND_NAME}>X-wing</span><small className={BRAND_CONTEXT}>ADMIN</small></a>
       <div className={ACCOUNT_INLINE}>
         <AccountMenu user={bootstrap.user} open={accountOpen} onToggle={onAccountToggle} onLeave={event => leaveTo(event, "/")}/>
