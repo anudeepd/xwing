@@ -42,9 +42,10 @@ function confirmAction(title: string, message: string, confirmText = "Confirm"):
   confirm.className = "button danger";
   confirm.type = "submit";
   confirm.textContent = confirmText;
-  // Every admin confirmation is destructive, so the confirm button takes the
-  // initial focus; a safe action would simply omit this and land on Cancel.
-  confirm.dataset.autofocus = "true";
+  // Every admin confirmation is destructive, so the dialog opens on Cancel: a
+  // second Enter after the one that opened it must not purge anything. The
+  // confirm button stays the last stop before the trap wraps.
+  cancel.dataset.autofocus = "true";
   dialog.append(titleElement, messageElement, actions);
   actions.append(cancel, confirm);
   backdrop.appendChild(dialog);
@@ -126,8 +127,13 @@ const state: AdminState = {
   activitySummary: { event_count: 0, active_users: 0, by_user: [] }, trash: [], selectedTrash: new Set(),
 };
 const tabNames = ["overview", "users", "activity", "trash"];
-const requestedTab = location.hash.slice(1);
-let activeTab = tabNames.includes(requestedTab) ? requestedTab : "overview";
+/** The open tab lives in the query string, so a console link is shareable and
+ *  the back button walks the tabs. */
+function tabFromLocation(): string {
+  const requested = new URLSearchParams(location.search).get("tab") || "overview";
+  return tabNames.includes(requested) ? requested : "overview";
+}
+let activeTab = tabFromLocation();
 let accountOpen = false;
 let accountOutsideHandler: ((event: PointerEvent) => void) | null = null;
 let suppressViewAnimation = false;
@@ -193,11 +199,20 @@ function readPermissions(form: HTMLFormElement, prefix: string): PermissionSet {
 /** Matches the app's default toast duration, so admin feedback clears like a toast. */
 const FEEDBACK_DURATION_MS = 5200;
 
-/** The rail holds one message at a time: a new one replaces the previous one. */
+/** Same glyphs the app's toasts use: check for success, trash for errors. */
+const TOAST_ICONS: Record<"success" | "error", string> = {
+  success: `<path d="m5 12.5 4.25 4.25L19 7.5"/>`,
+  error: `<><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7"/><path d="M10 11v5m4-5v5"/></>`,
+};
+
+/** The rail holds one message at a time: a new one replaces the previous one.
+ *  The toast grid is `24px minmax(0,1fr) auto`, so the icon column, the message
+ *  and the countdown bar are all mandatory: a message without its icon siblings
+ *  lands in the 24px column and wraps one word per line. */
 function showToast(kind: "success" | "error", message: string): HTMLElement | null {
   const rail = document.querySelector<HTMLElement>(".notify-rail");
   if (!rail) return null;
-  rail.innerHTML = `<div class="toast ${kind}" role="${kind === "error" ? "alert" : "status"}"><span class="toast-message">${escapeHtml(message)}</span></div>`;
+  rail.innerHTML = `<div class="toast ${kind}" role="${kind === "error" ? "alert" : "status"}"><span class="toast-icon"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true">${TOAST_ICONS[kind]}</svg></span><span class="toast-message">${escapeHtml(message)}</span><span class="toast-timer" aria-hidden="true" style="animation-duration:${FEEDBACK_DURATION_MS}ms"></span></div>`;
   return rail.firstElementChild as HTMLElement | null;
 }
 
@@ -208,6 +223,23 @@ function showError(error: unknown): void {
 function showSuccess(message: string): void {
   const toast = showToast("success", message);
   if (toast) window.setTimeout(() => toast.remove(), FEEDBACK_DURATION_MS);
+}
+
+/** The one line the console announces when the active view's data lands. The
+ *  view itself is not a live region: it holds a table, so making it one re-read
+ *  the whole panel on every tab switch and refresh. */
+function announceView(): void {
+  const status = document.getElementById("admin-status");
+  if (!status) return;
+  const metrics = state.metrics;
+  const count = (value: number, noun: string): string => `${value} ${noun}${value === 1 ? "" : "s"}`;
+  const message: Record<string, string> = {
+    overview: metrics ? `Overview loaded: ${count(metrics.configured_users, "user")}, ${count(metrics.activity_events, "event")}, ${count(metrics.storage.files, "file")}.` : "",
+    users: `Users loaded: ${count(state.users.length, "configured user")}.`,
+    activity: `Activity loaded: ${count(state.events.length, "event")}.`,
+    trash: `Trash loaded: ${count(state.trash.length, "transaction")}.`,
+  };
+  status.textContent = message[activeTab] || "";
 }
 
 function metricCard(label: string, value: string, hint: string): string {
@@ -232,8 +264,9 @@ function render(): void {
   root.innerHTML = `<div class="admin-shell${firstRender ? " admin-entering" : ""}">
     <header class="topbar admin-topbar"><a class="brand" href="/" aria-label="X-wing ADMIN, home" data-leave="/">${logoMarkup()}<span>X-wing</span><small class="brand-context">ADMIN</small></a><div class="account-inline">${accountMarkup()}<form id="logout-form" method="post" action="/_auth/logout"><button class="signout-button" type="submit">Sign out</button></form></div></header>
     <main id="admin-main" class="admin-main"><div class="admin-heading"><div><p class="eyebrow">CONTROL PLANE</p><h1>Workspace administration</h1><p class="lede">Manage user access, activity, and recoverable storage.</p></div></div>
-      <nav class="admin-tabs" aria-label="Admin sections">${tabs.map(tab => `<a class="admin-tab ${activeTab === tab.id ? "active" : ""}" data-admin-tab="${tab.id}" href="#${tab.id}">${tab.label}</a>`).join("")}</nav>
-      <section id="admin-view" class="admin-view ${suppressViewAnimation ? "no-motion" : ""}" aria-live="polite">${viewMarkup()}</section>
+      <nav class="admin-tabs" aria-label="Admin sections">${tabs.map(tab => `<a class="admin-tab ${activeTab === tab.id ? "active" : ""}"${activeTab === tab.id ? ' aria-current="page"' : ""} data-admin-tab="${tab.id}" href="?tab=${tab.id}">${tab.label}</a>`).join("")}</nav>
+      <section id="admin-view" class="admin-view ${suppressViewAnimation ? "no-motion" : ""}">${viewMarkup()}</section>
+      <p id="admin-status" class="sr-only" role="status"></p>
     </main>
     <div class="notify-rail"></div>
   </div>`;
@@ -253,7 +286,7 @@ function render(): void {
     const nextTab = link.dataset.adminTab || "overview";
     if (nextTab === activeTab) return;
     activeTab = nextTab;
-    history.pushState(null, "", `#${activeTab}`);
+    history.pushState(null, "", `?tab=${activeTab}`);
     // The tab switch paints the new section without motion; the data that
     // lands in it carries the one animation the switch gets.
     suppressViewAnimation = true;
@@ -266,7 +299,7 @@ function render(): void {
 }
 
 window.addEventListener("popstate", () => {
-  const nextTab = location.hash.slice(1);
+  const nextTab = tabFromLocation();
   if (!tabNames.includes(nextTab) || nextTab === activeTab) return;
   activeTab = nextTab;
   suppressViewAnimation = true;
@@ -306,10 +339,17 @@ function bindAccountMenu(): void {
   document.addEventListener("pointerdown", accountOutsideHandler);
 }
 
+/** The console's loading state shows the shape the payload will fill: a card
+ *  heading, the toolbar, then rows. Static, so nothing moves while it waits. */
+function loadingMarkup(): string {
+  const bar = `<span class="skeleton-bar"></span>`;
+  return `<div class="admin-card loading-card" role="status"><span class="sr-only">Loading admin data…</span><span class="skeleton-bar skeleton-title"></span><span class="skeleton-toolbar">${bar}${bar}${bar}</span><span class="skeleton-rows">${bar.repeat(6)}</span></div>`;
+}
+
 /** Until the first payload lands, every tab shows the same loading card, so a
  *  deep link cannot flash an empty table before its rows arrive. */
 function viewMarkup(): string {
-  if (!dataLoaded) return `<div class="admin-card loading-card" role="status">Loading admin data…</div>`;
+  if (!dataLoaded) return `${loadingMarkup()}`;
   if (activeTab === "users") return usersMarkup();
   if (activeTab === "activity") return activityMarkup();
   if (activeTab === "trash") return trashMarkup();
@@ -318,7 +358,7 @@ function viewMarkup(): string {
 
 function overviewMarkup(): string {
   const metrics = state.metrics;
-  if (!metrics) return `<div class="admin-card loading-card" role="status">Loading admin data…</div>`;
+  if (!metrics) return `${loadingMarkup()}`;
   return `<div class="metric-grid">
     ${metricCard("Configured users", String(metrics.configured_users), "Explicit entries in users.yaml")}
     ${metricCard("Active users", String(metrics.active_users), `Seen in audit log, last ${metrics.active_window_minutes} minutes`)}
@@ -336,7 +376,7 @@ function userAccessHelp(): string {
 
 function usersMarkup(): string {
   const emptyPermissions: PermissionSet = { read: true, write: false, delete: false };
-  return `<div class="section-grid"><article class="admin-card"><div class="card-heading"><div><p class="eyebrow">DIRECTORY</p><h2>Users</h2></div><span class="count-badge">${state.users.length}</span></div><div class="table-wrap"><table class="user-table"><thead><tr><th scope="col">Username</th><th scope="col">Permissions</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody>${state.users.map(user => `<tr><td><strong>${escapeHtml(user.username)}</strong></td><td>${permissionBadges(user.permissions)}</td><td><div class="row-actions"><button class="button small" data-edit-user="${escapeHtml(user.username)}" aria-label="Edit user ${escapeHtml(user.username)}">Edit</button><button class="button small danger" data-delete-user="${escapeHtml(user.username)}" aria-label="Remove user ${escapeHtml(user.username)}">Remove</button></div></td></tr>`).join("") || `<tr><td colspan="3" class="empty-cell">No explicit users configured.</td></tr>`}</tbody></table></div>${state.defaultPermissions ? `<div class="default-access"><strong>Wildcard default</strong>${permissionBadges(state.defaultPermissions)}<span>Applies to users not listed above.</span></div>` : ""}</article><article class="admin-card form-card"><p class="eyebrow">USER ENTRY</p><h2 id="user-form-title">Add or update user</h2><form id="user-form"><input type="hidden" name="original-username"/><label for="username">Username</label><input id="username" name="username" required maxlength="128" autocomplete="off"/><p class="field-help">${escapeHtml(userAccessHelp())}</p>${permissionsMarkup(emptyPermissions, "user")}<div class="form-actions"><button class="button primary" type="submit">Save user</button><button class="button" type="button" id="clear-user">Clear</button></div></form></article></div>`;
+  return `<div class="section-grid"><article class="admin-card"><div class="card-heading"><div><p class="eyebrow">DIRECTORY</p><h2>Users</h2></div><span class="count-badge">${state.users.length}</span></div><div class="table-wrap"><table class="user-table"><thead><tr><th scope="col">Username</th><th scope="col">Permissions</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody>${state.users.map(user => `<tr><td><strong>${escapeHtml(user.username)}</strong></td><td>${permissionBadges(user.permissions)}</td><td><div class="row-actions"><button class="button small" data-edit-user="${escapeHtml(user.username)}" aria-label="Edit user ${escapeHtml(user.username)}">Edit</button><button class="button small danger" data-delete-user="${escapeHtml(user.username)}" aria-label="Remove user ${escapeHtml(user.username)}">Remove</button></div></td></tr>`).join("") || `<tr><td colspan="3" class="empty-cell">No explicit users configured.</td></tr>`}</tbody></table></div>${state.defaultPermissions ? `<div class="default-access"><strong>Wildcard default</strong>${permissionBadges(state.defaultPermissions)}<span>Applies to users not listed above.</span></div>` : ""}</article><article class="admin-card form-card"><p class="eyebrow">USER ENTRY</p><h2 id="user-form-title">Add or update user</h2><form id="user-form" novalidate><input type="hidden" name="original-username"/><label for="username">Username</label><input id="username" name="username" required maxlength="128" autocomplete="off" spellcheck="false" aria-describedby="user-form-help"/><p class="field-help" id="user-form-help">${escapeHtml(userAccessHelp())}</p><p class="form-error" id="user-form-error" aria-live="polite" hidden></p>${permissionsMarkup(emptyPermissions, "user")}<div class="form-actions"><button class="button primary" type="submit">Save user</button><button class="button" type="button" id="clear-user">Clear</button></div></form></article></div>`;
 }
 
 function permissionBadges(permissions: PermissionSet): string {
@@ -424,7 +464,7 @@ function activityRow(event: ActivityEvent): string {
 
 
 function activityMarkup(): string {
-  return `<article class="admin-card"><div class="card-heading"><div><p class="eyebrow">AUDIT TRAIL</p><h2>User activity</h2></div><span class="count-badge">${state.activitySummary.event_count}</span></div><div class="activity-tools"><form id="activity-filter" class="inline-form activity-filter-form"><div class="filter-field"><label for="activity-user">User</label><input id="activity-user" name="username" placeholder="All users"/></div><div class="filter-field"><label for="activity-since">Since</label><input id="activity-since" name="since" type="date"/></div><div class="filter-field"><label for="activity-scope">Show</label><select id="activity-scope" name="scope"><option value="file" selected>File activity</option><option value="all">All events</option><option value="admin">Administration</option></select></div><button class="button" type="submit">Refresh</button></form><form id="audit-purge-form" class="inline-form purge-form"><div class="filter-field"><label for="audit-retention">Purge older than</label><div class="input-with-unit"><input id="audit-retention" name="older_than_days" type="number" min="1" max="36500" value="90" required/><span class="unit-label">days</span></div></div><button class="button danger" type="submit">Purge history</button></form></div><div class="table-wrap activity-table"><table><thead><tr><th scope="col">Time</th><th scope="col">User</th><th scope="col">Action</th><th scope="col">Path</th><th scope="col">Status</th></tr></thead><tbody>${state.events.map(activityRow).join("") || `<tr><td colspan="5" class="empty-cell">No activity matches filter.</td></tr>`}</tbody></table></div></article>`;
+  return `<article class="admin-card"><div class="card-heading"><div><p class="eyebrow">AUDIT TRAIL</p><h2>User activity</h2></div><span class="count-badge">${state.activitySummary.event_count}</span></div><div class="activity-tools"><form id="activity-filter" class="inline-form activity-filter-form"><div class="filter-field"><label for="activity-user">User</label><input id="activity-user" name="username" placeholder="All users" autocomplete="off" spellcheck="false"/></div><div class="filter-field"><label for="activity-since">Since</label><input id="activity-since" name="since" type="date" autocomplete="off"/></div><div class="filter-field"><label for="activity-scope">Show</label><select id="activity-scope" name="scope"><option value="file" selected>File activity</option><option value="all">All events</option><option value="admin">Administration</option></select></div><button class="button" type="submit">Refresh</button></form><form id="audit-purge-form" class="inline-form purge-form"><div class="filter-field"><label for="audit-retention">Purge older than</label><div class="input-with-unit"><input id="audit-retention" name="older_than_days" type="number" min="1" max="36500" value="90" required inputmode="numeric" autocomplete="off" aria-describedby="audit-retention-unit"/><span class="unit-label" id="audit-retention-unit">days</span></div></div><button class="button danger" type="submit">Purge history</button></form></div><div class="table-wrap activity-table"><table><thead><tr><th scope="col">Time</th><th scope="col">User</th><th scope="col">Action</th><th scope="col">Path</th><th scope="col">Status</th></tr></thead><tbody>${state.events.map(activityRow).join("") || `<tr><td colspan="5" class="empty-cell">No activity matches filter.</td></tr>`}</tbody></table></div></article>`;
 }
 
 
@@ -432,7 +472,7 @@ function trashMarkup(): string {
   const hasTrash = state.trash.length > 0;
   const selectedCount = state.selectedTrash.size;
   const allSelected = hasTrash && state.trash.every(transaction => state.selectedTrash.has(transaction.transaction_id));
-  return `<article class="admin-card"><div class="card-heading"><div><p class="eyebrow">RECOVERY</p><h2>Recoverable trash</h2></div><div class="row-actions trash-card-actions"><button class="button small primary" id="restore-selected-trash" ${selectedCount ? "" : "disabled"}>Restore selected${selectedCount ? ` (${selectedCount})` : ""}</button><button class="button small danger" id="empty-trash" ${hasTrash ? "" : "disabled"}>Empty trash</button><button class="button small" id="refresh-trash">Refresh</button></div></div><p class="field-help trash-help">Select deleted transactions to restore in bulk. Deleted items stay here until restored or permanently removed.</p><div class="table-wrap"><table class="trash-table"><thead><tr><th scope="col" class="trash-select-cell"><input id="select-all-trash" type="checkbox" aria-label="Select all trash transactions" ${allSelected ? "checked" : ""} ${hasTrash ? "" : "disabled"}/></th><th scope="col">Deleted by</th><th scope="col">Items</th><th scope="col">Deleted</th><th scope="col">Size</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody>${state.trash.map(transaction => `<tr><td class="trash-select-cell"><input type="checkbox" data-select-trash="${escapeHtml(transaction.transaction_id)}" aria-label="Select trash transaction for ${escapeHtml(transaction.items.map(item => item.path).join(", "))}" ${state.selectedTrash.has(transaction.transaction_id) ? "checked" : ""}/></td><td><strong>${escapeHtml(transaction.user)}</strong></td><td class="trash-items">${transaction.items.map(item => `<div class="trash-path"><span class="trash-kind">${escapeHtml(item.kind)}</span><code>${escapeHtml(item.path)}</code></div>`).join("")}</td><td>${escapeHtml(formatDate(transaction.created))}</td><td>${escapeHtml(formatBytes(transaction.size))}</td><td><div class="row-actions"><button class="button small" data-restore-trash="${escapeHtml(transaction.transaction_id)}" aria-label="Restore deleted items">Restore</button><button class="button small danger" data-delete-trash="${escapeHtml(transaction.transaction_id)}" aria-label="Permanently delete items">Delete permanently</button></div></td></tr>`).join("") || `<tr><td colspan="6" class="empty-cell">Trash is empty.</td></tr>`}</tbody></table></div></article>`;
+  return `<article class="admin-card"><div class="card-heading"><div><p class="eyebrow">RECOVERY</p><h2>Recoverable trash</h2></div><div class="row-actions trash-card-actions"><button class="button small primary" id="restore-selected-trash" ${selectedCount ? "" : "disabled"}>Restore selected${selectedCount ? ` (${selectedCount})` : ""}</button><button class="button small danger" id="empty-trash" ${hasTrash ? "" : "disabled"}>Empty trash</button>${hasTrash ? `<button class="button small" data-refresh-trash>Refresh</button>` : ""}</div></div><p class="field-help trash-help">Select deleted transactions to restore in bulk. Deleted items stay here until restored or permanently removed.</p><div class="table-wrap"><table class="trash-table"><thead><tr><th scope="col" class="trash-select-cell"><label class="trash-select-target"><input id="select-all-trash" type="checkbox" aria-label="Select all trash transactions" ${allSelected ? "checked" : ""} ${hasTrash ? "" : "disabled"}/></label></th><th scope="col">Deleted by</th><th scope="col">Items</th><th scope="col">Deleted</th><th scope="col">Size</th><th scope="col"><span class="sr-only">Actions</span></th></tr></thead><tbody>${state.trash.map(transaction => `<tr><td class="trash-select-cell"><label class="trash-select-target"><input type="checkbox" data-select-trash="${escapeHtml(transaction.transaction_id)}" aria-label="Select trash transaction for ${escapeHtml(transaction.items.map(item => item.path).join(", "))}" ${state.selectedTrash.has(transaction.transaction_id) ? "checked" : ""}/></label></td><td><strong>${escapeHtml(transaction.user)}</strong></td><td class="trash-items">${transaction.items.map(item => `<div class="trash-path"><span class="trash-kind">${escapeHtml(item.kind)}</span><code>${escapeHtml(item.path)}</code></div>`).join("")}</td><td>${escapeHtml(formatDate(transaction.created))}</td><td>${escapeHtml(formatBytes(transaction.size))}</td><td><div class="row-actions"><button class="button small" data-restore-trash="${escapeHtml(transaction.transaction_id)}" aria-label="Restore deleted items">Restore</button><button class="button small danger" data-delete-trash="${escapeHtml(transaction.transaction_id)}" aria-label="Permanently delete items">Delete permanently</button></div></td></tr>`).join("") || `<tr><td colspan="6" class="empty-cell"><div class="empty-state"><span>Trash is empty. Deleted items stay recoverable here until restored or purged.</span><button class="button small" data-refresh-trash>Refresh</button></div></td></tr>`}</tbody></table></div></article>`;
 }
 function syncTrashSelectionControls(): void {
   const selectedCount = state.selectedTrash.size;
@@ -455,7 +495,10 @@ function syncTrashSelectionControls(): void {
 function bindView(): void {
   const userForm = document.getElementById("user-form") as HTMLFormElement | null;
   userForm?.addEventListener("submit", event => { event.preventDefault(); void saveUser(userForm); });
-  document.getElementById("clear-user")?.addEventListener("click", () => { userForm?.reset(); const title = document.getElementById("user-form-title"); if (title) title.textContent = "Add or update user"; });
+  // The message describes the value that was rejected, so it goes the moment the
+  // value changes.
+  userForm?.addEventListener("input", () => setUserFormError(null));
+  document.getElementById("clear-user")?.addEventListener("click", () => { userForm?.reset(); setUserFormError(null); const title = document.getElementById("user-form-title"); if (title) title.textContent = "Add or update user"; });
   root.querySelectorAll<HTMLButtonElement>("[data-edit-user]").forEach(button => button.addEventListener("click", () => editUser(button.dataset.editUser || "")));
   root.querySelectorAll<HTMLButtonElement>("[data-delete-user]").forEach(button => button.addEventListener("click", () => {
     const username = button.dataset.deleteUser || "";
@@ -472,7 +515,8 @@ function bindView(): void {
       if (confirmed) void purgeAuditHistory(purgeForm);
     });
   });
-  document.getElementById("refresh-trash")?.addEventListener("click", () => void loadTrash());
+  root.querySelectorAll<HTMLButtonElement>("[data-refresh-trash]").forEach(button =>
+    button.addEventListener("click", () => void loadTrash()));
   document.getElementById("select-all-trash")?.addEventListener("change", event => {
     const checked = (event.currentTarget as HTMLInputElement).checked;
     state.selectedTrash = checked
@@ -509,6 +553,36 @@ function bindView(): void {
   }));
 }
 
+/** Mirrors the server's `_normalize_username` rule, so the field can explain
+ *  itself before a request the server would answer with a bare 400. */
+function usernameError(value: string): string | null {
+  const username = value.trim();
+  if (!username) return "Enter a username.";
+  if (username === "*") return "A username cannot be the wildcard.";
+  if (username.includes("/")) return "A username cannot contain a slash.";
+  if (username.length > 128) return "A username is limited to 128 characters.";
+  if ([...username].some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)) return "A username cannot contain control characters.";
+  return null;
+}
+
+/** The user form reports its own failures: the field it describes is three
+ *  lines above the save button, not in the corner of the screen. The helper
+ *  text stays in the description, so the message is added to it, not swapped. */
+function setUserFormError(message: string | null): void {
+  const error = document.getElementById("user-form-error");
+  const input = document.getElementById("username") as HTMLInputElement | null;
+  if (!error || !input) return;
+  error.hidden = message === null;
+  error.textContent = message || "";
+  if (message) {
+    input.setAttribute("aria-invalid", "true");
+    input.setAttribute("aria-describedby", "user-form-help user-form-error");
+  } else {
+    input.removeAttribute("aria-invalid");
+    input.setAttribute("aria-describedby", "user-form-help");
+  }
+}
+
 function editUser(username: string): void {
   const user = state.users.find(item => item.username === username);
   const form = document.getElementById("user-form") as HTMLFormElement | null;
@@ -517,12 +591,21 @@ function editUser(username: string): void {
   (form.elements.namedItem("original-username") as HTMLInputElement).value = user.username;
   for (const permission of ["read", "write", "delete"] as const) (form.elements.namedItem(`user-${permission}`) as HTMLInputElement).checked = user.permissions[permission];
   const title = document.getElementById("user-form-title"); if (title) title.textContent = `Edit ${username}`;
+  setUserFormError(null);
   (form.elements.namedItem("username") as HTMLInputElement).focus();
 }
 
 async function saveUser(form: HTMLFormElement): Promise<void> {
+  const usernameField = form.elements.namedItem("username") as HTMLInputElement;
+  const invalid = usernameError(usernameField.value);
+  if (invalid) {
+    setUserFormError(invalid);
+    usernameField.focus();
+    return;
+  }
+  setUserFormError(null);
   try {
-    const username = (form.elements.namedItem("username") as HTMLInputElement).value;
+    const username = usernameField.value;
     const originalUsername = (form.elements.namedItem("original-username") as HTMLInputElement).value || null;
     const result = await api<{ restart_required: boolean }>("/api/admin/users", {
       method: "POST",
@@ -538,7 +621,10 @@ async function saveUser(form: HTMLFormElement): Promise<void> {
         ? `Saved ${username}. Restart X-wing to apply LDAP access changes.`
         : `Saved ${username}. Access updated live.`,
     );
-  } catch (error) { showError(error); }
+  } catch (error) {
+    setUserFormError(error instanceof Error ? error.message : "The user could not be saved.");
+    usernameField.focus();
+  }
 }
 
 async function deleteUser(username: string): Promise<void> {
@@ -556,10 +642,10 @@ async function deleteUser(username: string): Promise<void> {
   } catch (error) { showError(error); }
 }
 
-async function loadUsers(): Promise<void> { try { const result = await api<{ users: UserRecord[]; default: PermissionSet | null }>("/api/admin/users"); state.users = result.users; state.defaultPermissions = result.default; renderView(); } catch (error) { showError(error); } }
-async function loadTrash(): Promise<void> { try { const result = await api<{ transactions: TrashTransaction[] }>("/api/admin/trash", { cache: "no-store" }); state.trash = result.transactions; state.selectedTrash = new Set([...state.selectedTrash].filter(transactionId => state.trash.some(transaction => transaction.transaction_id === transactionId))); renderView(); } catch (error) { showError(error); } }
-async function loadMetrics(): Promise<void> { try { state.metrics = await api<Metrics>("/api/admin/metrics"); renderView(); } catch (error) { showError(error); } }
-async function loadActivity(form?: HTMLFormElement): Promise<void> { try { const params = new URLSearchParams({ limit: "200" }); const username = form && (form.elements.namedItem("username") as HTMLInputElement).value; const since = form && (form.elements.namedItem("since") as HTMLInputElement).value; const scope = form ? (form.elements.namedItem("scope") as HTMLSelectElement).value : "file"; if (username) params.set("username", username); if (since) params.set("since", `${since}T00:00:00+00:00`); params.set("scope", scope); const result = await api<{ events: ActivityEvent[]; summary: AdminState["activitySummary"] }>(`/api/admin/activity?${params}`); state.events = result.events; state.activitySummary = result.summary; renderView(); const nextUsername = document.getElementById("activity-user") as HTMLInputElement | null; if (nextUsername) nextUsername.value = username || ""; const nextSince = document.getElementById("activity-since") as HTMLInputElement | null; if (nextSince) nextSince.value = since || ""; const nextScope = document.getElementById("activity-scope") as HTMLSelectElement | null; if (nextScope) nextScope.value = scope; } catch (error) { showError(error); } }
+async function loadUsers(): Promise<void> { try { const result = await api<{ users: UserRecord[]; default: PermissionSet | null }>("/api/admin/users"); state.users = result.users; state.defaultPermissions = result.default; renderView(); announceView(); } catch (error) { showError(error); } }
+async function loadTrash(): Promise<void> { try { const result = await api<{ transactions: TrashTransaction[] }>("/api/admin/trash", { cache: "no-store" }); state.trash = result.transactions; state.selectedTrash = new Set([...state.selectedTrash].filter(transactionId => state.trash.some(transaction => transaction.transaction_id === transactionId))); renderView(); announceView(); } catch (error) { showError(error); } }
+async function loadMetrics(): Promise<void> { try { const metrics = await api<Metrics>("/api/admin/metrics"); state.metrics = metrics; renderView(); announceView(); } catch (error) { showError(error); } }
+async function loadActivity(form?: HTMLFormElement): Promise<void> { try { const params = new URLSearchParams({ limit: "200" }); const username = form && (form.elements.namedItem("username") as HTMLInputElement).value; const since = form && (form.elements.namedItem("since") as HTMLInputElement).value; const scope = form ? (form.elements.namedItem("scope") as HTMLSelectElement).value : "file"; if (username) params.set("username", username); if (since) params.set("since", `${since}T00:00:00+00:00`); params.set("scope", scope); const result = await api<{ events: ActivityEvent[]; summary: AdminState["activitySummary"] }>(`/api/admin/activity?${params}`); state.events = result.events; state.activitySummary = result.summary; renderView(); announceView(); const nextUsername = document.getElementById("activity-user") as HTMLInputElement | null; if (nextUsername) nextUsername.value = username || ""; const nextSince = document.getElementById("activity-since") as HTMLInputElement | null; if (nextSince) nextSince.value = since || ""; const nextScope = document.getElementById("activity-scope") as HTMLSelectElement | null; if (nextScope) nextScope.value = scope; } catch (error) { showError(error); } }
 async function purgeAuditHistory(form: HTMLFormElement): Promise<void> { try { const days = (form.elements.namedItem("older_than_days") as HTMLInputElement).value; const result = await api<{ deleted: number; older_than_days: number }>(`/api/admin/activity?older_than_days=${encodeURIComponent(days)}`, { method: "DELETE" }); await loadActivity(); showSuccess(`Purged ${result.deleted} audit event${result.deleted === 1 ? "" : "s"}.`); } catch (error) { showError(error); } }
 
 async function restoreTrash(transactionId: string): Promise<void> { try { const result = await api<{ restored: number }>(`/api/admin/trash/${encodeURIComponent(transactionId)}/restore`, { method: "POST" }); await loadTrash(); showSuccess(`${result.restored} item${result.restored === 1 ? "" : "s"} restored.`); } catch (error) { showError(error); } }
@@ -580,6 +666,7 @@ async function loadData(): Promise<void> {
     // The fill is part of the page entrance, not a tab switch, so it does not animate.
     suppressViewAnimation = true;
     renderView();
+    announceView();
   } catch (error) { root.innerHTML = `<div class="admin-fatal" role="alert"><strong>Admin console unavailable</strong><span>${escapeHtml(error instanceof Error ? error.message : "Request failed")}</span><a class="button" href="/">Return to files</a></div>`; }
 }
 

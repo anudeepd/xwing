@@ -26,7 +26,7 @@ const adminData = {
 describe("admin trash selection labels", () => {
   beforeEach(() => {
     vi.resetModules();
-    window.history.replaceState(null, "", "#trash");
+    window.history.replaceState(null, "", "?tab=trash");
     document.body.dataset.authIdleTimeout = "0";
     document.body.innerHTML = `
       <div id="admin-root"></div>

@@ -20,7 +20,7 @@ const adminData = {
 describe("admin activity filters", () => {
   beforeEach(() => {
     vi.resetModules();
-    window.history.replaceState(null, "", "#activity");
+    window.history.replaceState(null, "", "?tab=activity");
     document.body.dataset.authIdleTimeout = "0";
     document.body.innerHTML = `
       <div id="admin-root"></div>
