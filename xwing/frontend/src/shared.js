@@ -32,16 +32,42 @@ export function beginAuthRedirect(redirectDelayMs = DEFAULT_AUTH_REDIRECT_DELAY_
   window.setTimeout(() => redirectToLoginNow(), redirectDelayMs);
 }
 
-/** Cross-fade the boot card out under the shell instead of tearing it out. */
-export function dismissBootCard(documentRef = document, windowRef = window) {
+/** Cross-fade the boot card out under the shell instead of tearing it out.
+ *  `immediate` is for an in-app handover: the panel before it already left the
+ *  screen dark, so a spinner fading over the arriving shell is the flash. */
+export function dismissBootCard(documentRef = document, windowRef = window, immediate = false) {
   const card = documentRef.querySelector(".boot-loading:not(.out)");
   if (!card) return;
+  if (immediate) {
+    (card.closest('[role="region"][aria-label="Loading"]') ?? card).remove();
+    return;
+  }
   card.classList.add("out");
   // The card sits inside a labelled landmark region so it isn't stray page
   // content while loading; remove that wrapper along with the card so an
   // empty landmark doesn't linger in the DOM afterward.
   const region = card.closest('[role="region"][aria-label="Loading"]');
   windowRef.setTimeout(() => (region ?? card).remove(), 240);
+}
+
+const HANDOVER_KEY = "xw-handover";
+/** Long enough for a 170ms leave plus a slow navigation, short enough that a
+ *  stale marker never reaches an unrelated cold load. */
+const HANDOVER_WINDOW_MS = 5000;
+
+/** Remember that the next document is another panel, not a cold load. */
+export function markHandover(windowRef = window) {
+  try { windowRef.sessionStorage.setItem(HANDOVER_KEY, String(Date.now())); } catch { /* storage can be denied */ }
+}
+
+/** True exactly once, in the document that follows a handover. */
+export function consumeHandover(windowRef = window) {
+  try {
+    const at = windowRef.sessionStorage.getItem(HANDOVER_KEY);
+    if (at === null) return false;
+    windowRef.sessionStorage.removeItem(HANDOVER_KEY);
+    return Date.now() - Number(at) < HANDOVER_WINDOW_MS;
+  } catch { return false; }
 }
 
 export function currentAuthRedirectTarget(location = window.location) {

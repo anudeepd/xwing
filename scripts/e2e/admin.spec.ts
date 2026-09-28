@@ -57,6 +57,17 @@ test("every tab loads, announces one line and owns its URL", async ({ page }) =>
   await expect(page.locator(".admin-tab.active")).toHaveText("Activity");
 });
 
+test("the console opens from the file browser without a loading card", async ({ page }) => {
+  await page.goto("/");
+  await page.locator(".account-trigger").click();
+  await page.getByRole("menuitem", { name: "Admin panel" }).click();
+
+  await expect(page).toHaveURL(/\/admin$/);
+  await expect(page.locator(".admin-shell")).toBeVisible();
+  // The handover marker keeps the cold-load card off the arriving console.
+  expect(await page.locator(".boot-loading").count()).toBe(0);
+});
+
 test("a destructive confirmation opens on Cancel", async ({ page }) => {
   await page.goto("/admin?tab=activity");
   // A retention no event can fall outside, so the purge deletes nothing: this is

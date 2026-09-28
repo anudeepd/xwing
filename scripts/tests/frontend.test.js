@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 
-import { createAuthSession, loginUrlForCurrentPage } from "../../xwing/frontend/src/shared.js";
+import { consumeHandover, createAuthSession, dismissBootCard, loginUrlForCurrentPage, markHandover } from "../../xwing/frontend/src/shared.js";
 
 describe("shared auth helpers", () => {
   beforeEach(() => {
@@ -84,6 +84,52 @@ describe("shared auth helpers", () => {
     expect(session.isRedirecting()).toBe(true);
     cleanup();
     vi.useRealTimers();
+  });
+});
+
+describe("cross-panel handover", () => {
+  beforeEach(() => {
+    window.sessionStorage.clear();
+    document.body.innerHTML = `
+      <div role="region" aria-label="Loading">
+        <div class="boot-loading">Opening admin console…</div>
+      </div>
+    `;
+  });
+
+  it("hands the marker over exactly once", () => {
+    expect(consumeHandover(window)).toBe(false);
+
+    markHandover(window);
+
+    expect(consumeHandover(window)).toBe(true);
+    // A second read belongs to a later, unrelated document.
+    expect(consumeHandover(window)).toBe(false);
+  });
+
+  it("ignores a marker old enough to be a cold load", () => {
+    markHandover(window);
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.now() + 6_000);
+
+    expect(consumeHandover(window)).toBe(false);
+    vi.useRealTimers();
+  });
+
+  it("tears the boot card out for a handover and cross-fades it otherwise", () => {
+    dismissBootCard(document, window, true);
+    expect(document.querySelector(".boot-loading")).toBeNull();
+    expect(document.querySelector('[role="region"][aria-label="Loading"]')).toBeNull();
+
+    document.body.innerHTML = `
+      <div role="region" aria-label="Loading">
+        <div class="boot-loading">Opening X-wing…</div>
+      </div>
+    `;
+    dismissBootCard(document, window);
+    // The cold path keeps the card in the DOM and lets it fade under the shell.
+    expect(document.querySelector(".boot-loading")?.classList.contains("out")).toBe(true);
+    expect(document.querySelector(".boot-loading")).not.toBeNull();
   });
 });
 

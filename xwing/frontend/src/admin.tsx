@@ -31,7 +31,7 @@ const BTN = `${CONTROL} ${CONTROL_ADMIN}`;
 const BTN_PRIMARY = CONTROL_PRIMARY;
 const BTN_DANGER = CONTROL_DANGER;
 const BTN_SMALL = `${CONTROL} ${CONTROL_ADMIN} ${CONTROL_SMALL}`;
-import { createAuthSession, dismissBootCard } from "./shared.js";
+import { consumeHandover, createAuthSession, dismissBootCard, markHandover } from "./shared.js";
 import { formatBytes, formatDate, prefersReducedMotion } from "./format";
 import { useModalFocus } from "./keyboard";
 
@@ -76,7 +76,7 @@ type ActivityFilters = { username: string; since: string; scope: string };
 const EASE: [number, number, number, number] = [0.16, 1, 0.3, 1];
 const EXIT_EASE: [number, number, number, number] = [0.4, 0, 1, 1];
 const SHELL_ENTER: Transition = { duration: 0.34, ease: EASE };
-const SHELL_LEAVE: Transition = { duration: 0.17, ease: EASE };
+const SHELL_LEAVE: Transition = { duration: 0.17, ease: EXIT_EASE };
 const VIEW_ENTER: Transition = { duration: 0.18, ease: EASE };
 const TOAST_ENTER: Transition = { duration: 0.28, ease: EASE };
 const TOAST_EXIT: Transition = { duration: 0.18, ease: EXIT_EASE };
@@ -596,6 +596,9 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
   const [fatal, setFatal] = useState<string | null>(null);
   const [accountOpen, setAccountOpen] = useState(false);
   const [leaving, setLeaving] = useState(false);
+  // Arriving from the file browser or the editor: no cold-load card, and the
+  // entrance matches the 170ms the other side spent leaving.
+  const [handover] = useState(() => consumeHandover());
   const [userFormError, setUserFormError] = useState<string | null>(null);
   const [userFormTitle, setUserFormTitle] = useState("Add or update user");
   const [viewVersion, setViewVersion] = useState(0);
@@ -706,7 +709,8 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
    *  from its bootstrap, and lets the payload fill it. Waiting for four fetches
    *  first left the console on a blank boot card for the slowest request. */
   useEffect(() => {
-    dismissBootCard();
+    dismissBootCard(document, window, handover);
+    document.documentElement.removeAttribute("data-arriving");
     const cleanupIdle = authSession.wireAuthIdleTimer();
     authSession.wireLogoutForm();
     void (async () => {
@@ -776,6 +780,7 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
   const leaveTo = useCallback((event: React.MouseEvent<HTMLElement>, href: string): void => {
     event.preventDefault();
     if (leaving) return;
+    markHandover();
     setLeaving(true);
     window.setTimeout(() => location.assign(href), prefersReducedMotion() ? 0 : 170);
   }, [leaving]);
@@ -937,7 +942,7 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
     <a className={`button ${BTN} mt-2`} href="/">Return to files</a>
   </div>;
 
-  return <m.div className="admin-shell h-dvh overflow-y-auto [scrollbar-gutter:stable]" initial={{ opacity: 0, y: 6 }} animate={leaving ? { opacity: 0, y: -5 } : { opacity: 1, y: 0 }} transition={leaving ? SHELL_LEAVE : SHELL_ENTER}>
+  return <m.div className="admin-shell h-dvh overflow-y-auto [scrollbar-gutter:stable]" initial={{ opacity: 0, y: 6 }} animate={leaving ? { opacity: 0, y: -5 } : { opacity: 1, y: 0 }} transition={leaving ? SHELL_LEAVE : handover ? { duration: 0.17, ease: EASE } : SHELL_ENTER}>
     <header className={cn("topbar admin-topbar", TOPBAR)}>
       <a className={BRAND} href="/" aria-label="X-wing ADMIN, home" data-leave="/" onClick={event => leaveTo(event, "/")}><Logo/><span className={BRAND_NAME}>X-wing</span><small className={BRAND_CONTEXT}>ADMIN</small></a>
       <div className={ACCOUNT_INLINE}>

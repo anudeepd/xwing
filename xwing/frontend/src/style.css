@@ -159,6 +159,11 @@ body:has(.modal-backdrop) .file-table,body:has(.modal-backdrop) .admin-shell{ove
  font-display: swap;
 }
 
+/* Arriving from another panel (see `consumeHandover`): the card would be a
+   spinner flashing over the shell the previous surface already made room for.
+   The templates set `data-arriving` before the first paint. */
+html[data-arriving] .boot-loading { opacity: 0; visibility: hidden; }
+
 /* ── Design tokens ─────────────────────────────────────────────────────────── */
 
 /* ── Reset ──────────────────────────────────────────────────────────────────── */

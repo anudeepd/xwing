@@ -1,2 +1,6 @@
+# The trusted-proxy server identifies its callers with X-Forwarded-User. The
+# admin spec browses the file browser as `e2e-admin` before opening the console,
+# so that identity needs read access to the same fixtures.
 users:
   anonymous: rwd
+  e2e-admin: rwd

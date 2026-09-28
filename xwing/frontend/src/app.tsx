@@ -44,7 +44,7 @@ import { renameDestination } from "./rename";
 import { DIRECTORY_MEDIA_TYPE, encodePath, parseBootstrap } from "./types";
 import type { Parallelism, XwingBootstrapV1, XwingFile } from "./types";
 import { collectDroppedEntries } from "./drop-entries";
-import { AUTH_OVERLAY_COPY, AUTH_REDIRECT_EVENT, beginAuthRedirect, dismissBootCard } from "./shared.js";
+import { AUTH_OVERLAY_COPY, AUTH_REDIRECT_EVENT, beginAuthRedirect, consumeHandover, dismissBootCard, markHandover } from "./shared.js";
 import { UploadManager } from "./upload-manager";
 import { uploadItemLabel, uploadSummary, uploadSummaryKind } from "./upload-summary";
 
@@ -187,6 +187,9 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   const [dropWaitState, setDropWaitState] = useState<DropWaitState>(null);
   const [arrivingNames, setArrivingNames] = useState<Set<string>>(() => new Set());
   const [pageLeaving, setPageLeaving] = useState(false);
+  // Arriving from another panel: the shell is the whole show, so the boot card
+  // stays out of it and the entrance matches the 170ms the other side left on.
+  const [handover] = useState(() => consumeHandover());
   const [authOverlay, setAuthOverlay] = useState<keyof typeof AUTH_OVERLAY_COPY | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
@@ -295,8 +298,12 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
 
   const dismissToast = (id: number): void => setToasts(current => current.filter(item => item.id !== id));
 
-  const openDocument = (href: string): void => {
+  /** Leave for another document. `handover` marks a move between the app's own
+   *  panels (the editor, the console), which the destination reads so it skips
+   *  its cold-load card. */
+  const openDocument = (href: string, handoverTo: boolean = false): void => {
     if (pageLeaving) return;
+    if (handoverTo) markHandover();
     setPageLeaving(true);
     window.setTimeout(() => location.assign(href), prefersReducedMotion() ? 0 : 170);
   };
@@ -365,7 +372,10 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   }, []);
 
   // The shell is on screen, so the boot card can fade out under it.
-  useEffect(() => dismissBootCard(), []);
+  useEffect(() => {
+    dismissBootCard(document, window, handover);
+    document.documentElement.removeAttribute("data-arriving");
+  }, []);
 
   useEffect(() => {
     const onAuthRedirect = (): void => setAuthOverlay("expired");
@@ -711,7 +721,9 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   return <m.div className="xw-app h-full grid grid-rows-[52px_minmax(0,1fr)] isolate bg-xw-bg max-[640px]:grid-rows-[48px_minmax(0,1fr)]"
     initial={reduced ? false : { opacity: 0, y: 6 }}
     animate={pageLeaving ? { opacity: 0, y: -5 } : { opacity: 1, y: 0 }}
-    transition={pageLeaving ? { duration: presenceDuration(reduced, 0.17), ease: "easeIn" } : { duration: presenceDuration(reduced, 0.34), ease: [0.16, 1, 0.3, 1] }}
+    transition={pageLeaving
+        ? { duration: presenceDuration(reduced, 0.17), ease: "easeIn" }
+        : { duration: presenceDuration(reduced, handover ? 0.17 : 0.34), ease: [0.16, 1, 0.3, 1] }}
     onDragEnter={event => { event.preventDefault(); if (!directory.permissions.write) return; dragDepth.current += 1; refreshDropFeedback(); }}
     onDragOver={event => { if (!directory.permissions.write) return; event.preventDefault(); refreshDropFeedback(); }}
     onDragLeave={event => { event.preventDefault(); dragDepth.current = Math.max(0, dragDepth.current - 1); if (!dragDepth.current) clearDropFeedback(); }}
@@ -722,14 +734,14 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
         cannot itself become a heading without breaking the crumb row's layout. */}
     <h1 className="sr-only">{crumbLabel(directory.breadcrumbs[directory.breadcrumbs.length - 1]?.name ?? "")}</h1>
     <header className={cn("topbar", TOPBAR)}>
-      <a className={BRAND} href="/" aria-label="X-wing FILES, home" onClick={() => setPageLeaving(true)}><Logo/><span className={BRAND_NAME}>X-wing</span><small className={BRAND_CONTEXT}>FILES</small></a>
+      <a className={BRAND} href="/" aria-label="X-wing FILES, home" onClick={event => { event.preventDefault(); openDocument("/", true); }}><Logo/><span className={BRAND_NAME}>X-wing</span><small className={BRAND_CONTEXT}>FILES</small></a>
       {directory.user.authenticated ? <div className={ACCOUNT_INLINE}>{directory.admin ? <div className="account relative" ref={accountRef}>
         <button className="account-trigger h-8 min-h-8 flex items-center gap-2 px-2 border border-solid border-transparent rounded-md bg-transparent text-[#aeb6c5] text-xs hover:border-xw-line-hi hover:bg-xw-raised hover:text-xw-text aria-expanded:border-xw-line-hi aria-expanded:bg-xw-raised aria-expanded:text-xw-text max-[640px]:[&>span]:hidden" type="button" aria-haspopup="menu" aria-expanded={accountOpen} onClick={() => setAccountOpen(value => !value)}>
           <span>{directory.user.name}</span><Icon name="chevron"/>
         </button>
         {accountOpen && <div className="popover account-menu absolute right-0 top-[38px] z-popover min-w-[152px] p-1 border border-solid border-[#3b465c] rounded-[7px] bg-[#111827] shadow-[0_18px_45px_rgba(0,0,0,.46)] origin-top-right animate-[xw-surface-in_var(--xw-surface)_var(--xw-ease)]" role="menu" aria-label="Workspace navigation">
           <a className={cn(MENU_ITEM, "active bg-xw-hover text-xw-text")} href="/" role="menuitem" aria-current="page">Files</a>
-          <a className={MENU_ITEM} href="/admin" role="menuitem" onClick={() => setPageLeaving(true)}>Admin panel</a>
+          <a className={MENU_ITEM} href="/admin" role="menuitem" onClick={event => { event.preventDefault(); openDocument("/admin", true); }}>Admin panel</a>
         </div>}
       </div> : <span>{directory.user.name}</span>}<form id="logout-form" className="m-0" method="post" action="/_auth/logout" onSubmit={event => { event.preventDefault(); setAuthOverlay("logout"); const form = event.currentTarget; window.setTimeout(() => form.submit(), AUTH_REDIRECT_DELAY_MS); }}><button className={SIGNOUT} type="submit">Sign out</button></form></div> : <span className="anonymous-label px-2 text-[#a0a9b9] text-xs font-medium">anonymous</span>}
     </header>
@@ -787,7 +799,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
         <div id="file-list" className="file-list min-h-0 transition-[opacity,transform] duration-150 ease-in-out" role="rowgroup" tabIndex={-1}>
           {directoryState === "error" && <div className="state-panel h-full min-h-[220px] flex flex-col items-center justify-center gap-2 text-xw-muted text-pretty"><strong>Couldn’t open this folder</strong><span>{directoryError}</span><button className={cn("button", BTN)} onClick={() => void refresh()}>Retry</button></div>}
           {!files.length && directoryState !== "error" && <div className="state-panel empty h-full min-h-[220px] flex flex-col items-center justify-center gap-2 text-xw-muted text-pretty"><span className="empty-icon w-[46px] h-[46px] grid place-items-center border border-solid border-xw-line rounded-[10px] bg-xw-raised text-[#d8b963] [&_.ui-icon]:w-[22px] [&_.ui-icon]:h-[22px]"><Icon name="folder"/></span><strong>{query.trim() ? "No matches" : "This folder is empty"}</strong><span>{query.trim() ? `Nothing here matches “${query.trim()}”.` : emptyStateHint}</span>{directory.permissions.write && !query.trim() && <button className={cn("button", BTN, BTN_PRIMARY)} onClick={() => fileInput.current?.click()}><Icon name="upload"/><span className="label">Upload files</span></button>}</div>}
-          {files.map((file, index) => <FileRow key={file.path} file={file} index={index} selected={selected.has(file.path)} loading={directoryState === "loading"} arriving={arrivingNames.has(file.name)} permissions={directory.permissions} policyHint={policyHint} onSelect={(gesture) => toggleSelection(file, index, gesture)} onOpen={() => file.kind === "directory" ? void navigate(file.path) : openDocument(`${file.path}${file.editable ? "?edit" : ""}`)} onRename={() => { if (directory.permissions.write && directory.permissions.delete) setDialog({ kind: "rename", path: file.path, name: file.name, value: file.name, pending: false }); }} onDelete={() => setDialog({ kind: "delete", paths: [file.path], pending: false })} onDeleteKey={() => { if (directory.permissions.delete) setDialog({ kind: "delete", paths: selected.size ? [...selected] : [file.path], pending: false }); }} onClear={() => { setSelected(new Set()); setLastSelected(null); }}/>) }
+          {files.map((file, index) => <FileRow key={file.path} file={file} index={index} selected={selected.has(file.path)} loading={directoryState === "loading"} arriving={arrivingNames.has(file.name)} permissions={directory.permissions} policyHint={policyHint} onSelect={(gesture) => toggleSelection(file, index, gesture)} onOpen={() => file.kind === "directory" ? void navigate(file.path) : openDocument(`${file.path}${file.editable ? "?edit" : ""}`, file.editable)} onRename={() => { if (directory.permissions.write && directory.permissions.delete) setDialog({ kind: "rename", path: file.path, name: file.name, value: file.name, pending: false }); }} onDelete={() => setDialog({ kind: "delete", paths: [file.path], pending: false })} onDeleteKey={() => { if (directory.permissions.delete) setDialog({ kind: "delete", paths: selected.size ? [...selected] : [file.path], pending: false }); }} onClear={() => { setSelected(new Set()); setLastSelected(null); }}/>) }
           {/* Space the rail's height, so the last rows can scroll clear of it. */}
           <div className="rail-clearance h-[var(--xw-rail-clearance,0)]" aria-hidden="true"/>
         </div>

@@ -19,7 +19,7 @@ import {
 
 import { formatBytes, prefersReducedMotion } from "./format";
 import { useModalFocus } from "./keyboard";
-import { AUTH_OVERLAY_COPY, AUTH_REDIRECT_EVENT, beginAuthRedirect } from "./shared.js";
+import { AUTH_OVERLAY_COPY, AUTH_REDIRECT_EVENT, beginAuthRedirect, consumeHandover, markHandover } from "./shared.js";
 import { UploadClient, UploadError, UploadState, uploadFile } from "./upload-engine";
 
 interface EditorBootstrap {
@@ -72,6 +72,7 @@ const LEAVING_MOVE_SECONDS = 0.17;
 const SURFACE_ENTER_SECONDS = 0.18;
 const SURFACE_EXIT_SECONDS = 0.16;
 const XW_EASE: [number, number, number, number] = [0.16, 1, 0.3, 1];
+const XW_EXIT_EASE: [number, number, number, number] = [0.4, 0, 1, 1];
 
 function saveChunkBytes(boot: EditorBootstrap): number {
   const serverMax = boot.maxChunkBytes > 0 ? boot.maxChunkBytes : SAVE_CHUNK_BYTES;
@@ -94,6 +95,9 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
   const [confirmLeave, setConfirmLeave] = useState<string | null>(null);
   const [authOverlay, setAuthOverlay] = useState<keyof typeof AUTH_OVERLAY_COPY | null>(null);
   const [pageLeaving, setPageLeaving] = useState(false);
+  // Arriving from the file browser: no cold-load wait, and the entrance matches
+  // the 170ms the browser spent leaving.
+  const [handover] = useState(() => consumeHandover());
   const canEdit = boot.canWrite && !boot.truncated;
   const reduceMotion = prefersReducedMotion();
 
@@ -257,6 +261,7 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
   const navigateAway = (href: string): void => {
     if (pageLeaving) return;
     allowLeave.current = true;
+    markHandover();
     setPageLeaving(true);
     window.setTimeout(() => location.assign(href), prefersReducedMotion() ? 0 : 170);
   };
@@ -275,8 +280,8 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
     initial={reduceMotion ? false : { opacity: 0, y: 6 }}
     animate={pageLeaving ? { opacity: 0, y: -5 } : { opacity: 1, y: 0 }}
     transition={pageLeaving
-      ? { opacity: { duration: reduceMotion ? 0 : LEAVING_OPACITY_SECONDS }, y: { duration: reduceMotion ? 0 : LEAVING_MOVE_SECONDS } }
-      : { duration: reduceMotion ? 0 : PAGE_ENTER_SECONDS, ease: XW_EASE }}
+      ? { opacity: { duration: reduceMotion ? 0 : LEAVING_OPACITY_SECONDS, ease: XW_EXIT_EASE }, y: { duration: reduceMotion ? 0 : LEAVING_MOVE_SECONDS, ease: XW_EXIT_EASE } }
+      : { duration: reduceMotion ? 0 : handover ? LEAVING_MOVE_SECONDS : PAGE_ENTER_SECONDS, ease: XW_EASE }}
   >
     {/* The editor's view heading; the visible file name sits in the topbar. */}
     <h1 id="editor-title" className="sr-only">{boot.filename}</h1>
