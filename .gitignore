@@ -12,7 +12,8 @@ node_modules/
 package-lock.json
 scripts/node_modules/
 !scripts/package-lock.json
-scripts/test-results/
+# Playwright's outputDir, wherever it is run from.
+test-results/
 
 # Runtime
 .fileshare-tmp/
