@@ -1705,3 +1705,31 @@ class TestAdminConsole:
                 headers=admin_headers,
             )
             assert purged.status_code == 200
+
+    def test_concurrent_deletes_and_trash_reads_keep_the_index_whole(
+        self, root, tmp_dir, tmp_path, monkeypatch
+    ):
+        from concurrent.futures import ThreadPoolExecutor
+
+        settings, _, _ = self._settings(root, tmp_dir, tmp_path, monkeypatch)
+        names = [f"burst-{index}.txt" for index in range(60)]
+        for name in names:
+            (root / name).write_text(name)
+        admin_headers = {"X-Forwarded-User": "admin"}
+        alice_headers = {"X-Forwarded-User": "alice"}
+        with TestClient(create_app(settings)) as client:
+
+            def remove(name):
+                return client.delete(f"/{name}", headers=alice_headers).status_code
+
+            def read_trash(_):
+                return client.get("/api/admin/trash", headers=admin_headers).status_code
+
+            with ThreadPoolExecutor(max_workers=16) as pool:
+                deletes = [pool.submit(remove, name) for name in names]
+                reads = [pool.submit(read_trash, index) for index in range(60)]
+                statuses = [job.result() for job in deletes + reads]
+
+            assert set(statuses) == {200}
+            records = json.loads((root / ".xwing-trash" / ".index.json").read_text())
+            assert len(records) == len(names)

@@ -11,6 +11,7 @@ const BTN_GHOST = CONTROL_GHOST;
 import { cn } from "./lib/cn";
 import {
   ACCOUNT_INLINE,
+  ACCOUNT_TRIGGER,
   BRAND,
   BRAND_CONTEXT,
   BRAND_NAME,
@@ -24,6 +25,8 @@ import {
   CONTROL_PRIMARY,
   CONTROL_PRIMARY_COMPACT,
   MENU_ITEM,
+  MENU_ITEM_DANGER,
+  POPOVER,
   RAIL,
   SIGNOUT,
   TOAST,
@@ -117,7 +120,7 @@ function TransitionVeil({ active, label }: { active: boolean; label: string }): 
 }
 
 function Logo(): React.JSX.Element {
-  return <svg className="brand-mark" viewBox="0 0 200 200" aria-label="X-wing logo">
+  return <svg className="brand-mark" viewBox="0 0 200 200" role="img" aria-label="X-wing logo">
     <rect x="6" y="6" width="188" height="188" rx="36" />
     <g fill="none" strokeLinecap="round" strokeLinejoin="round">
       <polygon points="71,78 23,48 15,100 23,152 71,122" /><polyline points="71,78 30,100 71,122" />
@@ -173,6 +176,12 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   const [directoryError, setDirectoryError] = useState("");
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [lastSelected, setLastSelected] = useState<string | null>(null);
+  // Roving tabindex for the listing: exactly one row is a tab stop, so a
+  // keyboard user tabs into the list once and moves with arrows/Home/End.
+  // Any focus landing on a row (click, arrows, pending focus after a fetch)
+  // promotes it via onFocus below; filtering or navigation falls back to the
+  // first visible row.
+  const [rovingPath, setRovingPath] = useState<string | null>(null);
   const [sort, setSort] = useState<SortEntry[]>(() => readSort(initial.user.name));
   // The filter lives in the URL, so a filtered listing is shareable and the
   // back button restores it along with the folder.
@@ -182,6 +191,9 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   const [accountOpen, setAccountOpen] = useState(false);
   const [dialog, setDialog] = useState<Dialog>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  // One row-actions menu open at a time; a path that leaves the listing
+  // simply matches no row, so stale values close themselves.
+  const [actionsPath, setActionsPath] = useState<string | null>(null);
   const [zipPending, setZipPending] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [dropWaitState, setDropWaitState] = useState<DropWaitState>(null);
@@ -298,6 +310,14 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
 
   const dismissToast = (id: number): void => setToasts(current => current.filter(item => item.id !== id));
 
+  /** SPA links keep real hrefs: a modifier-click or middle-click must reach
+   *  the browser instead of the in-app fade, so a new tab still works. */
+  const spaActivate = (event: React.MouseEvent, run: () => void): void => {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+    event.preventDefault();
+    run();
+  };
+
   /** Leave for another document. `handover` marks a move between the app's own
    *  panels (the editor, the console), which the destination reads so it skips
    *  its cold-load card. */
@@ -335,6 +355,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
         setDirectory(next);
         setSelected(new Set());
         setLastSelected(null);
+        setActionsPath(null);
         setDirectoryState("ready");
         document.title = `X-wing — ${next.path}`;
         const url = encodePath(next.path === "/" ? "/" : `${next.path}/`);
@@ -716,6 +737,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     : directory.permissions.delete
       ? "You don't have permission to add files here."
       : "You have read-only access here.";
+  const anchorPath = rovingPath && files.some(file => file.path === rovingPath) ? rovingPath : files[0]?.path ?? null;
 
   return <m.div className="xw-app h-full grid grid-rows-[52px_minmax(0,1fr)] isolate bg-xw-bg max-[640px]:grid-rows-[48px_minmax(0,1fr)]"
     initial={reduced ? false : { opacity: 0, y: 6 }}
@@ -727,20 +749,20 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     onDragOver={event => { if (!directory.permissions.write) return; event.preventDefault(); refreshDropFeedback(); }}
     onDragLeave={event => { event.preventDefault(); dragDepth.current = Math.max(0, dragDepth.current - 1); if (!dragDepth.current) clearDropFeedback(); }}
     onDrop={event => { event.preventDefault(); clearDropFeedback(); void queueDrop(event.dataTransfer); }}>
-    <TransitionVeil active={transitioning} label="Switching" />
+    <TransitionVeil active={transitioning} label="Switching…" />
     <a className="skip-link fixed top-2.5 left-2.5 z-modal -translate-y-[160%] min-h-8 border border-solid border-xw-accent-border rounded-md bg-xw-panel text-xw-text px-3 py-2 text-xs no-underline transition-transform duration-[120ms] focus-visible:translate-y-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#c4b5fd] max-[640px]:[&>span]:hidden" href="#file-list">Skip to files</a>
     {/* The browser's view heading. The visible label is the breadcrumb, which
         cannot itself become a heading without breaking the crumb row's layout. */}
     <h1 className="sr-only">{crumbLabel(directory.breadcrumbs[directory.breadcrumbs.length - 1]?.name ?? "")}</h1>
     <header className={cn("topbar", TOPBAR)}>
-      <a className={BRAND} href="/" aria-label="X-wing FILES, home" onClick={event => { event.preventDefault(); openDocument("/", true); }}><Logo/><span className={BRAND_NAME}>X-wing</span><small className={BRAND_CONTEXT}>FILES</small></a>
+      <a className={BRAND} href="/" aria-label="X-wing FILES, home" onClick={event => spaActivate(event, () => openDocument("/", true))}><Logo/><span className={BRAND_NAME}>X-wing</span><small className={BRAND_CONTEXT}>FILES</small></a>
       {directory.user.authenticated ? <div className={ACCOUNT_INLINE}>{directory.admin ? <div className="account relative" ref={accountRef}>
-        <button className="account-trigger h-8 min-h-8 flex items-center gap-2 px-2 border border-solid border-transparent rounded-md bg-transparent text-[#aeb6c5] text-xs hover:border-xw-line-hi hover:bg-xw-raised hover:text-xw-text aria-expanded:border-xw-line-hi aria-expanded:bg-xw-raised aria-expanded:text-xw-text max-[640px]:[&>span]:hidden" type="button" aria-haspopup="menu" aria-expanded={accountOpen} onClick={() => setAccountOpen(value => !value)}>
+        <button className={ACCOUNT_TRIGGER} type="button" aria-expanded={accountOpen} aria-controls={accountOpen ? "account-menu" : undefined} onClick={() => setAccountOpen(value => !value)}>
           <span>{directory.user.name}</span><Icon name="chevron"/>
         </button>
-        {accountOpen && <div className="popover account-menu absolute right-0 top-[38px] z-popover min-w-[152px] p-1 border border-solid border-[#3b465c] rounded-[7px] bg-[#111827] shadow-[0_18px_45px_rgba(0,0,0,.46)] origin-top-right animate-[xw-surface-in_var(--xw-surface)_var(--xw-ease)]" role="menu" aria-label="Workspace navigation">
-          <a className={cn(MENU_ITEM, "active bg-xw-hover text-xw-text")} href="/" role="menuitem" aria-current="page">Files</a>
-          <a className={MENU_ITEM} href="/admin" role="menuitem" onClick={event => { event.preventDefault(); openDocument("/admin", true); }}>Admin panel</a>
+        {accountOpen && <div id="account-menu" className={cn(POPOVER, "account-menu min-w-[152px]")} role="group" aria-label="Workspace navigation">
+          <a className={cn(MENU_ITEM, "active bg-xw-hover text-xw-text")} href="/" aria-current="page">Files</a>
+          <a className={MENU_ITEM} href="/admin" onClick={event => spaActivate(event, () => openDocument("/admin", true))}>Admin panel</a>
         </div>}
       </div> : <span>{directory.user.name}</span>}<form id="logout-form" className="m-0" method="post" action="/_auth/logout" onSubmit={event => { event.preventDefault(); setAuthOverlay("logout"); const form = event.currentTarget; window.setTimeout(() => form.submit(), AUTH_REDIRECT_DELAY_MS); }}><button className={SIGNOUT} type="submit">Sign out</button></form></div> : <span className="anonymous-label px-2 text-[#a0a9b9] text-xs font-medium">anonymous</span>}
     </header>
@@ -749,14 +771,14 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
       <section className="location flex items-center justify-between min-w-0" aria-label="Current location">
         <nav className="crumbs flex items-center gap-1 min-w-0 text-xw-muted text-xs font-mono leading-[normal]" aria-label="Breadcrumb">{directory.breadcrumbs.map((crumb, index) => <React.Fragment key={crumb.path}>
           {index > 0 && <span className="slash text-[#444f63]">/</span>}
-          {index === directory.breadcrumbs.length - 1 ? <span className="crumb current text-[#aab3c2] no-underline rounded-[4px] px-1 py-0.5 whitespace-nowrap max-w-[260px] overflow-hidden text-ellipsis text-xw-text font-semibold">{crumbLabel(crumb.name)}</span> : <a className="crumb text-[#aab3c2] no-underline rounded-[4px] px-1 py-0.5 whitespace-nowrap max-w-[260px] overflow-hidden text-ellipsis hover:bg-xw-hover hover:text-xw-text" href={crumb.path} onClick={event => { event.preventDefault(); void navigate(crumb.path); }}>{crumbLabel(crumb.name)}</a>}
+          {index === directory.breadcrumbs.length - 1 ? <span className="crumb current text-[#aab3c2] no-underline rounded-[4px] px-1 py-0.5 whitespace-nowrap max-w-[260px] overflow-hidden text-ellipsis text-xw-text font-semibold">{crumbLabel(crumb.name)}</span> : <a className="crumb text-[#aab3c2] no-underline rounded-[4px] px-1 py-0.5 whitespace-nowrap max-w-[260px] overflow-hidden text-ellipsis hover:bg-xw-hover hover:text-xw-text" href={crumb.path} onClick={event => spaActivate(event, () => void navigate(crumb.path))}>{crumbLabel(crumb.name)}</a>}
         </React.Fragment>)}</nav>
         <div className="location-meta flex gap-3 text-xw-faint text-[11px] font-mono leading-[normal] tabular-nums max-[900px]:hidden"><span>{query.trim() ? `${files.length} of ${directory.files.length} items` : `${directory.files.length} items`}</span></div>
       </section>
 
       <div className="workspace-controls min-w-0 flex flex-col gap-3">
       {notice && <div id="permission-notice" className="readonly-notice m-0 px-3 py-2 border border-solid border-[#544829] rounded-lg bg-[#211d14] text-[#e6c77f] text-xs" role="status">{notice}</div>}
-      <section className="actionbar min-h-11 flex items-center justify-between gap-3 p-1 border border-solid border-xw-line rounded bg-xw-panel max-[640px]:overflow-x-auto max-[640px]:gap-1" aria-label="File actions" aria-describedby={policyHint}>
+      <section className={cn("actionbar min-h-11 flex items-center justify-between gap-3 p-1 border border-solid border-xw-line rounded bg-xw-panel max-[640px]:overflow-x-auto max-[640px]:gap-1", selected.size && "max-[640px]:flex-wrap")} aria-label="File actions" aria-describedby={policyHint}>
         <div className="toolbar-group flex items-center gap-2 min-w-0">
           <button className={cn("button", BTN, BTN_PRIMARY)} disabled={!directory.permissions.write} aria-describedby={policyHint} onClick={() => fileInput.current?.click()}><Icon name="upload"/><span className="label">Upload files</span></button>
           <button className={cn("button hide-tablet max-[900px]:hidden", BTN)} aria-label="Upload folder" disabled={!directory.permissions.write} aria-describedby={policyHint} onClick={() => folderInput.current?.click()}><Icon name="folderUpload"/><span className="label">Upload folder</span></button>
@@ -764,23 +786,23 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
           <input ref={fileInput} type="file" multiple hidden onChange={event => { if (event.target.files) { clearDropFeedback(); queueFiles(event.target.files); } event.currentTarget.value = ""; }}/>
           <input ref={folderInput} type="file" multiple hidden {...({ webkitdirectory: "" } as React.InputHTMLAttributes<HTMLInputElement>)} onChange={event => { if (event.target.files) { clearDropFeedback(); queueFiles(event.target.files); } event.currentTarget.value = ""; }}/>
         </div>
-        <div className={`toolbar-group selection-actions flex items-center gap-2 min-w-0 opacity-0 pointer-events-none translate-y-[3px] transition-[opacity,transform] duration-micro ease-xw max-[640px]:absolute max-[640px]:left-1.5 max-[640px]:right-1.5 max-[640px]:bg-xw-panel max-[640px]:z-base ${selected.size ? "visible opacity-100 pointer-events-auto translate-y-0" : ""}`} aria-hidden={!selected.size}>
-          <span className="selection-pill h-7 min-h-7 inline-flex items-center gap-2 px-3 rounded-full border border-solid border-xw-accent-border bg-xw-accent-lo text-xw-accent-hi text-[11px] font-semibold tabular-nums max-[900px]:hidden max-[640px]:flex"><i/>{selected.size} selected</span>
+        <div className={cn("toolbar-group selection-actions flex items-center gap-2 min-w-0 opacity-0 pointer-events-none translate-y-[3px] transition-[opacity,transform] duration-micro ease-xw max-[640px]:order-first max-[640px]:w-full", selected.size ? "visible opacity-100 pointer-events-auto translate-y-0" : "max-[640px]:hidden")} aria-hidden={!selected.size} inert={!selected.size}>
+          <span className="selection-pill h-7 min-h-7 inline-flex items-center gap-2 px-3 rounded-full border border-solid border-xw-accent-border bg-xw-accent-lo text-xw-accent-hi text-[11px] font-semibold tabular-nums max-[900px]:hidden max-[640px]:flex">{selected.size} selected</span>
           <button className={cn("button", BTN)} aria-label="Download selected as zip" disabled={!selected.size || zipPending > 0} aria-busy={zipPending > 0} onClick={() => void downloadSelected()}><Icon name="download"/><span className="label">Download zip</span></button>
           <button className={cn("button danger", BTN, BTN_DANGER)} aria-label="Delete selected" disabled={!selected.size || !directory.permissions.delete} aria-describedby={!directory.permissions.delete ? policyHint : undefined} onClick={() => setDialog({ kind: "delete", paths: [...selected], pending: false })}><Icon name="trash"/><span className="label">Delete</span></button>
           <button className={cn("button ghost", BTN, BTN_GHOST)} disabled={!selected.size} onClick={() => { const focusPath = lastSelected ?? selected.values().next().value ?? null; setSelected(new Set()); setLastSelected(null); focusFileRow(focusPath); }}>Clear</button>
         </div>
         <div className="toolbar-group toolbar-end flex items-center gap-2 min-w-0 ml-auto">
-          <input className="filter-input w-[132px] h-[31px] min-h-[31px] px-3 border border-solid border-xw-line-hi rounded-md bg-xw-raised text-xw-text text-xs appearance-none placeholder:text-xw-faint max-[640px]:w-[112px] max-[640px]:px-2 max-[640px]:text-base" type="search" aria-label="Filter files by name" placeholder="Filter files" value={query} onChange={event => updateQuery(event.target.value)}/>
-          <div className="parallel-wrap relative" ref={parallelRef}>
-            <button className="parallel-trigger w-[126px] h-[31px] min-h-[31px] grid grid-cols-[1fr_auto] items-center gap-2 pl-3 pr-2 border border-solid border-xw-line-hi rounded-md bg-xw-raised hover:border-xw-accent-border hover:bg-[#171d2e] aria-expanded:border-xw-accent-border aria-expanded:bg-[#171d2e] [&[aria-expanded=true]>.ui-icon]:rotate-180 max-[640px]:w-[76px]" aria-label={`Parallel uploads: ${upload.parallel}`} aria-haspopup="dialog" aria-expanded={parallelOpen} onClick={() => parallelOpen ? closeParallel(true) : setParallelOpen(true)}>
-              <span className="parallel-copy flex items-baseline justify-between gap-2 font-sans [&>span]:text-[#7f8a9e] [&>span]:text-[11px] [&>span]:font-medium [&>span]:uppercase [&>span]:max-[640px]:hidden [&>strong]:text-[#eef0f5] [&>strong]:text-xs [&>strong]:font-medium [&>strong]:font-mono"><span>Parallel</span><strong>{upload.parallel}</strong></span><Icon name="chevron"/>
+          <input className="filter-input w-[132px] h-[31px] min-h-[31px] px-3 border border-solid border-xw-line-hi rounded-md bg-xw-raised text-xw-text text-xs appearance-none placeholder:text-xw-faint max-[640px]:w-[112px] max-[640px]:px-2 max-[640px]:text-base" type="search" aria-label="Filter files by name" placeholder="Filter files…" value={query} onChange={event => updateQuery(event.target.value)}/>
+          <div className="parallel-wrap relative" ref={parallelRef} onBlur={event => { if (parallelOpen && !event.currentTarget.contains(event.relatedTarget as Node | null)) setParallelOpen(false); }}>
+            <button className="parallel-trigger w-[126px] max-[640px]:w-[64px] h-[31px] min-h-[31px] grid grid-cols-[1fr_auto] items-center gap-2 pl-3 pr-2 max-[640px]:pl-2 border border-solid border-xw-line-hi rounded-md bg-xw-raised text-xs font-medium hover:border-xw-accent-border hover:bg-[#171d2e] aria-expanded:border-xw-accent-border aria-expanded:bg-[#171d2e] [&[aria-expanded=true]>.ui-icon]:rotate-180" aria-label={`Parallel uploads: ${upload.parallel}`} aria-expanded={parallelOpen} aria-controls={parallelOpen ? "parallel-menu" : undefined} onClick={() => parallelOpen ? closeParallel(true) : setParallelOpen(true)}>
+              <span className="parallel-copy flex items-baseline justify-between gap-2 font-sans [&>span]:text-[#7f8a9e] [&>span]:text-[11px] [&>span]:font-medium [&>span]:uppercase max-[640px]:[&>span]:hidden [&>strong]:text-[#eef0f5] [&>strong]:text-xs [&>strong]:font-medium [&>strong]:font-mono"><span>Parallel</span><strong>{upload.parallel}</strong></span><Icon name="chevron"/>
             </button>
-            {parallelOpen && <div ref={parallelMenu} className="popover parallel-menu absolute right-0 top-[36px] z-popover min-w-[184px] p-1 border border-solid border-[#3b465c] rounded-[7px] bg-[#111827] shadow-[0_18px_45px_rgba(0,0,0,.46)] origin-top-right animate-[xw-surface-in_var(--xw-surface)_var(--xw-ease)]" role="dialog" aria-label="Concurrent uploads" tabIndex={-1}>
-              <div className="menu-title px-2 pt-1 pb-2 text-[#788499] text-[11px] font-medium uppercase">Concurrent uploads</div>
-              <div role="radiogroup">{PARALLEL_VALUES.map(value => <label className={cn("parallel-option min-h-[34px] flex items-center justify-between px-2 rounded-[5px] text-[#b9c1ce] cursor-pointer text-[11px] hover:bg-xw-hover [&>input]:absolute [&>input]:opacity-0 [&>span]:flex [&>span]:items-baseline [&>span]:gap-2 [&>strong]:min-w-3 [&>strong]:text-[#eef0f5] [&>small]:text-[#8792a5] [&>small]:text-[11px]", upload.parallel === value && "selected bg-xw-accent-lo text-xw-accent-hi")} key={value}>
+            {parallelOpen && <div ref={parallelMenu} id="parallel-menu" className={cn(POPOVER, "parallel-menu top-[36px] min-w-[184px]")} role="group" aria-label="Parallel uploads" tabIndex={-1}>
+              <div id="parallel-menu-title" className="menu-title px-2 pt-1 pb-2 text-[#788499] text-[11px] font-medium uppercase">Parallel uploads</div>
+              <div role="radiogroup" aria-labelledby="parallel-menu-title">{PARALLEL_VALUES.map(value => <label className={cn("parallel-option h-8 min-h-8 flex items-center justify-between px-2 rounded-[5px] text-[#b9c1ce] cursor-pointer text-xs hover:bg-xw-hover focus-within:outline focus-within:outline-2 focus-within:outline-offset-[-2px] focus-within:outline-xw-accent [&>input]:absolute [&>input]:opacity-0 [&>span]:flex [&>span]:items-baseline [&>span]:gap-2 [&_strong]:min-w-3 [&_strong]:font-mono [&_strong]:font-medium [&_strong]:text-[#eef0f5] [&_small]:text-[11px] [&_small]:text-[#8792a5]", upload.parallel === value && "selected bg-xw-accent-lo text-xw-accent-hi")} key={value}>
                 <input type="radio" name="parallel" value={value} checked={upload.parallel === value} onChange={() => { uploadManager.setParallel(value); closeParallel(true); }}/>
-                <span><strong>{value}</strong><small>at a time</small></span>{upload.parallel === value && <Icon name="check"/>}
+                <span><strong>{value}</strong><small>{value === 1 ? "upload at a time" : "uploads at a time"}</small></span>{upload.parallel === value && <Icon name="check"/>}
               </label>)}</div>
             </div>}
           </div>
@@ -794,16 +816,16 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
         else if (event.key === "Escape" && selected.size) { event.preventDefault(); setSelected(new Set()); setLastSelected(null); }
       }}>
         <div className="file-table grid grid-rows-[36px_minmax(0,1fr)] min-h-0 overflow-auto [scrollbar-gutter:stable]" role="table" aria-label="Files" aria-rowcount={files.length + 1} aria-describedby={policyHint}>
-        <div className={cn("table-head sticky top-0 z-raise border-0 border-b border-solid border-xw-line bg-[#0b101a] text-xw-faint text-[11px] font-medium font-mono uppercase items-stretch", "grid grid-cols-[38px_34px_minmax(240px,1fr)_112px_168px_92px] px-2 max-[900px]:grid-cols-[38px_34px_minmax(180px,1fr)_90px_120px_92px] max-[640px]:grid-cols-[38px_30px_minmax(120px,1fr)_64px_56px]")} role="rowgroup"><span role="row" style={ROW_CONTENTS}><label className="select-all h-full grid place-items-center bg-transparent border-0 cursor-pointer" role="columnheader"><SelectionCheckbox label={selected.size === files.length ? "Deselect all" : "Select all"} checked={files.length > 0 && selected.size === files.length} indeterminate={selected.size > 0 && selected.size < files.length} onToggle={() => { setSelected(selected.size === files.length ? new Set() : new Set(files.map(file => file.path))); setLastSelected(null); }}/></label><span role="columnheader"/>{(["name", "size", "modified"] as SortKey[]).map(key => { const index = sort.findIndex(entry => entry.key === key); const entry = sort[index]; const label = key === "modified" ? "Modified" : key[0]!.toUpperCase() + key.slice(1); return <span key={key} className={cn("sort-cell flex", key === "modified" && "max-[640px]:hidden")} role="columnheader" aria-sort={entry ? (entry.direction === "asc" ? "ascending" : "descending") : "none"} style={SORT_CELL}><button className={cn("sort h-full w-full flex items-center gap-1 bg-transparent text-inherit text-left uppercase hover:text-[#aab5c9]", key === "modified" && "date max-[640px]:hidden", entry && "active")} aria-label={`${label}, ${entry ? `${entry.direction === "asc" ? "ascending" : "descending"}, priority ${index + 1}` : "not sorted"}`} onClick={() => updateSort(key)}>{label} {entry && <span>{entry.direction === "asc" ? "▲" : "▼"}{sort.length > 1 ? index + 1 : ""}</span>}</button></span>; })}<span role="columnheader"/></span></div>
+        <div className={cn("table-head sticky top-0 z-raise border-0 border-b border-solid border-xw-line bg-[#0b101a] text-xw-faint text-[11px] font-medium font-mono uppercase items-stretch", "grid grid-cols-[38px_34px_minmax(240px,1fr)_112px_168px_92px] px-2 max-[900px]:grid-cols-[38px_34px_minmax(180px,1fr)_90px_120px_92px] max-[640px]:grid-cols-[38px_30px_minmax(120px,1fr)_64px_56px]")} role="rowgroup"><span role="row" style={ROW_CONTENTS}><label className="select-all h-full grid place-items-center bg-transparent border-0 cursor-pointer" role="columnheader"><SelectionCheckbox label={selected.size === files.length ? "Deselect all" : "Select all"} checked={files.length > 0 && selected.size === files.length} indeterminate={selected.size > 0 && selected.size < files.length} onToggle={() => { setSelected(selected.size === files.length ? new Set() : new Set(files.map(file => file.path))); setLastSelected(null); }}/></label><span role="columnheader" aria-label="Type"/>{(["name", "size", "modified"] as SortKey[]).map(key => { const index = sort.findIndex(entry => entry.key === key); const entry = sort[index]; const label = key === "modified" ? "Modified" : key[0]!.toUpperCase() + key.slice(1); return <span key={key} className={cn("sort-cell flex", key === "modified" && "max-[640px]:hidden")} role="columnheader" aria-sort={entry ? (entry.direction === "asc" ? "ascending" : "descending") : "none"} style={SORT_CELL}><button className={cn("sort h-full w-full flex items-center gap-1 bg-transparent text-inherit text-left uppercase hover:text-[#aab5c9]", key === "modified" && "date max-[640px]:hidden", entry && "active")} aria-label={`${label}, ${entry ? `${entry.direction === "asc" ? "ascending" : "descending"}, priority ${index + 1}` : "not sorted"}`} onClick={() => updateSort(key)}>{label} {entry && <span>{entry.direction === "asc" ? "▲" : "▼"}{sort.length > 1 ? index + 1 : ""}</span>}</button></span>; })}<span role="columnheader" aria-label="Actions"/></span></div>
         <div id="file-list" className="file-list min-h-0 transition-[opacity,transform] duration-150 ease-in-out" role="rowgroup" tabIndex={-1}>
           {directoryState === "error" && <div className="state-panel h-full min-h-[220px] flex flex-col items-center justify-center gap-2 text-xw-muted text-pretty"><strong>Couldn’t open this folder</strong><span>{directoryError}</span><button className={cn("button", BTN)} onClick={() => void refresh()}>Retry</button></div>}
           {!files.length && directoryState !== "error" && <div className="state-panel empty h-full min-h-[220px] flex flex-col items-center justify-center gap-2 text-xw-muted text-pretty"><span className="empty-icon w-[46px] h-[46px] grid place-items-center border border-solid border-xw-line rounded-[10px] bg-xw-raised text-[#d8b963] [&_.ui-icon]:w-[22px] [&_.ui-icon]:h-[22px]"><Icon name="folder"/></span><strong>{query.trim() ? "No matches" : "This folder is empty"}</strong><span>{query.trim() ? `Nothing here matches “${query.trim()}”.` : emptyStateHint}</span>{directory.permissions.write && !query.trim() && <button className={cn("button", BTN, BTN_PRIMARY)} onClick={() => fileInput.current?.click()}><Icon name="upload"/><span className="label">Upload files</span></button>}</div>}
-          {files.map((file, index) => <FileRow key={file.path} file={file} index={index} selected={selected.has(file.path)} loading={directoryState === "loading"} arriving={arrivingNames.has(file.name)} permissions={directory.permissions} policyHint={policyHint} onSelect={(gesture) => toggleSelection(file, index, gesture)} onOpen={() => file.kind === "directory" ? void navigate(file.path) : openDocument(`${file.path}${file.editable ? "?edit" : ""}`, file.editable)} onRename={() => { if (directory.permissions.write && directory.permissions.delete) setDialog({ kind: "rename", path: file.path, name: file.name, value: file.name, pending: false }); }} onDelete={() => setDialog({ kind: "delete", paths: [file.path], pending: false })} onDeleteKey={() => { if (directory.permissions.delete) setDialog({ kind: "delete", paths: selected.size ? [...selected] : [file.path], pending: false }); }} onClear={() => { setSelected(new Set()); setLastSelected(null); }}/>) }
+          {files.map((file, index) => <FileRow key={file.path} file={file} index={index} selected={selected.has(file.path)} loading={directoryState === "loading"} arriving={arrivingNames.has(file.name)} tabStop={file.path === anchorPath} onFocusRow={setRovingPath} actionsOpen={actionsPath === file.path} onToggleActions={() => setActionsPath(current => current === file.path ? null : file.path)} onCloseActions={() => setActionsPath(current => current === file.path ? null : current)} permissions={directory.permissions} policyHint={policyHint} onSelect={(gesture) => toggleSelection(file, index, gesture)} onOpen={() => file.kind === "directory" ? void navigate(file.path) : openDocument(`${file.path}${file.editable ? "?edit" : ""}`, file.editable)} onRename={() => { if (directory.permissions.write && directory.permissions.delete) setDialog({ kind: "rename", path: file.path, name: file.name, value: file.name, pending: false }); }} onDelete={() => setDialog({ kind: "delete", paths: [file.path], pending: false })} onDeleteKey={() => { if (directory.permissions.delete) setDialog({ kind: "delete", paths: selected.size ? [...selected] : [file.path], pending: false }); }} onClear={() => { setSelected(new Set()); setLastSelected(null); }}/>) }
           {/* Space the rail's height, so the last rows can scroll clear of it. */}
           <div className="rail-clearance h-[var(--xw-rail-clearance,0)]" aria-hidden="true"/>
         </div>
         </div>
-        <div className="statusbar flex items-center justify-end px-3 border-0 border-t border-solid border-xw-line bg-[#0b101a] text-xw-faint text-[11px] font-mono leading-[normal] tabular-nums max-[640px]:justify-center max-[640px]:[&>span]:hidden"><span className="drop-hint text-[#7f779c]">Drop files anywhere to upload</span>{refreshFailures >= REFRESH_FAILURE_NOTICE && <span role="status">Couldn't refresh — retrying</span>}</div>
+        <div className="statusbar flex items-center justify-between px-3 border-0 border-t border-solid border-xw-line bg-[#0b101a] text-xw-faint text-[11px] font-mono leading-[normal] tabular-nums max-[640px]:justify-center"><span className="statusbar-count min-[901px]:hidden">{query.trim() ? `${files.length} of ${directory.files.length} items` : `${directory.files.length} items`}</span><span className="drop-hint text-[#7f779c] max-[640px]:hidden">{directory.permissions.write ? "Drop files anywhere to upload" : "Browsing — uploads are disabled"}</span>{refreshFailures >= REFRESH_FAILURE_NOTICE && <span role="status">Couldn't refresh — retrying</span>}</div>
       </section>
       <AnimatePresence initial={false}>{dragging && <m.div key="drop-target" className="drop-target absolute inset-3 max-[640px]:inset-2 flex flex-col items-center justify-center gap-2 border-2 border-dashed border-xw-accent-border rounded-[10px] bg-[rgba(16,14,31,.94)] text-xw-accent-hi pointer-events-none z-drag"
       initial={reduced ? false : { opacity: 0, scale: 0.985 }} animate={{ opacity: 1, scale: 1 }} exit={reduced ? { opacity: 1 } : { opacity: 0, scale: 0.985 }} transition={{ duration: presenceDuration(reduced) }}
@@ -812,7 +834,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
           stack and the upload dock. They stack instead of overlapping, and each
           one carries its own status/alert role so a message is announced
           exactly once. */}
-      <div className={RAIL} ref={railRef}>
+      <div className={cn(RAIL, "bottom-[62px] max-[640px]:bottom-4")} ref={railRef}>
         <AnimatePresence initial={false}>{dropWaitState && <m.div key="drop-wait" className={cn("drop-wait w-[min(420px,calc(100vw-56px))] min-h-[42px] flex items-center gap-2 px-2 py-1 border border-solid rounded-[7px] bg-[rgba(20,24,39,.97)] shadow-[0_12px_32px_rgba(0,0,0,.38)] text-[11px]", dropWaitState === "delayed" ? "delayed border-[#6b5b38] text-[#e4c986]" : "border-xw-accent-border text-[#c9c2ef]")}
           initial={reduced ? false : { opacity: 0, y: 10, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={reduced ? { opacity: 1 } : { opacity: 0, y: 7, scale: 0.98 }} transition={{ duration: presenceDuration(reduced) }}>
           {dropWaitState === "preparing"
@@ -856,23 +878,32 @@ function ToastView({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
     initial={reduced ? false : { opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={reduced ? { opacity: 1 } : { opacity: 0, y: 6 }} transition={{ duration: presenceDuration(reduced) }}>
     <span className={TOAST_ICON}><Icon name={icon}/></span>
     <span className={TOAST_MESSAGE}>{toast.message}</span>
-    {toast.action && <button className="toast-action flex-none h-7 min-h-7 min-w-7 px-2 py-1 border border-solid border-[rgba(124,58,237,.58)] rounded-md bg-xw-accent-lo text-[#ddd6fe] cursor-pointer text-[11px] font-medium leading-none uppercase hover:border-xw-accent-border hover:bg-[rgba(124,58,237,.26)] focus-visible:border-xw-accent-border focus-visible:bg-[rgba(124,58,237,.26)] focus-visible:outline-none" onClick={() => { dismiss(); toast.action?.run(); }}>{toast.action.label}</button>}
+    {toast.action && <button className="toast-action flex-none h-7 min-h-7 min-w-7 px-2 py-1 border border-solid border-[rgba(124,58,237,.58)] rounded-md bg-xw-accent-lo text-[#ddd6fe] cursor-pointer text-[11px] font-medium leading-none uppercase hover:border-xw-accent-border hover:bg-[rgba(124,58,237,.26)] focus-visible:border-xw-accent-border focus-visible:bg-[rgba(124,58,237,.26)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#c4b5fd]" onClick={() => { dismiss(); toast.action?.run(); }}>{toast.action.label}</button>}
     <span className={TOAST_TIMER} aria-hidden="true" style={{ animationDuration: `${toast.duration}ms` }}/>
   </m.div>;
 }
 
-function FileRow({ file, index, selected, loading, arriving, permissions, policyHint, onSelect, onOpen, onRename, onDelete, onDeleteKey, onClear }: { file: XwingFile; index: number; selected: boolean; loading: boolean; arriving: boolean; permissions: XwingBootstrapV1["permissions"]; policyHint: string | undefined; onSelect: (gesture: { range: boolean; additive: boolean }) => void; onOpen: () => void; onRename: () => void; onDelete: () => void; onDeleteKey: () => void; onClear: () => void }): React.JSX.Element {
+function FileRow({ file, index, selected, loading, arriving, tabStop, onFocusRow, actionsOpen, onToggleActions, onCloseActions, permissions, policyHint, onSelect, onOpen, onRename, onDelete, onDeleteKey, onClear }: { file: XwingFile; index: number; selected: boolean; loading: boolean; arriving: boolean; tabStop: boolean; onFocusRow: (path: string) => void; actionsOpen: boolean; onToggleActions: () => void; onCloseActions: () => void; permissions: XwingBootstrapV1["permissions"]; policyHint: string | undefined; onSelect: (gesture: { range: boolean; additive: boolean }) => void; onOpen: () => void; onRename: () => void; onDelete: () => void; onDeleteKey: () => void; onClear: () => void }): React.JSX.Element {
   // Rename is a move, so the server demands both write and delete; delete only
   // needs delete. Either control, when policy disables it, points at the
   // permission notice instead of relying on the dimmed style alone.
   const canRename = permissions.write && permissions.delete;
+  const actionsTrigger = useRef<HTMLButtonElement>(null);
+  const actionsMenu = useRef<HTMLDivElement>(null);
+  // Opening the menu moves focus to its first enabled item; Escape on the
+  // menu below returns it to the trigger.
+  useEffect(() => {
+    if (!actionsOpen) return;
+    actionsMenu.current?.querySelector<HTMLElement>("button:not([disabled]), a[href]")?.focus();
+  }, [actionsOpen]);
   const moveFocus = (row: HTMLElement, direction: "next" | "previous" | "first" | "last"): void => {
     const rows = [...(row.parentElement?.querySelectorAll<HTMLElement>(".file-row") ?? [])];
     const current = rows.indexOf(row);
     const target = direction === "first" ? rows[0] : direction === "last" ? rows[rows.length - 1] : rows[current + (direction === "next" ? 1 : -1)];
     target?.focus();
   };
-  return <div className={cn("file-row items-center", "grid grid-cols-[38px_34px_minmax(240px,1fr)_112px_168px_92px] px-2 max-[900px]:grid-cols-[38px_34px_minmax(180px,1fr)_90px_120px_92px] max-[640px]:grid-cols-[38px_30px_minmax(120px,1fr)_64px_56px]", "relative min-h-[42px] border-0 border-b border-solid border-[#1c2433] group cursor-pointer select-none transition-[background-color,opacity,box-shadow] duration-micro ease-xw hover:bg-xw-hover [scroll-margin-block:48px_var(--xw-rail-clearance,110px)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-[-1px] focus-visible:outline-[#7062b3]", selected && "selected bg-[#1c1732] shadow-[inset_3px_0_var(--xw-accent)] hover:bg-[#211a3a]", loading && "muted opacity-[.58]", arriving && "arriving animate-[xw-row-arrive_420ms_var(--xw-ease)]")} role="row" aria-rowindex={index + 2} aria-label={`${file.name}, ${file.kind}`} aria-selected={selected} data-path={file.path} tabIndex={0}
+  return <div className={cn("file-row items-center", "grid grid-cols-[38px_34px_minmax(240px,1fr)_112px_168px_92px] px-2 max-[900px]:grid-cols-[38px_34px_minmax(180px,1fr)_90px_120px_92px] max-[640px]:grid-cols-[38px_30px_minmax(120px,1fr)_64px_56px]", "relative min-h-[42px] border-0 border-b border-solid border-[#1c2433] group cursor-pointer select-none transition-[background-color,opacity,box-shadow] duration-micro ease-xw hover:bg-xw-hover [scroll-margin-block:48px_var(--xw-rail-clearance,110px)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-[-1px] focus-visible:outline-[#7062b3]", actionsOpen && "z-raise", selected && "selected bg-[#1c1732] shadow-[inset_3px_0_var(--xw-accent)] hover:bg-[#211a3a]", loading && "muted opacity-[.58]", arriving && "arriving animate-[xw-row-arrive_420ms_var(--xw-ease)]")} role="row" aria-rowindex={index + 2} aria-label={`${file.name}, ${file.kind}`} aria-selected={selected} data-path={file.path} tabIndex={tabStop ? 0 : -1}
+    onFocus={() => onFocusRow(file.path)}
     onMouseDown={event => { if (event.shiftKey && !(event.target as Element).closest(".row-actions")) event.preventDefault(); }}
     onDragStart={event => event.preventDefault()}
     onClick={event => { if ((event.target as Element).closest(".row-actions")) return; window.getSelection()?.removeAllRanges(); onSelect({ range: event.shiftKey, additive: event.metaKey || event.ctrlKey }); event.currentTarget.focus(); }}
@@ -895,7 +926,20 @@ function FileRow({ file, index, selected, loading, arriving, permissions, policy
     <span className={cn("filename min-w-0 text-xs font-mono whitespace-nowrap overflow-hidden text-ellipsis no-underline", file.kind === "directory" ? "directory text-[#ece1b6]" : "text-[#dfe4ec]")} role="cell" title={file.name}>{file.name}{file.kind === "directory" ? "/" : ""}</span>
     <span className="cell text-[#818da2] text-[11px] font-mono leading-[normal] tabular-nums" role="cell">{file.size === null ? "—" : formatBytes(file.size)}</span>
     <span className="cell date text-[#818da2] text-[11px] font-mono leading-[normal] tabular-nums max-[640px]:hidden" role="cell">{file.modified ? formatDate(file.modified) : "—"}</span>
-    <span className={cn("row-actions", "flex justify-end gap-0.5 opacity-0 translate-x-[5px] transition-[opacity,transform] duration-micro ease-xw group-hover:opacity-100 group-hover:translate-x-0 group-focus-within:opacity-100 group-focus-within:translate-x-0 max-[640px]:opacity-100 max-[640px]:translate-x-0 [@media(hover:none)]:opacity-100 [@media(hover:none)]:translate-x-0")} role="cell"><button className={cn(CONTROL_ICON, CONTROL_ICON_ROW)} aria-label={`Rename ${file.name}`} disabled={!canRename} aria-describedby={!canRename ? policyHint : undefined} onClick={onRename}><Icon name="rename"/></button><a className={cn(CONTROL_ICON, CONTROL_ICON_ROW)} href={file.kind === "directory" ? `${file.path}?zip` : file.path} download aria-label={`Download ${file.name}`}><Icon name="download"/></a><button className={cn(CONTROL_ICON, CONTROL_ICON_ROW, "danger-icon hover:text-xw-danger max-[640px]:hidden")} aria-label={`Delete ${file.name}`} disabled={!permissions.delete} aria-describedby={!permissions.delete ? policyHint : undefined} onClick={onDelete}><Icon name="trash"/></button></span>
+    <span className={cn("row-actions", "flex justify-end gap-0.5 opacity-0 translate-x-[5px] transition-[opacity,transform] duration-micro ease-xw group-hover:opacity-100 group-hover:translate-x-0 group-focus-within:opacity-100 group-focus-within:translate-x-0 max-[640px]:opacity-100 max-[640px]:translate-x-0 [@media(hover:none)]:opacity-100 [@media(hover:none)]:translate-x-0")} role="cell"
+      onBlur={event => {
+        // A dialog taking focus is not the user leaving: keep the menu mounted
+        // so the dialog's focus trap can hand focus back to its item on close.
+        if (document.querySelector("[aria-modal='true']")) return;
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) onCloseActions();
+      }}>
+      <button ref={actionsTrigger} className={cn(CONTROL_ICON, CONTROL_ICON_ROW)} aria-label={`Actions for ${file.name}`} aria-expanded={actionsOpen} aria-controls={actionsOpen ? "row-actions-menu" : undefined} onClick={onToggleActions}><Icon name="chevron"/></button>
+      {actionsOpen && <div id="row-actions-menu" ref={actionsMenu} role="group" aria-label={`Actions for ${file.name}`} className={cn(POPOVER, "row-actions-menu right-2 top-full min-w-[180px]")} onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onCloseActions(); actionsTrigger.current?.focus(); } }}>
+        <button className={cn(MENU_ITEM, "justify-start gap-2 text-left")} aria-label={`Rename ${file.name}`} disabled={!canRename} aria-describedby={!canRename ? policyHint : undefined} onClick={onRename}><Icon name="rename"/><span>Rename</span></button>
+        <a className={cn(MENU_ITEM, "justify-start gap-2")} href={file.kind === "directory" ? `${file.path}?zip` : file.path} download aria-label={`Download ${file.name}`} onClick={() => { onCloseActions(); actionsTrigger.current?.focus(); }}><Icon name="download"/><span>Download</span></a>
+        <button className={cn(MENU_ITEM, MENU_ITEM_DANGER, "justify-start gap-2 text-left")} aria-label={`Delete ${file.name}`} disabled={!permissions.delete} aria-describedby={!permissions.delete ? policyHint : undefined} onClick={onDelete}><Icon name="trash"/><span>Delete</span></button>
+      </div>}
+    </span>
   </div>;
 }
 
@@ -932,7 +976,7 @@ function UploadDock({ snapshot }: { snapshot: ReturnType<UploadManager["getSnaps
   const dismissible = snapshot.items.some(item => item.status === "completed" || item.status === "cancelled");
   return <m.aside className="upload-dock w-[360px] max-[900px]:w-[330px] max-[640px]:w-auto max-h-[min(520px,70vh)] flex flex-col border border-solid border-[#3b465c] rounded-lg bg-[rgba(15,20,32,.97)] shadow-[0_24px_70px_rgba(0,0,0,.5)] backdrop-blur-[18px] overflow-hidden z-raise"
     initial={reduced ? false : { opacity: 0, y: 10, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={reduced ? { opacity: 1 } : { opacity: 0, y: 9, scale: 0.98 }} transition={{ duration: presenceDuration(reduced) }}
-    aria-label="Uploads"><div className="upload-header min-h-12 flex items-center justify-between pl-3 pr-2 border-0 border-b border-solid border-xw-line [&>div]:flex [&>div]:items-baseline [&>div]:gap-2 [&_strong]:font-semibold"><div><strong>Uploads</strong><span className={cn("upload-summary text-[11px] tabular-nums", uploadSummaryKind(snapshot) === "active" ? "text-xw-accent-hi" : uploadSummaryKind(snapshot) === "complete" ? "text-xw-success" : uploadSummaryKind(snapshot) === "error" ? "text-[#ff9ba3]" : "text-xw-muted")}>{uploadSummary(snapshot)}</span></div><button className={CONTROL_ICON} aria-label="Clear finished uploads" disabled={!dismissible} onClick={() => uploadManager.dismissCompleted()}><Icon name="close"/></button></div>
+    aria-label="Uploads"><div className="upload-header min-h-12 flex items-center justify-between pl-3 pr-2 border-0 border-b border-solid border-xw-line [&>div]:flex [&>div]:items-baseline [&>div]:gap-2 [&_strong]:font-semibold"><div><strong>Uploads</strong><span className={cn("upload-summary text-[11px] tabular-nums", uploadSummaryKind(snapshot) === "active" ? "text-xw-accent-hi" : uploadSummaryKind(snapshot) === "complete" ? "text-xw-success" : uploadSummaryKind(snapshot) === "error" ? "text-[#ff9ba3]" : "text-xw-muted")} role="status">{uploadSummary(snapshot)}</span></div><button className={CONTROL_ICON} aria-label="Clear finished uploads" disabled={!dismissible} onClick={() => uploadManager.dismissCompleted()}><Icon name="close"/></button></div>
     <div className="upload-items overflow-auto">{snapshot.items.map(item => { const percent = item.size ? Math.round(item.uploaded / item.size * 100) : 0; return <m.div className={cn("upload-item p-3 border-0 border-b border-solid border-[#1d2534] last:border-b-0", item.status)} key={item.id} layout initial={{ opacity: 0 }} animate={{ opacity: 1 }} role="group" aria-label={`${item.relativePath}, ${uploadItemLabel(item)}`}><div className="upload-line flex justify-between gap-3 text-[11px] font-mono [&>span]:whitespace-nowrap [&>span]:overflow-hidden [&>span]:text-ellipsis"><span title={item.relativePath}>{item.relativePath}</span><strong>{item.status === "completed" ? "Done" : `${percent}%`}</strong></div><div className={cn("progress-track h-1 my-2 mb-1 bg-[#273148] rounded-[3px] overflow-hidden [&>span]:block [&>span]:h-full [&>span]:origin-left [&>span]:transition-transform [&>span]:duration-micro", item.status === "completed" ? "[&>span]:bg-xw-success" : item.status === "failed" ? "[&>span]:bg-xw-danger" : item.status === "cancelled" ? "[&>span]:bg-xw-muted" : "[&>span]:bg-xw-accent")} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent} aria-label={`${item.relativePath} upload progress`}><span style={{ transform: `scaleX(${percent / 100})` }}/></div><div className="upload-meta flex justify-between gap-2 text-xw-faint text-[11px] tabular-nums [&>span:first-child]:overflow-hidden [&>span:first-child]:text-ellipsis [&>span:first-child]:whitespace-nowrap [&_button]:border-0 [&_button]:bg-transparent [&_button]:text-xw-accent-hi [&_button]:cursor-pointer [&_button]:text-[11px] [&_button]:font-medium [&_button]:flex [&_button]:items-center [&_button]:gap-1"><span>{uploadItemLabel(item)}{item.status === "uploading" && item.speed > 0 ? ` · ${formatBytes(item.speed)}/s` : ""}</span><span>{item.status === "failed" || item.status === "cancelled" ? <button onClick={() => uploadManager.retry(item.id)}><Icon name="retry"/> Retry</button> : item.status !== "completed" ? <button onClick={() => uploadManager.cancel(item.id)}>Cancel</button> : null}</span></div></m.div>; })}</div>
   </m.aside>;
 }
@@ -952,9 +996,13 @@ function DialogView({ dialog, setDialog, onMkdir, onRename, onDelete }: { dialog
   };
   const modalRef = useModalFocus<HTMLDivElement>(close, !pending);
   const confirmRef = useRef<HTMLButtonElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
-    if (!pending && modalRef.current && !modalRef.current.contains(document.activeElement)) confirmRef.current?.focus();
-  }, [pending, modalRef]);
+    // A failed delete disables the confirm button mid-flight, which drops
+    // focus to <body>; hand it back to Cancel rather than stranding it.
+    if (pending || !modalRef.current || modalRef.current.contains(document.activeElement)) return;
+    (textDialog ? confirmRef.current : cancelRef.current)?.focus();
+  }, [pending, textDialog, modalRef]);
   const title = kind === "mkdir" ? "New folder" : kind === "rename" ? `Rename ${dialog.name}` : `Delete ${dialog.paths.length} item${dialog.paths.length === 1 ? "" : "s"}?`;
   const description = kind === "mkdir" ? "Create a folder in the current directory." : kind === "rename" ? "Enter a new name. The item stays in this folder." : "The items will move to X-wing’s recoverable trash.";
   const submitLabel = pending ? (kind === "rename" ? "Renaming…" : "Deleting…") : kind === "mkdir" ? "Create folder" : kind === "rename" ? "Rename" : "Delete";
@@ -965,7 +1013,7 @@ function DialogView({ dialog, setDialog, onMkdir, onRename, onDelete }: { dialog
     <p id="dialog-description">{description}</p>
     {"value" in dialog && <label>{kind === "mkdir" ? "Folder name" : "New name"}<input data-autofocus value={dialog.value} aria-invalid={dialog.error ? "true" : undefined} aria-describedby={dialog.error ? "dialog-error" : undefined} onChange={event => setDialog({ ...dialog, value: event.target.value, error: undefined })}/></label>}
     {dialog.error && <div id="dialog-error" className="dialog-error" role="alert">{dialog.error}</div>}
-    <div className="modal-actions"><button type="button" className={cn("button", BTN)} disabled={pending} onClick={close}>Cancel</button><button ref={confirmRef} data-autofocus={textDialog ? undefined : "true"} className={cn("button", BTN, textDialog ? BTN_PRIMARY : BTN_DANGER)} disabled={pending}>{submitLabel}</button></div>
+    <div className="modal-actions"><button ref={cancelRef} type="button" className={cn("button", BTN)} data-autofocus={kind === "delete" ? "" : undefined} disabled={pending} onClick={close}>Cancel</button><button ref={confirmRef} className={cn("button", BTN, textDialog ? BTN_PRIMARY : BTN_DANGER)} disabled={pending}>{submitLabel}</button></div>
     </m.form></m.div>;
 }
 

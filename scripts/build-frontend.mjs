@@ -71,6 +71,15 @@ const manifest = {
   "codemirror-bundle.js": codemirrorHashed,
 };
 
+// Fonts: expose the content-addressed names so templates can preload the
+// faces each page needs instead of discovering them after the CSS parses. The
+// value keeps its `fonts/` directory: `asset()` only prefixes
+// `/static/assets/`, so a bare file name would resolve one directory too high
+// and every preload would 404.
+for (const [from, to] of fontMap) {
+  manifest[`fonts/${from.split("/").pop()}`] = to.replace("/static/assets/", "");
+}
+
 // Stylesheets: rewrite the font URLs, then name each file after its final
 // bytes, so a font change moves the stylesheet's cache key with it.
 const CSS_ENTRIES = [

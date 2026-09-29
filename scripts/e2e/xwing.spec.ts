@@ -51,7 +51,7 @@ test("daily browser workflow is keyboard-accessible", async ({ page }) => {
   await expect(page.getByLabel("Breadcrumb").getByText("workspace", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "Parallel uploads: 4" }).click();
-  const menu = page.getByRole("dialog", { name: "Concurrent uploads" });
+  const menu = page.getByRole("group", { name: "Parallel uploads" });
   await expect(menu).toBeVisible();
   await menu.getByRole("radio", { name: "8" }).click();
   await expect(page.getByRole("button", { name: "Parallel uploads: 8" })).toBeVisible();
@@ -88,6 +88,7 @@ test("file keyboard commands respect focus ownership", async ({ page }) => {
 
   const releases = page.getByRole("row", { name: /^releases,/ });
   const releaseCheckbox = page.getByRole("checkbox", { name: "Select releases" });
+  const releaseActions = page.getByRole("button", { name: "Actions for releases" });
   const releaseDelete = page.getByRole("button", { name: "Delete releases" });
 
   await releases.focus();
@@ -100,15 +101,17 @@ test("file keyboard commands respect focus ownership", async ({ page }) => {
   await page.keyboard.press("Escape");
   await expect(releaseCheckbox).not.toBeChecked();
 
+  // Row rename/download/delete live behind one Actions disclosure per row.
+  await releaseActions.click();
   await releaseDelete.focus();
   await page.keyboard.press("Enter");
   const dialog = page.getByRole("dialog", { name: "Delete 1 item?" });
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByRole("button", { name: "Delete" })).toBeFocused();
-  await page.keyboard.press("Tab");
   await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
-  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Tab");
   await expect(dialog.getByRole("button", { name: "Delete" })).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(dialog).not.toBeVisible();
   await expect(releaseDelete).toBeFocused();
@@ -146,6 +149,7 @@ test("Delete works again after dismissing a mouse-opened delete dialog", async (
   await expect(releaseCheckbox).toBeChecked();
 
   const rowDelete = page.getByRole("button", { name: "Delete releases" });
+  await page.getByRole("button", { name: "Actions for releases" }).click();
   await rowDelete.click();
   const dialog = page.getByRole("dialog", { name: "Delete 1 item?" });
   await page.keyboard.press("Escape");
@@ -196,7 +200,7 @@ test("mouse and keyboard transitions keep layer and trigger ownership", async ({
 
   const parallel = page.getByRole("button", { name: /Parallel uploads:/ });
   await parallel.click();
-  const parallelDialog = page.getByRole("dialog", { name: "Concurrent uploads" });
+  const parallelDialog = page.getByRole("group", { name: "Parallel uploads" });
   await page.keyboard.press("Escape");
   await expect(parallelDialog).not.toBeVisible();
   await expect(parallel).toBeFocused();
@@ -325,6 +329,7 @@ test("nested file controls preserve native keys and file commands", async ({ pag
   await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() ?? "")).toBe("");
 
   const download = page.getByRole("link", { name: "Download releases" });
+  await page.getByRole("button", { name: "Actions for releases" }).click();
   await download.focus();
   await page.keyboard.press("Delete");
   const dialog = page.getByRole("dialog", { name: "Delete 2 items?" });
@@ -392,7 +397,7 @@ test("failed deletion keeps the dialog keyboard-operable", async ({ page }) => {
   await confirm.click();
 
   await expect(dialog.getByRole("alert")).toHaveText("Storage unavailable");
-  await expect(confirm).toBeFocused();
+  await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(dialog).not.toBeVisible();
 });
@@ -412,6 +417,7 @@ test("a row can be renamed from its control or with F2", async ({ page }, testIn
     await page.goto(`${api}/`);
     await expect(page.getByRole("row", { name: `${original}, file`, exact: true })).toBeVisible();
 
+    await page.getByRole("button", { name: `Actions for ${original}` }).click();
     await page.getByRole("button", { name: `Rename ${original}` }).click();
     const dialog = page.getByRole("dialog", { name: `Rename ${original}` });
     await expect(dialog).toBeVisible();
@@ -437,6 +443,7 @@ test("a row can be renamed from its control or with F2", async ({ page }, testIn
     await expect(renamedRow).toBeFocused();
 
     // A folder keeps its trailing slash through the move.
+    await page.getByRole("button", { name: `Actions for ${folder}` }).click();
     await page.getByRole("button", { name: `Rename ${folder}` }).click();
     const folderDialog = page.getByRole("dialog", { name: `Rename ${folder}` });
     await folderDialog.getByRole("textbox").fill(renamedFolder);
@@ -462,6 +469,7 @@ test("renaming to an exotic name stores exactly that name", async ({ page }, tes
   await page.request.put(`${api}/${source}`, { data: "payload" });
   try {
     await page.goto(`${api}/`);
+    await page.getByRole("button", { name: `Actions for ${source}` }).click();
     await page.getByRole("button", { name: `Rename ${source}` }).click();
     const dialog = page.getByRole("dialog", { name: `Rename ${source}` });
     await dialog.getByRole("textbox").fill(exotic);
@@ -497,6 +505,7 @@ test("renaming refuses an empty name and never overwrites an existing one", asyn
   await page.request.put(`${api}/${second}`, { data: "b" });
   try {
     await page.goto(`${api}/`);
+    await page.getByRole("button", { name: `Actions for ${first}` }).click();
     await page.getByRole("button", { name: `Rename ${first}` }).click();
     const dialog = page.getByRole("dialog", { name: `Rename ${first}` });
     const input = dialog.getByRole("textbox");
@@ -546,7 +555,7 @@ test("editor discard dialog owns focus and restores it", async ({ page }) => {
   await back.focus();
   await page.keyboard.press("Enter");
   const dialog = page.getByRole("dialog", { name: "Discard unsaved changes?" });
-  await expect(dialog.getByRole("button", { name: "Discard changes" })).toBeFocused();
+  await expect(dialog.getByRole("button", { name: "Keep editing" })).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(dialog).not.toBeVisible();
   await expect(back).toBeFocused();
@@ -676,6 +685,7 @@ test("a dialog owns the viewport and explains itself", async ({ page }) => {
   // block silently adopts its selector. That is how the dialog ended up in the
   // document flow at the bottom of the page with its description clipped.
   await page.goto("/");
+  await page.getByRole("button", { name: "Actions for README.md" }).click();
   await page.getByRole("button", { name: "Rename README.md" }).click();
 
   const backdrop = page.locator(".modal-backdrop");
@@ -702,6 +712,8 @@ test("listing controls are named and reachable, and the stylesheet keeps its gua
   await skip.focus();
   await expect(skip).toBeFocused();
 
+  await expect(page.getByRole("link", { name: "Download README.md" })).toBeHidden();
+  await page.getByRole("button", { name: "Actions for README.md" }).click();
   await expect(page.getByRole("link", { name: "Download README.md" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Rename README.md" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Delete README.md" })).toBeVisible();
@@ -790,6 +802,7 @@ test.describe("limited access server", () => {
     await expect(page.getByRole("button", { name: "New folder" })).toBeDisabled();
 
     // Rename and delete are policy-disabled and point at the permission notice.
+    await page.getByRole("button", { name: "Actions for oversized.txt" }).click();
     const rename = page.getByRole("button", { name: "Rename oversized.txt" });
     await expect(rename).toBeDisabled();
     await expect(rename).toHaveAttribute("aria-describedby", "permission-notice");
@@ -828,6 +841,7 @@ test.describe("restricted permissions", () => {
     await expect(page.getByRole("button", { name: "New folder" })).toBeEnabled();
 
     // Every control this profile disables points at the notice that explains it.
+    await page.getByRole("button", { name: "Actions for README.md" }).click();
     const rename = page.getByRole("button", { name: "Rename README.md" });
     await expect(rename).toBeDisabled();
     await expect(rename).toHaveAttribute("aria-describedby", "permission-notice");
@@ -871,6 +885,7 @@ test.describe("restricted permissions", () => {
     await expect(page.getByText(/Read-only access/)).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Upload files" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "New folder" })).toBeDisabled();
+    await page.getByRole("button", { name: "Actions for README.md" }).click();
     const rename = page.getByRole("button", { name: "Rename README.md" });
     await expect(rename).toBeDisabled();
     await expect(rename).toHaveAttribute("aria-describedby", "permission-notice");

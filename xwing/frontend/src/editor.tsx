@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { AnimatePresence, LazyMotion, MotionConfig, domAnimation } from "motion/react";
 import * as m from "motion/react-m";
 import { AuthOverlay } from "./auth-overlay";
-const BTN = CONTROL;
+const BTN = `${CONTROL} ${CONTROL_FILE}`;
 const BTN_PRIMARY = CONTROL_PRIMARY;
 const BTN_DANGER = CONTROL_DANGER;
 import { cn } from "./lib/cn";
@@ -11,6 +11,7 @@ import {
   ACCOUNT_INLINE,
   BRAND,
   CONTROL,
+  CONTROL_FILE,
   CONTROL_DANGER,
   CONTROL_PRIMARY,
   SIGNOUT,
@@ -19,7 +20,7 @@ import {
 
 import { formatBytes, prefersReducedMotion } from "./format";
 import { useModalFocus } from "./keyboard";
-import { AUTH_OVERLAY_COPY, AUTH_REDIRECT_EVENT, beginAuthRedirect, consumeHandover, markHandover } from "./shared.js";
+import { AUTH_OVERLAY_COPY, AUTH_REDIRECT_EVENT, beginAuthRedirect, consumeHandover, dismissBootCard, markHandover } from "./shared.js";
 import { UploadClient, UploadError, UploadState, uploadFile } from "./upload-engine";
 
 interface EditorBootstrap {
@@ -80,7 +81,7 @@ function saveChunkBytes(boot: EditorBootstrap): number {
 }
 
 function Logo(): React.JSX.Element {
-  return <svg className="brand-mark" viewBox="0 0 200 200" aria-label="X-wing logo"><rect x="6" y="6" width="188" height="188" rx="36"/><g fill="none" strokeLinecap="round" strokeLinejoin="round"><polygon points="71,78 23,48 15,100 23,152 71,122"/><polyline points="71,78 30,100 71,122"/><polygon points="129,78 177,48 185,100 177,152 129,122"/><polyline points="129,78 170,100 129,122"/><path d="m71 78 15 8m-15 36 15-8m43-36-15 8m15 36-15-8"/><circle cx="100" cy="100" r="20"/><circle cx="100" cy="100" r="13"/></g><circle className="brand-core" cx="100" cy="100" r="4.5"/></svg>;
+  return <svg className="brand-mark" viewBox="0 0 200 200" role="img" aria-label="X-wing logo"><rect x="6" y="6" width="188" height="188" rx="36"/><g fill="none" strokeLinecap="round" strokeLinejoin="round"><polygon points="71,78 23,48 15,100 23,152 71,122"/><polyline points="71,78 30,100 71,122"/><polygon points="129,78 177,48 185,100 177,152 129,122"/><polyline points="129,78 170,100 129,122"/><path d="m71 78 15 8m-15 36 15-8m43-36-15 8m15 36-15-8"/><circle cx="100" cy="100" r="20"/><circle cx="100" cy="100" r="13"/></g><circle className="brand-core" cx="100" cy="100" r="4.5"/></svg>;
 }
 
 function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
@@ -126,6 +127,8 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
     });
     view.current = editor;
     editor.focus();
+    // The shell is on screen, so the boot card can fade out under it.
+    dismissBootCard(document, window, handover);
     return () => editor.destroy();
   }, []);
 
@@ -286,7 +289,7 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
     {/* The editor's view heading; the visible file name sits in the topbar. */}
     <h1 id="editor-title" className="sr-only">{boot.filename}</h1>
     {/* Three columns instead of the shared bar's two: brand, file name, actions. */}
-    <header className={cn("topbar editor-topbar", TOPBAR, "grid grid-cols-[1fr_minmax(220px,2fr)_1fr] max-[700px]:grid-cols-[auto_minmax(0,1fr)_auto] max-[700px]:px-3")}><a className={BRAND} href="/" aria-label="X-wing EDITOR, home" onClick={event => { event.preventDefault(); requestLeave("/"); }}><Logo/><span className="max-[700px]:hidden font-sans text-[13px] font-semibold leading-none text-[#f1f3f7]">X-wing</span><small className="max-[700px]:hidden brand-context h-[13px] inline-flex items-center -translate-y-px text-xw-faint text-[11px] font-medium leading-none">EDITOR</small></a><div className="editor-heading flex min-w-0 flex-col items-center leading-tight max-[700px]:items-start max-[700px]:pl-2"><strong className="max-w-full truncate font-mono text-xs font-medium">{boot.filename}</strong><span className="max-w-full truncate font-mono text-[11px] text-xw-faint" role="status" aria-live="polite">{status || (dirty ? "Unsaved changes" : boot.displayPath)}</span></div><div className="editor-actions flex items-center justify-end gap-1"><a className={cn("button max-[700px]:!hidden", BTN)} href={boot.path} download>Download</a><button className={cn("button primary", BTN, BTN_PRIMARY)} disabled={!canEdit || !dirty} onClick={() => void save()}>Save</button>{boot.user.authenticated ? <div className={ACCOUNT_INLINE}><span>{boot.user.name}</span><form ref={logoutForm} id="logout-form" method="post" action="/_auth/logout" onSubmit={event => { event.preventDefault(); if (dirty) setConfirmLeave("__logout__"); else { setAuthOverlay("logout"); const form = event.currentTarget; window.setTimeout(() => form.submit(), AUTH_REDIRECT_DELAY_MS); } }}><button className={SIGNOUT} type="submit">Sign out</button></form></div> : <span className="anonymous-label">anonymous</span>}</div></header>
+    <header className={cn("topbar editor-topbar", TOPBAR, "grid grid-cols-[1fr_minmax(220px,2fr)_1fr] max-[700px]:grid-cols-[auto_minmax(0,1fr)_auto] max-[700px]:px-3")}><a className={BRAND} href="/" aria-label="X-wing EDITOR, home" onClick={event => { if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return; event.preventDefault(); requestLeave("/"); }}><Logo/><span className="max-[700px]:hidden font-sans text-[13px] font-semibold leading-none text-[#f1f3f7]">X-wing</span><small className="max-[700px]:hidden brand-context h-[13px] inline-flex items-center -translate-y-px text-xw-faint text-[11px] font-medium leading-none">EDITOR</small></a><div className="editor-heading flex min-w-0 flex-col items-center leading-tight max-[700px]:items-start max-[700px]:pl-2"><strong className="max-w-full truncate font-mono text-xs font-medium">{boot.filename}</strong><span className="max-w-full truncate font-mono text-[11px] text-xw-faint" role="status" aria-live="polite">{status || (dirty ? "Unsaved changes" : boot.displayPath)}</span></div><div className="editor-actions flex items-center justify-end gap-2"><a className={cn("button max-[700px]:!hidden", BTN)} href={boot.path} download>Download</a><button className={cn("button primary", BTN, BTN_PRIMARY)} disabled={!canEdit || !dirty} onClick={() => void save()}>Save</button>{boot.user.authenticated ? <div className={cn(ACCOUNT_INLINE, "ml-2 border-0 border-l border-solid border-xw-line pl-2")}><span>{boot.user.name}</span><form ref={logoutForm} id="logout-form" method="post" action="/_auth/logout" onSubmit={event => { event.preventDefault(); if (dirty) setConfirmLeave("__logout__"); else { setAuthOverlay("logout"); const form = event.currentTarget; window.setTimeout(() => form.submit(), AUTH_REDIRECT_DELAY_MS); } }}><button className={SIGNOUT} type="submit">Sign out</button></form></div> : <span className="anonymous-label">anonymous</span>}</div></header>
     <AnimatePresence>
       {(!boot.canWrite || boot.truncated) && <m.div
         key="notices"
@@ -300,7 +303,7 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
         {boot.truncated && <div className="readonly-notice m-0 px-3 py-2 border border-solid border-[#544829] rounded-lg bg-[#211d14] text-[#e6c77f] text-xs">Showing first {formatBytes(boot.previewBytes)} of {formatBytes(boot.totalSize)}. File too large to edit here — use Download for the full file.</div>}
       </m.div>}
     </AnimatePresence>
-    <main className="editor-body grid min-h-0 grid-cols-[45px_minmax(0,1fr)] max-[700px]:grid-cols-[38px_minmax(0,1fr)]" aria-labelledby="editor-title"><aside className="editor-rail flex flex-col items-center gap-3 border-0 border-r border-solid border-xw-line bg-[#0b1019] pt-2"><button className="editor-back h-[31px] w-[31px] cursor-pointer rounded-md border border-solid border-xw-line-hi bg-xw-raised text-xw-muted hover:bg-xw-hover hover:text-xw-text" onClick={() => requestLeave(boot.directory)} aria-label="Back to files" title="Back to files">←</button><span className="font-mono text-[11px] text-xw-faint [writing-mode:vertical-rl]">{boot.extension || "TXT"}</span></aside><div className="editor-canvas min-h-0 min-w-0 overflow-hidden" ref={mount}/></main>
+    <main className="editor-body grid min-h-0 grid-cols-[45px_minmax(0,1fr)] max-[700px]:grid-cols-[38px_minmax(0,1fr)]" aria-labelledby="editor-title"><aside className="editor-rail flex flex-col items-center gap-3 border-0 border-r border-solid border-xw-line bg-[#0b1019] pt-2"><button className="editor-back grid h-[31px] w-[31px] cursor-pointer place-items-center rounded-md border border-solid border-xw-line-hi bg-xw-raised text-xw-muted transition-colors duration-micro hover:bg-xw-hover hover:text-xw-text" onClick={() => requestLeave(boot.directory)} aria-label="Back to files" title="Back to files"><svg className="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 19-7-7 7-7M5 12h14"/></svg></button><span className="font-mono text-[11px] text-xw-faint [writing-mode:vertical-rl]">{boot.extension || "TXT"}</span></aside><div id="editor-canvas" className="editor-canvas min-h-0 min-w-0 overflow-hidden" ref={mount}/></main>
     <AnimatePresence>{confirmLeave && <DiscardDialog key="discard" onCancel={() => setConfirmLeave(null)} onDiscard={leave}/>}</AnimatePresence>
     {authOverlay && <AuthOverlay kind={authOverlay}/>}
   </m.div>;
@@ -318,7 +321,7 @@ function DiscardDialog({ onCancel, onDiscard }: { onCancel: () => void; onDiscar
   const exit = reduceMotion ? { duration: 0 } : { duration: SURFACE_EXIT_SECONDS, ease: "easeIn" } as const;
   return <m.div ref={modalRef} className="modal-backdrop" initial={false} animate={{ opacity: 1 }} exit={{ opacity: 0, transition: exit }}>
     <m.div className="modal" role="dialog" aria-modal="true" aria-labelledby="discard-title" aria-describedby="discard-description" initial={false} animate={{ opacity: 1 }} exit={{ opacity: 0, y: 7, scale: 0.98, transition: exit }}>
-      <h2 id="discard-title">Discard unsaved changes?</h2><p id="discard-description">This file has unsaved edits. Leave without saving?</p><div className="modal-actions"><button className={cn("button", BTN)} onClick={onCancel}>Keep editing</button><button data-autofocus className={cn("button danger", BTN, BTN_DANGER)} onClick={onDiscard}>Discard changes</button></div>
+      <h2 id="discard-title">Discard unsaved changes?</h2><p id="discard-description">This file has unsaved edits. Leave without saving?</p><div className="modal-actions"><button data-autofocus className={cn("button", BTN)} onClick={onCancel}>Keep editing</button><button className={cn("button danger", BTN, BTN_DANGER)} onClick={onDiscard}>Discard changes</button></div>
     </m.div>
   </m.div>;
 }

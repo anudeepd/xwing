@@ -16,6 +16,7 @@ import {
   CONTROL_PRIMARY,
   CONTROL_SMALL,
   MENU_ITEM,
+  POPOVER,
   RAIL,
   SIGNOUT,
   TOAST,
@@ -78,7 +79,7 @@ const EXIT_EASE: [number, number, number, number] = [0.4, 0, 1, 1];
 const SHELL_ENTER: Transition = { duration: 0.34, ease: EASE };
 const SHELL_LEAVE: Transition = { duration: 0.17, ease: EXIT_EASE };
 const VIEW_ENTER: Transition = { duration: 0.18, ease: EASE };
-const TOAST_ENTER: Transition = { duration: 0.28, ease: EASE };
+const TOAST_ENTER: Transition = { duration: 0.2, ease: EASE };
 const TOAST_EXIT: Transition = { duration: 0.18, ease: EXIT_EASE };
 const DIALOG_EXIT: Transition = { duration: 0.16, ease: EXIT_EASE };
 
@@ -218,7 +219,7 @@ const TH = "border-0 border-b border-solid border-admin-line-hi px-3 py-3 font-s
 const TD = "border-0 border-b border-solid border-admin-line px-3 py-3 align-top tabular-nums text-admin-muted";
 const CELL_STRONG = "font-medium text-admin-text";
 const ROW_ACTIONS = "row-actions flex flex-wrap justify-start gap-2 opacity-100 transform-none";
-const FIELD = "min-h-9 w-full rounded border border-solid border-admin-line-hi bg-admin-bg px-3 py-2 font-sans text-[13px] text-admin-text outline-none focus:border-admin-accent focus:ring-2 focus:ring-admin-accent";
+const FIELD = "h-9 min-h-9 w-full rounded border border-solid border-admin-line-hi bg-admin-bg px-3 py-0 font-sans text-[13px] text-admin-text focus:border-admin-accent focus:ring-2 focus:ring-admin-accent";
 const LABEL = "font-sans text-xs font-medium text-admin-muted";
 const FIELD_HELP = "text-[11px] text-admin-faint";
 const FILTER_FIELD = "filter-field flex min-w-0 flex-col gap-1";
@@ -239,7 +240,7 @@ function PermissionBadges({ permissions }: { permissions: PermissionSet }): Reac
 }
 
 function Logo(): React.JSX.Element {
-  return <svg className="brand-mark" viewBox="0 0 200 200" aria-label="X-wing logo">
+  return <svg className="brand-mark" viewBox="0 0 200 200" role="img" aria-label="X-wing logo">
     <rect x="6" y="6" width="188" height="188" rx="36"/>
     <g fill="none" strokeLinecap="round" strokeLinejoin="round">
       <polygon points="71,78 23,48 15,100 23,152 71,122"/><polyline points="71,78 30,100 71,122"/>
@@ -324,7 +325,7 @@ function UsersView({ users, defaultPermissions, ldapConfigured, formError, formT
               ? users.map(user => <tr key={user.username}>
                 <td className={TD}><strong className={CELL_STRONG}>{user.username}</strong></td>
                 <td className={TD}><PermissionBadges permissions={user.permissions}/></td>
-                <td className={TD}><div className={ROW_ACTIONS}>
+                <td className={TD}><div className={cn(ROW_ACTIONS, "justify-end")}>
                   <button type="button" className={cn("button small", BTN, BTN_SMALL)} aria-label={`Edit user ${user.username}`} onClick={() => onEdit(user.username)}>Edit</button>
                   <button type="button" className={cn("button small danger", BTN, BTN_SMALL, BTN_DANGER)} aria-label={`Remove user ${user.username}`} onClick={() => onDelete(user.username)}>Remove</button>
                 </div></td>
@@ -350,8 +351,8 @@ function UsersView({ users, defaultPermissions, ldapConfigured, formError, formT
           aria-describedby={formError ? "user-form-help user-form-error" : "user-form-help"}/>
         <p className={cn("field-help", FIELD_HELP)} id="user-form-help">{help}</p>
         <p className={`form-error m-0 rounded border border-solid border-admin-danger bg-admin-raised px-3 py-2 text-xs leading-snug break-words text-admin-danger`} id="user-form-error" aria-live="polite" hidden={!formError}>{formError || ""}</p>
-        <div className="permission-grid my-2 grid grid-cols-2 gap-2 max-[620px]:grid-cols-1" role="group" aria-label="Permissions">
-          {(["read", "write", "delete"] as const).map(permission => <label key={permission} className="check-label flex min-h-9 items-center gap-2 rounded border border-solid border-admin-line bg-admin-panel px-3">
+        <div className="permission-grid my-2 grid grid-cols-3 gap-2 max-[620px]:grid-cols-1" role="group" aria-label="Permissions">
+          {(["read", "write", "delete"] as const).map(permission => <label key={permission} className="check-label flex min-h-9 items-center gap-2 rounded border border-solid border-admin-line bg-admin-panel px-2">
             <input type="checkbox" name={`user-${permission}`} defaultChecked={EMPTY_PERMISSIONS[permission]} className="h-4 w-4 accent-xw-accent-fill"/> {permission.charAt(0).toUpperCase()}{permission.slice(1)}
           </label>)}
         </div>
@@ -375,7 +376,7 @@ type ActivityViewProps = {
 };
 
 function ActivityView({ events, summary, filters, filterRef, onFilterChange, onFilterSubmit, onPurge }: ActivityViewProps): React.JSX.Element {
-  const input = "min-h-9 w-full min-w-0 rounded border border-solid border-admin-line-hi bg-admin-bg px-3 py-1.5 pr-8 font-sans text-xs text-admin-text outline-none focus:border-admin-accent focus:ring-2 focus:ring-admin-accent";
+  const input = cn(FIELD, "pr-8");
   return <article className={`admin-card ${CARD} p-5`}>
     <div className={CARD_HEADING}>
       <div><p className={EYEBROW}>AUDIT TRAIL</p><h2 className="text-lg font-semibold leading-tight text-balance">User activity</h2></div>
@@ -479,9 +480,9 @@ function TrashView({ trash, selected, allSelected, onToggle, onToggleAll, onRest
     <div className={cn(CARD_HEADING, "max-[620px]:block")}>
       <div><p className={EYEBROW}>RECOVERY</p><h2 className="text-lg font-semibold leading-tight text-balance">Recoverable trash</h2></div>
       <div className={cn(ROW_ACTIONS, "trash-card-actions max-[620px]:mt-4")}>
-        <button type="button" className={cn("button small primary", BTN, BTN_SMALL, BTN_PRIMARY)} id="restore-selected-trash" disabled={selectedCount === 0} onClick={onRestoreSelected}>Restore selected{selectedCount ? ` (${selectedCount})` : ""}</button>
-        <button type="button" className={cn("button small danger", BTN, BTN_SMALL, BTN_DANGER)} id="empty-trash" disabled={!hasTrash} onClick={onEmpty}>Empty trash</button>
-        {hasTrash && <button type="button" className={cn("button small", BTN, BTN_SMALL)} onClick={onRefresh}>Refresh</button>}
+        <button type="button" className={cn("button primary", BTN, BTN_PRIMARY)} id="restore-selected-trash" disabled={selectedCount === 0} onClick={onRestoreSelected}>Restore selected{selectedCount ? ` (${selectedCount})` : ""}</button>
+        <button type="button" className={cn("button danger", BTN, BTN_DANGER)} id="empty-trash" disabled={!hasTrash} onClick={onEmpty}>Empty trash</button>
+        {hasTrash && <button type="button" className={cn("button", BTN)} onClick={onRefresh}>Refresh</button>}
       </div>
     </div>
     <p className={cn("field-help trash-help mb-4", FIELD_HELP)}>Select deleted transactions to restore in bulk. Deleted items stay here until restored or permanently removed.</p>
@@ -501,7 +502,7 @@ function TrashView({ trash, selected, allSelected, onToggle, onToggleAll, onRest
         </tr></thead>
         <tbody className={TABLE_BODY}>
           {trash.map(transaction => <tr key={transaction.transaction_id}>
-            <td className="trash-select-cell p-0 text-center">
+            <td className="trash-select-cell border-0 border-b border-solid border-admin-line p-0 pt-[3px] text-center align-top">
               <label className="trash-select-target grid min-h-9 min-w-9 cursor-pointer place-items-center">
                 <input type="checkbox" data-select-trash={transaction.transaction_id} className="m-0 h-4 w-4 accent-xw-accent-fill"
                   aria-label={`Select trash transaction for ${transaction.items.map(item => item.path).join(", ")}`}
@@ -522,7 +523,7 @@ function TrashView({ trash, selected, allSelected, onToggle, onToggleAll, onRest
           {!hasTrash && <tr><td colSpan={6} className="empty-cell px-4 py-8 text-center text-admin-faint max-[620px]:text-left">
             <div className="empty-state flex flex-col items-center gap-3">
               <span>Trash is empty. Deleted items stay recoverable here until restored or purged.</span>
-              <button type="button" className={cn("button small", BTN, BTN_SMALL)} onClick={onRefresh}>Refresh</button>
+              <button type="button" className={cn("button", BTN)} onClick={onRefresh}>Refresh</button>
             </div>
           </td></tr>}
         </tbody>
@@ -571,10 +572,10 @@ function AccountMenu({ user, open, onToggle, onLeave }: { user: string; open: bo
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [open, onToggle]);
   return <div className="account" id="account-control" ref={controlRef}>
-    <button className={ACCOUNT_TRIGGER} type="button" aria-haspopup="menu" aria-expanded={open} onClick={onToggle}><span>{user}</span><Chevron/></button>
-    {open && <div className="popover absolute right-0 top-[38px] z-popover p-1 border border-solid border-[#3b465c] rounded-[7px] bg-[#111827] shadow-[0_18px_45px_rgba(0,0,0,.46)] origin-top-right animate-[xw-surface-in_var(--xw-surface)_var(--xw-ease)] account-menu min-w-[152px]" role="menu" aria-label="Workspace navigation">
-      <a className={MENU_ITEM} href="/" role="menuitem" data-leave="/" onClick={onLeave}>Files</a>
-      <a className="menu-item w-full h-8 min-h-8 flex items-center px-2 border-0 rounded-[5px] bg-transparent text-[#b9c1ce] no-underline cursor-pointer text-xs hover:bg-xw-hover hover:text-xw-text active bg-xw-hover text-xw-text" href="/admin" role="menuitem" aria-current="page">Admin panel</a>
+    <button className={ACCOUNT_TRIGGER} type="button" aria-expanded={open} aria-controls={open ? "account-menu" : undefined} onClick={onToggle}><span>{user}</span><Chevron/></button>
+    {open && <div id="account-menu" className={cn(POPOVER, "account-menu min-w-[152px]")} role="group" aria-label="Workspace navigation">
+      <a className={MENU_ITEM} href="/" data-leave="/" onClick={onLeave}>Files</a>
+      <a className={cn(MENU_ITEM, "active bg-xw-hover text-xw-text")} href="/admin" aria-current="page">Admin panel</a>
     </div>}
   </div>;
 }
@@ -764,8 +765,15 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
   }, [loadActiveTab]);
 
   // ── Navigation ─────────────────────────────────────────────────────────────
-  const selectTab = useCallback((event: React.MouseEvent<HTMLAnchorElement>, next: string): void => {
+  // SPA links keep real hrefs: a modifier-click or middle-click must reach
+  // the browser instead of the in-app path, so a new tab still works.
+  const spaClick = (event: React.MouseEvent): boolean => {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return false;
     event.preventDefault();
+    return true;
+  };
+  const selectTab = useCallback((event: React.MouseEvent<HTMLAnchorElement>, next: string): void => {
+    if (!spaClick(event)) return;
     if (next === tabRef.current) return;
     history.pushState(null, "", `?tab=${next}`);
     // The tab switch paints the new section without motion; the data that lands
@@ -777,6 +785,7 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
 
   /** Fade the console out, then hand over to the file browser. */
   const leaveTo = useCallback((event: React.MouseEvent<HTMLElement>, href: string): void => {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
     event.preventDefault();
     if (leaving) return;
     markHandover();

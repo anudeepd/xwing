@@ -60,7 +60,7 @@ test("every tab loads, announces one line and owns its URL", async ({ page }) =>
 test("the console opens from the file browser without a loading card", async ({ page }) => {
   await page.goto("/");
   await page.locator(".account-trigger").click();
-  await page.getByRole("menuitem", { name: "Admin panel" }).click();
+  await page.getByRole("link", { name: "Admin panel" }).click();
 
   await expect(page).toHaveURL(/\/admin$/);
   await expect(page.locator(".admin-shell")).toBeVisible();

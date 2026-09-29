@@ -10,6 +10,7 @@ import tempfile
 import time
 import uuid
 import zipfile
+from http.client import responses as _http_reasons
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -266,6 +267,21 @@ def create_app(settings: Settings) -> FastAPI:
     # Trash metadata survives restarts so administrators can inspect and restore
     # deleted items beyond the short browser undo window.
     delete_transactions: dict[str, dict] = {}
+    # Serializes index writes. Each write snapshots the live dict on the event
+    # loop, so a worker thread never iterates a dict the loop is mutating
+    # ("dictionary changed size during iteration"), and an older snapshot can
+    # never land on disk after a newer one.
+    trash_save_lock = asyncio.Lock()
+
+    async def _persist_trash() -> None:
+        async with trash_save_lock:
+            snapshot = dict(delete_transactions)
+            await anyio.to_thread.run_sync(
+                trash_store.save_transactions,
+                _trash_dir(),
+                settings.root_dir,
+                snapshot,
+            )
 
     def _skip_generic_audit(request: Request) -> bool:
         if request.url.path.startswith("/_auth/"):
@@ -472,6 +488,11 @@ def create_app(settings: Settings) -> FastAPI:
         status = exc.status_code
         title, fallback = _ERROR_COPY.get(status, _ERROR_COPY[500])
         detail = exc.detail if isinstance(exc.detail, str) and exc.detail else ""
+        # Starlette's default detail is the bare reason phrase ("Not Found"),
+        # which is always truthy and would shadow the product copy above.
+        # Treat it as absent so the fallback sentence actually reaches the user.
+        if detail and detail == _http_reasons.get(status, ""):
+            detail = ""
         return templates.TemplateResponse(
             request,
             "error.html",
@@ -657,12 +678,7 @@ def create_app(settings: Settings) -> FastAPI:
                 "created": time.time(),
                 "items": items,
             }
-            await anyio.to_thread.run_sync(
-                trash_store.save_transactions,
-                trash_dir,
-                settings.root_dir,
-                delete_transactions,
-            )
+            await _persist_trash()
         except BaseException:
             delete_transactions.pop(txid, None)
             for item in reversed(items):
@@ -1211,12 +1227,7 @@ def create_app(settings: Settings) -> FastAPI:
             restored += 1
             restored_paths.append(_to_rel_path(target))
 
-        await anyio.to_thread.run_sync(
-            trash_store.save_transactions,
-            _trash_dir(),
-            settings.root_dir,
-            delete_transactions,
-        )
+        await _persist_trash()
         response = JSONResponse(
             {"ok": True, "restored": restored, "paths": restored_paths}
         )
@@ -1585,7 +1596,7 @@ def create_app(settings: Settings) -> FastAPI:
     def _trash_payload() -> dict:
         transactions = []
         for transaction_id, transaction in sorted(
-            delete_transactions.items(),
+            dict(delete_transactions).items(),
             key=lambda pair: pair[1].get("created", 0),
             reverse=True,
         ):
@@ -1633,13 +1644,14 @@ def create_app(settings: Settings) -> FastAPI:
         return restored_paths
 
     def _empty_trash() -> dict[str, int]:
+        snapshot = dict(delete_transactions)
         deleted = sum(
             1
-            for transaction in delete_transactions.values()
+            for transaction in snapshot.values()
             for item in transaction["items"]
             if item["trash"].exists()
         )
-        transactions = len(delete_transactions)
+        transactions = len(snapshot)
         trash_dir = _trash_dir()
         if trash_dir.exists():
             for child in trash_dir.iterdir():
@@ -1648,7 +1660,9 @@ def create_app(settings: Settings) -> FastAPI:
                 else:
                     child.unlink()
         delete_transactions.clear()
-        trash_store.save_transactions(trash_dir, settings.root_dir, delete_transactions)
+        trash_store.save_transactions(
+            trash_dir, settings.root_dir, dict(delete_transactions)
+        )
         return {"deleted": deleted, "transactions": transactions}
 
     @app.get("/api/admin/trash", include_in_schema=False)
@@ -1686,12 +1700,7 @@ def create_app(settings: Settings) -> FastAPI:
             transaction = delete_transactions[transaction_id]
             restored_paths.extend(await _restore_transaction_items(transaction))
             delete_transactions.pop(transaction_id, None)
-        await anyio.to_thread.run_sync(
-            trash_store.save_transactions,
-            _trash_dir(),
-            settings.root_dir,
-            delete_transactions,
-        )
+        await _persist_trash()
         await _record_admin_event(
             actor,
             "admin_trash_restore",
@@ -1712,7 +1721,8 @@ def create_app(settings: Settings) -> FastAPI:
     @app.delete("/api/admin/trash", include_in_schema=False)
     async def admin_empty_trash(request: Request):
         actor = _admin_user(request)
-        result = await anyio.to_thread.run_sync(_empty_trash)
+        async with trash_save_lock:
+            result = await anyio.to_thread.run_sync(_empty_trash)
         await _record_admin_event(
             actor,
             "admin_trash_delete",
@@ -1729,12 +1739,7 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(status_code=404, detail="Trash transaction not found")
         restored_paths = await _restore_transaction_items(transaction)
         delete_transactions.pop(transaction_id, None)
-        await anyio.to_thread.run_sync(
-            trash_store.save_transactions,
-            _trash_dir(),
-            settings.root_dir,
-            delete_transactions,
-        )
+        await _persist_trash()
         await _record_admin_event(
             actor,
             "admin_trash_restore",
@@ -1760,12 +1765,7 @@ def create_app(settings: Settings) -> FastAPI:
                 await anyio.to_thread.run_sync(trash_path.unlink)
             deleted += 1
         delete_transactions.pop(transaction_id, None)
-        await anyio.to_thread.run_sync(
-            trash_store.save_transactions,
-            _trash_dir(),
-            settings.root_dir,
-            delete_transactions,
-        )
+        await _persist_trash()
         await _record_admin_event(
             actor,
             "admin_trash_delete",

@@ -54,7 +54,6 @@
 .editor-canvas .cm-searchMatch{background:rgba(167,139,250,.26)}
 .editor-app :focus-visible{outline:2px solid var(--xw-accent);outline-offset:2px}
 
-@media(max-width:640px){}
 
 /* ── 2026 React workspace ─────────────────────────────────────────────────── */
 :root {
@@ -114,7 +113,6 @@ body:has(.xw-app){overflow:hidden;background:var(--xw-bg);color:var(--xw-text);f
 /* content-visibility:auto on .file-row was tried for large directories and
  reverted: Chromium will not focus a row inside skipped content, so entering a
  directory left focus on the list container instead of the first row. */
-@media (hover: none){}
 
 /* ── Transition veil ─────────────────────────────────────────────────────── */
 @keyframes xw-veil-in{from{opacity:0}to{opacity:1}}@keyframes xw-veil-out{to{opacity:0}}@keyframes xw-pill-in{from{opacity:0;transform:scale(.92)}to{opacity:1;transform:none}}@keyframes xw-pill-out{to{opacity:0;transform:scale(.94)}}
@@ -140,24 +138,18 @@ body:has(.modal-backdrop) .file-table,body:has(.modal-backdrop) .admin-shell{ove
 @keyframes xw-search-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}@keyframes xw-search-out{to{opacity:0;transform:translateY(6px)}}
 @keyframes xw-surface-out{to{opacity:0;transform:translateY(7px) scale(.98);filter:blur(1px)}}@keyframes xw-backdrop-in{from{opacity:0}to{opacity:1}}@keyframes xw-backdrop-out{to{opacity:0}}@keyframes xw-drop-in{from{opacity:0;transform:scale(.985)}to{opacity:1;transform:none}}
 @keyframes xw-toast-out{to{opacity:0;transform:translateY(6px) scale(.97)}}
-@media(max-width:900px){}
 @media(max-width:640px){.xw-app input:not([type="checkbox"]):not([type="radio"]){font-size:16px}.xw-app{grid-template-rows:48px minmax(0,1fr)}
  /* The row drops its whole date cell; the header only dropped the button, so the empty cell stayed and wrapped the header into a second grid row. */.table-head [role="columnheader"]:has(> .date){display:none}}
 @media(prefers-reduced-motion:reduce){.xw-app,.editor-app,.xw-app *,.editor-app *,.xw-app *::before,.editor-app *::before,.xw-app *::after,.editor-app *::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
 @keyframes xw-spin{to{transform:rotate(360deg)}}
-@media(prefers-reduced-motion:reduce){}
 /* CodeMirror's own DOM keeps its styling here: the editor surface and its
    search panel are not our markup, so no utility can reach them. */
-.editor-canvas>.cm-editor{height:100%;font:12px/1.6 var(--xw-mono)}.editor-canvas .cm-gutters{background:#0b1019;border-right-color:var(--xw-line)}.editor-canvas .cm-editor,.editor-canvas .cm-scroller{background:#0d111b}
+.editor-canvas>.cm-editor{height:100%}.editor-canvas .cm-gutters{background:#0b1019;border-right-color:var(--xw-line)}.editor-canvas .cm-editor,.editor-canvas .cm-scroller{background:#0d111b}
 @media(max-width:700px){.editor-canvas .cm-panels .cm-search .cm-textfield{font-size:16px}}
 #xwing-editor-root{height:100%}
-@font-face {
- font-family: 'JetBrains Mono';
- src: url('/static/fonts/JetBrainsMono-Bold.woff2') format('woff2');
- font-weight: 700;
- font-style: normal;
- font-display: swap;
-}
+/* JetBrains Mono Bold is intentionally not served: nothing on these surfaces
+   sets mono 700 (data and code render at 400/500), so the face would download
+   and never match. Bold UI text is Inter, covered by the variable face above. */
 
 /* The card is for a load that is actually slow. It stays invisible for the
    first 200ms — the bundle beats that inside the app every time — and only then
@@ -167,6 +159,14 @@ body:has(.modal-backdrop) .file-table,body:has(.modal-backdrop) .admin-shell{ove
 @keyframes xw-boot-in{to{opacity:1}}
 .boot-loading { opacity: 0; animation: xw-boot-in 180ms ease-out 200ms forwards; }
 .boot-loading.out { animation: none; opacity: 0; }
+
+/* The HTML error page (templates/error.html) carries no utilities — Tailwind
+   never scans it — so its centred treatment lives here in plain CSS. */
+.boot-error{min-height:100dvh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;background:var(--xw-bg);color:var(--xw-muted);font:13px/1.45 Inter,system-ui,sans-serif;text-align:center;padding:24px}
+.boot-error strong{color:var(--xw-text);font-size:16px;font-weight:600}
+.boot-error p{color:var(--xw-muted)}
+.boot-error .button{margin-top:8px;padding:8px 12px;border:1px solid var(--xw-line-hi);border-radius:6px;background:var(--xw-raised);color:var(--xw-text);text-decoration:none;font-size:12px;font-weight:500}
+.boot-error .button:hover{border-color:var(--xw-accent-border);background:var(--xw-hover)}
 
 /* ── Design tokens ─────────────────────────────────────────────────────────── */
 
@@ -297,14 +297,11 @@ main:focus-visible {
  transition: border-color 0.15s, box-shadow 0.15s;
 }
 
-.cm-editor {
- height: 100%;
- font-size: 13px;
-}
-.cm-scroller { overflow: auto; }
+/* A narrow table-wrap scrolls, but touch gives no scrollbar to see: fade the
+   right edge at phone widths so overflow reads as scrollable. */
+@media(max-width:620px){.table-wrap{-webkit-mask-image:linear-gradient(to right,#000 calc(100% - 28px),transparent);mask-image:linear-gradient(to right,#000 calc(100% - 28px),transparent)}}
 
-.upload-item { padding:12px; border-bottom: 1px solid var(--xw-line); }
-.upload-item:last-child { border-bottom: none; }
+.cm-scroller { overflow: auto; }
 
 @media (prefers-reduced-motion: reduce) {
  *,
@@ -324,11 +321,6 @@ main:focus-visible {
 .editor-canvas .cm-gutters{color:#4f5c72}
 .editor-canvas .cm-activeLine{background:rgba(124,106,210,.07)}
 .editor-canvas .cm-activeLineGutter{background:#111827;color:#8995aa}
-@media(max-width:640px){}
-
-/* Keep Admin account navigation aligned with Files shell. */
-.admin-shell .account-trigger,
-.admin-shell .signout-button { font: 400 12px/1.45 Inter, system-ui, sans-serif; }
 
 /* ── Still CSS on purpose ────────────────────────────────────────────────────
    The file table's date column, which the row drops by class at the mobile

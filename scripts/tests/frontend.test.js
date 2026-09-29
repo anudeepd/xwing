@@ -136,11 +136,14 @@ describe("cross-panel handover", () => {
 describe("responsive file browser styles", () => {
   it("keeps the live breakpoints for the file browser", () => {
     const stylesheet = readFileSync("../xwing/frontend/src/style.css", "utf8");
+    const app = readFileSync("../xwing/frontend/src/app.tsx", "utf8");
 
     // The legacy 700px toolbar block was deleted with the rest of the dead CSS;
     // the live layout collapses at 900px and 640px and the e2e suite asserts the
-    // rendered result (no horizontal overflow at 375px).
-    expect(stylesheet).toContain("@media(max-width:900px)");
+    // rendered result (no horizontal overflow at 375px). The 900px collapse
+    // lives in Tailwind `max-[900px]:` utilities in the markup (there is no
+    // hand-written 900px block left in the stylesheet by design).
+    expect(app).toContain("max-[900px]");
     expect(stylesheet).toContain("@media(max-width:640px)");
   });
 });

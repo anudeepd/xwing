@@ -1,7 +1,10 @@
 {
-  "admin.js": "admin-44204fde.js",
-  "app.js": "app-58f47097.js",
+  "admin.js": "admin-900e6acb.js",
+  "app.js": "app-a2cffd29.js",
   "codemirror-bundle.js": "codemirror-bundle-59f7c6d8.js",
-  "editor.js": "editor-cd303881.js",
-  "style.css": "style-fd653058.css"
+  "editor.js": "editor-bbd06d80.js",
+  "fonts/inter-latin-var.woff2": "fonts/inter-latin-var-3100e775.woff2",
+  "fonts/JetBrainsMono-Bold.woff2": "fonts/JetBrainsMono-Bold-c503cc5e.woff2",
+  "fonts/JetBrainsMono-Regular.woff2": "fonts/JetBrainsMono-Regular-a9cb1cd8.woff2",
+  "style.css": "style-67699230.css"
 }

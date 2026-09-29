@@ -13,7 +13,7 @@ export function formatBytes(bytes: number): string {
 }
 
 export function formatDate(value: string): string {
-  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "medium" }).format(new Date(value));
 }
 
 export function escapeHtml(value: unknown): string {

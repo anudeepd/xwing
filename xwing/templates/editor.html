@@ -6,10 +6,14 @@
   <meta name="theme-color" content="#080b12"/>
   <title>{{ filename }} — X-wing</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg"/>
+  <link rel="preload" href="{{ asset("fonts/inter-latin-var.woff2") }}" as="font" type="font/woff2" crossorigin/>
+  <link rel="preload" href="{{ asset("fonts/JetBrainsMono-Regular.woff2") }}" as="font" type="font/woff2" crossorigin/>
   <link rel="stylesheet" href="{{ asset("style.css") }}"/>
 </head>
 <body data-file-path="{{ file_url_path }}" data-file-ext="{{ ext }}" data-can-write="{{ 'true' if perms.write else 'false' }}" data-auth-idle-timeout="{{ auth_idle_timeout }}" data-csp-style-nonce="{{ csp_style_nonce or '' }}">
+  <a class="skip-link fixed top-2.5 left-2.5 z-modal -translate-y-[160%] px-3 py-2 border border-solid border-xw-accent-border rounded-md bg-xw-panel text-xw-text font-sans text-xs no-underline transition-transform duration-[120ms] min-h-11 focus-visible:translate-y-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#c4b5fd]" href="#editor-canvas">Skip to editor</a>
   <div id="xwing-editor-root"></div>
+  <div role="region" aria-label="Loading"><div class="boot-loading h-full flex flex-col items-center justify-center gap-2 bg-xw-bg text-xw-muted font-sans fixed inset-0 z-modal pointer-events-none transition-opacity duration-[180ms] ease-out before:content-[''] before:w-[26px] before:h-[26px] before:flex-none before:rounded-full before:border-2 before:border-solid before:border-[#403769] before:border-t-xw-accent-hi before:animate-[xw-spin_.8s_linear_infinite] [&.out]:opacity-0 [&.out]:pointer-events-none" role="status">Opening editor…</div></div>
   <script type="application/json" id="xwing-editor-bootstrap">{{ editor_bootstrap | tojson }}</script>
   <script src="{{ asset("codemirror-bundle.js") }}"></script>
   <script type="module" src="{{ asset("editor.js") }}"></script>
