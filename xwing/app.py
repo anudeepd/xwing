@@ -291,6 +291,8 @@ def create_app(settings: Settings) -> FastAPI:
             return True
         if request.url.path.startswith("/static/"):
             return True
+        if request.url.path == "/favicon.svg":
+            return True
         if request.url.path.startswith("/api/admin/"):
             return True
         if request.url.path == "/admin":
@@ -420,9 +422,11 @@ def create_app(settings: Settings) -> FastAPI:
             request.url.path
         ):
             response.headers.setdefault("Cache-Control", IMMUTABLE_CACHE_CONTROL)
-        elif request.url.path.startswith("/static/") or response.headers.get(
-            "content-type", ""
-        ).startswith("text/html"):
+        elif (
+            request.url.path.startswith("/static/")
+            or request.url.path == "/favicon.svg"
+            or response.headers.get("content-type", "").startswith("text/html")
+        ):
             response.headers.setdefault("Cache-Control", APP_SHELL_CACHE_CONTROL)
         return response
 
@@ -520,6 +524,13 @@ def create_app(settings: Settings) -> FastAPI:
 
     app.include_router(create_upload_router(settings, upload_store))
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+    # The login page runs before authentication and is rendered by ldapgate, so its
+    # icon lives at the same root path as lagun's and torrus's. An explicit route
+    # wins over the catch-all below, which serves the user's files.
+    @app.get("/favicon.svg", include_in_schema=False)
+    async def favicon():
+        return FileResponse(STATIC_DIR / "favicon.svg", media_type="image/svg+xml")
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -2042,7 +2053,7 @@ def _ensure_ldapgate_static_paths(config) -> None:
     if proxy_config is None:
         return
     static_paths = list(getattr(proxy_config, "static_paths", []) or [])
-    for path in ("/static", "/favicon.ico"):
+    for path in ("/static", "/favicon.svg", "/favicon.ico"):
         if path not in static_paths:
             static_paths.append(path)
     proxy_config.static_paths = static_paths

@@ -917,3 +917,39 @@ test.describe("restricted permissions", () => {
     await expect(row).toBeFocused();
   });
 });
+
+/**
+ * A control that is only an icon names itself with `aria-label` and shows those
+ * same words as a hint. The hint is `aria-hidden` — announcing it as well would
+ * say the name twice — so it is found by its class, not by `getByRole`.
+ */
+test("an icon-only control carries its name as a hover and focus hint", async ({ page }) => {
+  await page.goto("/");
+
+  const trigger = page.getByRole("button", { name: "Actions for README.md" });
+  const hint = page.locator(".tooltip");
+  await expect(hint).toHaveCount(0);
+
+  await trigger.hover();
+  await expect(hint).toHaveText("Actions for README.md");
+  // The trigger sits at the right edge of its row, so the hint has to be clamped
+  // back inside the viewport rather than centred off the side of it.
+  await expect
+    .poll(() =>
+      hint.evaluate(element => {
+        const box = element.getBoundingClientRect();
+        return box.left >= 0 && box.right <= window.innerWidth && box.top >= 0;
+      }),
+    )
+    .toBe(true);
+
+  // WCAG 1.4.13: a hint that opens on hover is dismissible without moving the
+  // pointer or the focus.
+  await page.keyboard.press("Escape");
+  await expect(hint).toHaveCount(0);
+
+  // A keyboard user gets the same hint, and the control keeps its own name.
+  await trigger.focus();
+  await expect(hint).toHaveText("Actions for README.md");
+  await expect(trigger).toHaveAttribute("aria-label", "Actions for README.md");
+});

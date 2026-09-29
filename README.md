@@ -122,8 +122,24 @@ curl -X DELETE http://localhost:8989/_upload/<upload_id>
 Staged bytes live beside the destination as `.<name>.upload-part-<upload_id>`
 and are hidden from directory listings; the destination only changes when
 `complete` succeeds. Abandoned sessions are reclaimed after
-`--session-ttl-minutes`. Limits: `--max-upload-gb`, `--max-chunk-mb`,
+`--session-ttl-minutes`, and a staging file whose owner is gone is removed the
+next time its directory is listed. Limits: `--max-upload-gb`, `--max-chunk-mb`,
 `--max-chunks`, `--session-ttl-minutes`.
+
+Behind LDAPGate, keep `proxy.max_body_size` at or above the window: the gate
+rejects any larger request body with a bare 413 before it reaches the upload
+router. Its default is 10 MB, so with the 64 MiB default window set:
+
+```yaml
+proxy:
+    max_body_size: 67108864   # 64 MiB, matching --max-chunk-mb 64
+```
+
+X-wing caps the window at that limit on startup and logs a warning, so uploads
+still work — they just shift less data per request. Raise both together, or
+lower both to 16 MiB if you would rather retry smaller windows on a flaky link.
+Any reverse proxy in front of LDAPGate needs a limit at least as large
+(`client_max_body_size 64m` on nginx, whose default is 1 MB).
 
 The browser client is shared with Torrus (`xwing/frontend/src/upload-engine.js`)
 and abandons a request only after a period with no byte movement, so a DLP

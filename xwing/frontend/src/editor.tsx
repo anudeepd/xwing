@@ -17,6 +17,7 @@ import {
   SIGNOUT,
   TOPBAR,
 } from "./ui";
+import { Tooltip } from "./tooltip";
 
 import { formatBytes, prefersReducedMotion } from "./format";
 import { useModalFocus } from "./keyboard";
@@ -303,7 +304,7 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
         {boot.truncated && <div className="readonly-notice m-0 px-3 py-2 border border-solid border-[#544829] rounded-lg bg-[#211d14] text-[#e6c77f] text-xs">Showing first {formatBytes(boot.previewBytes)} of {formatBytes(boot.totalSize)}. File too large to edit here — use Download for the full file.</div>}
       </m.div>}
     </AnimatePresence>
-    <main className="editor-body grid min-h-0 grid-cols-[45px_minmax(0,1fr)] max-[700px]:grid-cols-[38px_minmax(0,1fr)]" aria-labelledby="editor-title"><aside className="editor-rail flex flex-col items-center gap-3 border-0 border-r border-solid border-xw-line bg-[#0b1019] pt-2"><button className="editor-back grid h-[31px] w-[31px] cursor-pointer place-items-center rounded-md border border-solid border-xw-line-hi bg-xw-raised text-xw-muted transition-colors duration-micro hover:bg-xw-hover hover:text-xw-text" onClick={() => requestLeave(boot.directory)} aria-label="Back to files" title="Back to files"><svg className="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 19-7-7 7-7M5 12h14"/></svg></button><span className="font-mono text-[11px] text-xw-faint [writing-mode:vertical-rl]">{boot.extension || "TXT"}</span></aside><div id="editor-canvas" className="editor-canvas min-h-0 min-w-0 overflow-hidden" ref={mount}/></main>
+    <main className="editor-body grid min-h-0 grid-cols-[45px_minmax(0,1fr)] max-[700px]:grid-cols-[38px_minmax(0,1fr)]" aria-labelledby="editor-title"><aside className="editor-rail flex flex-col items-center gap-3 border-0 border-r border-solid border-xw-line bg-[#0b1019] pt-2"><Tooltip label="Back to files" side="bottom"><button className="editor-back grid h-[31px] w-[31px] cursor-pointer place-items-center rounded-md border border-solid border-xw-line-hi bg-xw-raised text-xw-muted transition-colors duration-micro hover:bg-xw-hover hover:text-xw-text" onClick={() => requestLeave(boot.directory)} aria-label="Back to files"><svg className="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m12 19-7-7 7-7M5 12h14"/></svg></button></Tooltip><span className="font-mono text-[11px] text-xw-faint [writing-mode:vertical-rl]">{boot.extension || "TXT"}</span></aside><div id="editor-canvas" className="editor-canvas min-h-0 min-w-0 overflow-hidden" ref={mount}/></main>
     <AnimatePresence>{confirmLeave && <DiscardDialog key="discard" onCancel={() => setConfirmLeave(null)} onDiscard={leave}/>}</AnimatePresence>
     {authOverlay && <AuthOverlay kind={authOverlay}/>}
   </m.div>;

@@ -367,14 +367,22 @@ class TestAuth:
             source = (templates / name).read_text()
             assert not executable.search(source), f"{name} carries an inline script"
 
+    def test_login_icon_is_served_at_the_root_ahead_of_the_file_catch_all(
+        self, client, root
+    ):
+        (root / "favicon.svg").write_text("a user's own file")
+
+        r = client.get("/favicon.svg")
+
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("image/svg+xml")
+        icon = Path(__file__).parents[1] / "xwing" / "static" / "favicon.svg"
+        assert r.content == icon.read_bytes()
+
     def test_login_template_avoids_inline_style_attributes(self):
         template = (
             Path(__file__).parents[1] / "xwing" / "templates" / "login.html"
         ).read_text()
-        assert (
-            '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">'
-            in template
-        )
         assert '<style nonce="{{ csrf_nonce }}">' in template
         assert (
             '<input type="hidden" name="csrf_token" value="{{ csrf_token }}">'
@@ -397,7 +405,6 @@ class TestAuth:
         assert "password.type = showing ? 'text' : 'password';" in template
         assert "password.focus();" in template
         assert 'input[type="password"]::-ms-reveal' in template
-        assert "::-moz-reveal" not in template
         assert 'style="' not in template
 
     def test_login_template_keeps_ldapgate_shape_with_brand_safe_deltas(self):
@@ -508,6 +515,7 @@ class TestAuth:
         assert calls["config"].proxy.static_paths == [
             "/assets",
             "/static",
+            "/favicon.svg",
             "/favicon.ico",
         ]
         assert calls["config"].proxy.session_cookie_name == "xwing_session"

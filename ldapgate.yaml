@@ -17,3 +17,8 @@ proxy:
     idle_timeout: 0
     app_name: X-wing
     secure_cookies: true
+    # Largest request the gate lets through. Uploads arrive in --max-chunk-mb
+    # windows (64 MiB by default) and a smaller limit rejects them with a bare
+    # 413, so keep this at or above the window size. Lower both together if you
+    # would rather shift less data per retry.
+    max_body_size: 67108864

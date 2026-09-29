@@ -87,7 +87,9 @@ export const ACCOUNT_INLINE = "account-inline flex items-center gap-2 text-[#aeb
 export const ACCOUNT_TRIGGER =
   "account-trigger h-8 min-h-8 flex items-center gap-2 px-2 border border-solid border-transparent rounded-md bg-transparent " +
   "text-[#aeb6c5] text-xs font-medium hover:border-xw-line-hi hover:bg-xw-raised hover:text-xw-text " +
-  "aria-expanded:border-xw-line-hi aria-expanded:bg-xw-raised aria-expanded:text-xw-text max-[640px]:[&>span]:hidden";
+  // `sr-only`, not `hidden`: the name is the trigger's only accessible name, so
+  // hiding it left the icon-only trigger nameless on a phone.
+  "aria-expanded:border-xw-line-hi aria-expanded:bg-xw-raised aria-expanded:text-xw-text max-[640px]:[&>span]:sr-only";
 export const SIGNOUT =
   "signout-button h-8 min-h-8 px-2 border border-solid border-xw-line-hi rounded-md bg-transparent text-[#aeb6c5] " +
   "text-xs font-medium hover:border-[#67323b] hover:bg-[#24161d] hover:text-[#ff9ba3]";
@@ -99,3 +101,14 @@ export const MENU_ITEM =
   "no-underline cursor-pointer text-xs hover:bg-xw-hover hover:text-xw-text";
 /** A destructive entry in a menu: the same red the danger button uses. */
 export const MENU_ITEM_DANGER = "text-[#ff9ba3] hover:text-[#ffc1c7]";
+
+/**
+ * The hint for a control that shows no text of its own. The shell matches a
+ * popover, one layer in front of it (`z-rail` over `z-popover`) so a hint on a
+ * row action is not buried under the menu that same button opens, and behind a
+ * modal's backdrop. `-translate-x-1/2` centres it on the x the component measures.
+ */
+export const TOOLTIP =
+  "tooltip fixed z-rail px-1.5 py-1 border border-solid border-[#3b465c] rounded-[7px] bg-[#111827] " +
+  "shadow-[0_18px_45px_rgba(0,0,0,.46)] text-xw-text text-[11px] font-sans leading-[normal] whitespace-nowrap " +
+  "pointer-events-none -translate-x-1/2 animate-[xw-surface-in_var(--xw-micro)_var(--xw-ease)]";
