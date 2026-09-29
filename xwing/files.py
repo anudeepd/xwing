@@ -1,4 +1,6 @@
 import os
+import re
+import time
 from pathlib import Path
 from urllib.parse import quote
 
@@ -45,8 +47,35 @@ def is_ignored_system_file(path: Path | str) -> bool:
     return lowered in _IGNORED_SYSTEM_NAMES or name.startswith("._")
 
 
-def list_dir(path: Path) -> list[dict]:
+# A crash or restart leaves the hidden staging file of an upload the server no
+# longer tracks in its destination directory, where nothing else removes it. A
+# live session rewrites its file continuously and expires after the session TTL,
+# so one untouched for longer than that belongs to nobody.
+_STAGING_FILE_RE = re.compile(r"^\..+\.upload-part-[0-9a-f]{32}$")
+DEFAULT_STALE_STAGING_SECONDS = 6 * 3600
+
+
+def _reap_stale_staging(child: os.DirEntry, stale_after: float) -> None:
+    """Delete an abandoned upload staging file; never fails the listing."""
+    try:
+        if not _STAGING_FILE_RE.match(child.name) or not child.is_file(
+            follow_symlinks=False
+        ):
+            return
+        if time.time() - child.stat(follow_symlinks=False).st_mtime < stale_after:
+            return
+        os.unlink(child.path)
+    except OSError:
+        pass
+
+
+def list_dir(
+    path: Path, stale_staging_after: float = DEFAULT_STALE_STAGING_SECONDS
+) -> list[dict]:
     """Return sorted directory entries as dicts suitable for templates.
+
+    Abandoned upload staging files older than ``stale_staging_after`` seconds
+    are removed as a side effect.
 
     Raises:
         PermissionError: If directory cannot be accessed
@@ -61,7 +90,10 @@ def list_dir(path: Path) -> list[dict]:
             children = list(scan)
         children.sort(key=lambda entry: (not entry.is_dir(), entry.name.lower()))
         for child in children:
-            if is_ignored_system_file(child.name) or is_staging_name(child.name):
+            if is_staging_name(child.name):
+                _reap_stale_staging(child, stale_staging_after)
+                continue
+            if is_ignored_system_file(child.name):
                 continue
             try:
                 stat = child.stat()

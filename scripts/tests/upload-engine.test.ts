@@ -286,6 +286,34 @@ describe("uploadFile", () => {
     await expect(promise).resolves.toMatchObject({ ok: true });
   });
 
+  it("sends the tail a shrunk window gave up before starting later windows", async () => {
+    const { promise } = await startUpload({
+      file: blobOf(12000),
+      chunkSize: 4000,
+      minChunkBytes: 100,
+      maxChunkBytes: 4000,
+      concurrency: 2,
+      session: { uploadId: "session", chunkSize: 4000, concurrency: 2, ranges: [], size: 12000 },
+    });
+    await vi.waitFor(() => expect(FakeXHR.all).toHaveLength(2));
+    expect(FakeXHR.all[0]!.url).toContain("offset=0");
+    expect(FakeXHR.all[1]!.url).toContain("offset=4000");
+
+    FakeXHR.all[0]!.finish(500);
+    await vi.waitFor(() => expect(FakeXHR.all).toHaveLength(3));
+    FakeXHR.all[2]!.finish(500);
+    await vi.waitFor(() => expect(FakeXHR.all).toHaveLength(4));
+    expect(FakeXHR.all[3]!.body!.size).toBe(2000);
+
+    // The other worker frees up first. The abandoned half of window 0 must be
+    // next, not window 2: an in-order sink would otherwise stall behind the gap.
+    FakeXHR.all[1]!.finish(200, { ranges: [[4000, 8000]], received: 4000 });
+    await vi.waitFor(() => expect(FakeXHR.all).toHaveLength(5));
+    expect(FakeXHR.all[4]!.url).toContain("offset=2000");
+
+    void promise.catch(() => {});
+  });
+
   it("gives up after the attempt budget and keeps the server's ranges", async () => {
     const progress: number[] = [];
     const { promise } = await startUpload({
@@ -309,6 +337,29 @@ describe("uploadFile", () => {
 
     await expect(promise).rejects.toMatchObject({ status: 403, retryable: false });
     expect(FakeXHR.all).toHaveLength(1);
+  });
+
+  it("surfaces a finalize failure instead of retrying a session the server dropped", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({
+        ok: false,
+        code: "server_error",
+        message: "Upload finalize failed: Permission denied",
+      }),
+    });
+    const { promise } = await startUpload({
+      client: new UploadClient({ base: "/_upload", fetchImpl: fetchImpl as unknown as typeof fetch }),
+      session: { uploadId: "session", chunkSize: 4, concurrency: 1, ranges: [[0, 8]], size: 8 },
+    });
+
+    await expect(promise).rejects.toMatchObject({
+      status: 500,
+      message: "Upload finalize failed: Permission denied",
+    });
+    const completeCalls = fetchImpl.mock.calls.filter(([url]) => String(url).includes("/complete"));
+    expect(completeCalls).toHaveLength(1);
   });
 
   it("reports a 2xx that is not the JSON envelope instead of accepting it", async () => {

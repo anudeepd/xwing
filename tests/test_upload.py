@@ -287,3 +287,89 @@ class TestUploadAudit:
 
         events = audit_store.list_events(db_path, username="alice")
         assert [event["path"] for event in events] == ["/final.txt"]
+
+
+class TestLdapBodyLimit:
+    """ldapgate 413s any request over proxy.max_body_size before the router runs."""
+
+    def _stub_ldapgate(self, monkeypatch, max_body_size):
+        import sys
+        import types
+
+        pkg = types.ModuleType("ldapgate")
+        config_mod = types.ModuleType("ldapgate.config")
+        middleware_mod = types.ModuleType("ldapgate.middleware")
+        proxy = types.SimpleNamespace(static_paths=[], max_body_size=max_body_size)
+        config = types.SimpleNamespace(proxy=proxy)
+        config_mod.load_config = lambda path: config
+        middleware_mod.add_ldap_auth = lambda app, cfg, template_path=None: None
+        monkeypatch.setitem(sys.modules, "ldapgate", pkg)
+        monkeypatch.setitem(sys.modules, "ldapgate.config", config_mod)
+        monkeypatch.setitem(sys.modules, "ldapgate.middleware", middleware_mod)
+
+    def _window(self, root, tmp_dir):
+        ldap_yaml = tmp_dir / "ldapgate.yaml"
+        ldap_yaml.write_text("ldap: {}\nproxy: {}\n")
+        users_yaml = tmp_dir / "users.yaml"
+        users_yaml.write_text(
+            "users:\n  alice:\n    read: true\n    write: true\n    delete: true\n"
+        )
+        settings = Settings(
+            root_dir=root,
+            tmp_dir=tmp_dir,
+            ldap_config=ldap_yaml,
+            users_config=users_yaml,
+            require_auth=True,
+            trusted_auth_proxies=["testclient"],
+        )
+        with TestClient(create_app(settings)) as c:
+            init = c.post(
+                "/_upload/init",
+                json={"filename": "a.bin", "size": 1, "dir": "/"},
+                headers={"X-Forwarded-User": "alice"},
+            )
+        assert init.status_code == 200, init.text
+        # The browser sizes its windows from the page payload (settings), not
+        # from the init response, so both must agree.
+        assert settings.max_chunk_bytes == init.json()["chunk_size"]
+        return init.json()["chunk_size"]
+
+    def test_window_is_capped_at_the_gateway_body_limit(
+        self, root, tmp_dir, monkeypatch
+    ):
+        self._stub_ldapgate(monkeypatch, 10 * 1024 * 1024)
+        assert self._window(root, tmp_dir) == 10 * 1024 * 1024
+
+    def test_window_is_kept_when_the_gateway_allows_it(
+        self, root, tmp_dir, monkeypatch
+    ):
+        self._stub_ldapgate(monkeypatch, 128 * 1024 * 1024)
+        assert self._window(root, tmp_dir) == 64 * 1024 * 1024
+
+
+class TestAbandonedStaging:
+    """A crash leaves staging files nobody tracks; listing reaps the stale ones."""
+
+    SESSION_ID = "0123456789abcdef0123456789abcdef"
+
+    def _age(self, path, seconds):
+        import os
+        import time
+
+        old = time.time() - seconds
+        os.utime(path, (old, old))
+
+    def test_stale_staging_file_is_removed_and_a_live_one_kept(self, client, root):
+        stale = root / f".old.bin.upload-part-{self.SESSION_ID}"
+        live = root / f".live.bin.upload-part-{'b' * 32}"
+        lookalike = root / ".notes.upload-part-backup"
+        for path in (stale, live, lookalike):
+            path.write_bytes(b"x")
+        self._age(stale, 7 * 3600)
+        self._age(lookalike, 7 * 3600)
+
+        assert client.get("/", headers={"Accept": "text/html"}).status_code == 200
+
+        assert not stale.exists()
+        assert live.exists()
+        assert lookalike.exists()

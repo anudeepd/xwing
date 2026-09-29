@@ -651,7 +651,13 @@ export async function uploadFile({
         if (!uploadError.retryable || tries >= maxAttempts) throw uploadError;
         if (tries % 2 === 0) {
           const length = Math.max(minChunkBytes, Math.floor((windowEnd - windowStart) / 2));
+          const previousEnd = windowEnd;
           windowEnd = Math.min(windowEnd, windowStart + length);
+          // The tail this window gave up is the next thing to send. Leaving it
+          // for the next pass lets the other workers race ahead of a gap, and a
+          // sink that must write in order (SFTP) then blocks every one of them
+          // once its reorder buffer fills, with nobody left to fill the gap.
+          if (windowEnd < previousEnd) queue.splice(nextIndex, 0, [windowEnd, previousEnd]);
         }
         callbacks.onRetry?.({
           attempt: tries,
@@ -683,8 +689,12 @@ export async function uploadFile({
         const uploadError =
           error instanceof UploadError ? error : new UploadError(String(error), {});
         attempts += 1;
+        // A 500 from /complete means finalize failed and the server already
+        // dropped the session; a retry would only surface "session not found"
+        // and restart the whole upload, hiding the real reason.
         if (
           uploadError.code === 'SESSION_LOST' ||
+          uploadError.status === 500 ||
           !uploadError.retryable ||
           attempts >= maxAttempts
         ) {

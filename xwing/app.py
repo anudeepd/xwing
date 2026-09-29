@@ -29,6 +29,7 @@ from .auth import get_user, require_perm
 from . import audit_store, trash_store
 from .config import Settings, UserConfig
 from .files import (
+    DEFAULT_STALE_STAGING_SECONDS,
     EDITOR_FULL_EDIT_MAX,
     EDITOR_PREVIEW_BYTES,
     human_size,
@@ -467,6 +468,23 @@ def create_app(settings: Settings) -> FastAPI:
             ldap_config,
             template_path=str(_login_template) if _login_template.exists() else None,
         )
+        # ldapgate answers any request whose Content-Length exceeds
+        # proxy.max_body_size (default 10 MB) with a bare 413 before it reaches
+        # the upload router, so a larger window would fail every bigger upload.
+        body_limit = getattr(getattr(ldap_config, "proxy", None), "max_body_size", None)
+        if body_limit is not None and int(body_limit) < settings.max_chunk_bytes:
+            logger.warning(
+                "upload window %d exceeds ldapgate proxy.max_body_size %d; using %d. "
+                "Raise max_body_size for larger windows.",
+                settings.max_chunk_bytes,
+                int(body_limit),
+                int(body_limit),
+            )
+            # The page payload hands settings.max_chunk_bytes to the browser,
+            # which sizes its windows from it, so cap the setting as well as the
+            # session table's advertised chunk size.
+            settings.max_chunk_bytes = int(body_limit)
+            upload_store.chunk_size = int(body_limit)
 
     # Content-hashed asset names come from the frontend build manifest, so the
     # templates never hard-code a version.
@@ -600,7 +618,8 @@ def create_app(settings: Settings) -> FastAPI:
 
     def _visible_entries(fspath: Path) -> list[dict]:
         entries = []
-        for entry in list_dir(fspath):
+        stale_after = max(DEFAULT_STALE_STAGING_SECONDS, 2 * settings.session_ttl_seconds)
+        for entry in list_dir(fspath, stale_staging_after=stale_after):
             child = (fspath / entry["name"]).resolve()
             if _is_internal_path(child):
                 continue
