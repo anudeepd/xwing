@@ -15,6 +15,11 @@ def _index_path(trash_dir: Path) -> Path:
     return trash_dir / INDEX_NAME
 
 
+def _resolve_parent(path: Path) -> Path:
+    """Resolve everything but the last component (which may be a symlink)."""
+    return path.parent.resolve() / path.name
+
+
 def load_transactions(trash_dir: Path, root_dir: Path) -> dict[str, dict[str, Any]]:
     """Load valid trash transactions, discarding malformed or unsafe rows."""
     path = _index_path(trash_dir)
@@ -56,7 +61,9 @@ def load_transactions(trash_dir: Path, root_dir: Path) -> dict[str, dict[str, An
             ):
                 valid = False
                 break
-            original_path = (root / original.lstrip("/")).resolve()
+            # Resolve the folder, not the final name: a trashed symlink must
+            # come back as that link, not as the file it points to.
+            original_path = _resolve_parent(root / original.lstrip("/"))
             try:
                 original_path.relative_to(root)
             except ValueError:
@@ -94,7 +101,7 @@ def save_transactions(
     for transaction_id, transaction in transactions.items():
         items: list[dict[str, str]] = []
         for item in transaction.get("items", []):
-            original = Path(item["original"]).resolve()
+            original = _resolve_parent(Path(item["original"]))
             trash = Path(item["trash"])
             try:
                 rel_original = "/" + original.relative_to(root).as_posix()

@@ -1,3 +1,4 @@
+import codecs
 import os
 import re
 import time
@@ -28,11 +29,32 @@ def is_within_root(root: Path, path: Path) -> bool:
     return True
 
 
-def safe_path(root: Path, rel: str) -> Path:
-    """Resolve a user-supplied relative path under root, rejecting traversal."""
+class InvalidPath(ValueError):
+    """A user-supplied path that can never name a file (e.g. a NUL byte)."""
+
+
+def safe_path(root: Path, rel: str, *, follow_final: bool = True) -> Path:
+    """Resolve a user-supplied relative path under root, rejecting traversal.
+
+    With ``follow_final=False`` a symlink in the *last* component is returned
+    as itself (lstat semantics) so delete/rename/copy act on the link, not its
+    target. The parent chain is always resolved and must stay inside root.
+    """
+    if "\x00" in rel:
+        raise InvalidPath("Path contains a NUL byte")
     # Strip leading slashes so Path doesn't treat it as absolute
     cleaned = rel.lstrip("/")
-    resolved = (root / cleaned).resolve()
+    candidate = root / cleaned
+    if (
+        not follow_final
+        and candidate.name not in ("", ".", "..")
+        and candidate.is_symlink()
+    ):
+        parent = candidate.parent.resolve()
+        if not is_within_root(root, parent):
+            raise PermissionError(f"Path escapes root: {rel!r}")
+        return parent / candidate.name
+    resolved = candidate.resolve()
     if not is_within_root(root, resolved):
         raise PermissionError(f"Path escapes root: {rel!r}")
     return resolved
@@ -96,7 +118,19 @@ def list_dir(
             if is_ignored_system_file(child.name):
                 continue
             try:
-                stat = child.stat()
+                child.name.encode("utf-8")
+            except UnicodeEncodeError:
+                # A non-UTF-8 name cannot be addressed over HTTP or encoded in
+                # a response, so it is left out rather than failing the listing.
+                continue
+            try:
+                try:
+                    stat = child.stat()
+                except OSError as exc:
+                    if isinstance(exc, PermissionError):
+                        raise
+                    # Broken symlink: list the link itself, never fail the page.
+                    stat = child.stat(follow_symlinks=False)
                 is_dir = child.is_dir()
                 child_path = Path(child.path)
                 entries.append(
@@ -123,6 +157,9 @@ def list_dir(
                         "editable": False,
                     }
                 )
+            except OSError:
+                # The entry vanished or is unreadable mid-scan: skip it.
+                continue
         return entries
     except PermissionError:
         raise
@@ -172,13 +209,34 @@ EDITOR_FULL_EDIT_MAX = 32 * 1024 * 1024  # 32 MB
 EDITOR_PREVIEW_BYTES = 1024 * 1024  # 1 MB
 
 
+# A file whose head holds a NUL byte or is not valid UTF-8 is binary, whatever
+# its name says, and saving it from the text editor would corrupt it.
+_BINARY_SNIFF_BYTES = 8192
+
+
+def _looks_like_text(path: Path) -> bool:
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(_BINARY_SNIFF_BYTES)
+    except OSError:
+        return False
+    if b"\x00" in head:
+        return False
+    try:
+        # Incremental so a multi-byte character cut by the sniff window is fine.
+        codecs.getincrementaldecoder("utf-8")().decode(head, final=False)
+    except UnicodeDecodeError:
+        return False
+    return True
+
+
 def is_editable(path: Path) -> bool:
     """True if the file should be opened in the browser editor."""
     if path.name == ".env" or path.name.startswith(".env."):
         return False
-    if path.suffix.lower() in _EDITABLE_EXTS:
-        return True
-    return not path.suffix
+    if path.suffix.lower() not in _EDITABLE_EXTS and path.suffix:
+        return False
+    return _looks_like_text(path)
 
 
 def human_size(n: int) -> str:

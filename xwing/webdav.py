@@ -1,5 +1,6 @@
 """WebDAV method handlers (PROPFIND, MKCOL, COPY, MOVE, LOCK, UNLOCK)."""
 
+import os
 import shutil
 import tempfile
 import uuid
@@ -21,6 +22,11 @@ def _dav(tag: str) -> str:
 
 
 def _prop_response(href: str, path: Path) -> ET.Element:
+    try:
+        stat = path.stat()
+    except OSError:
+        # Broken symlink: describe the link itself (raises if truly gone).
+        stat = path.lstat()
     response = ET.Element(_dav("response"))
     ET.SubElement(response, _dav("href")).text = href
 
@@ -34,15 +40,14 @@ def _prop_response(href: str, path: Path) -> ET.Element:
     else:
         ET.SubElement(prop, _dav("resourcetype"))
         ET.SubElement(prop, _dav("getcontenttype")).text = "application/octet-stream"
-        ET.SubElement(prop, _dav("getcontentlength")).text = str(path.stat().st_size)
+        ET.SubElement(prop, _dav("getcontentlength")).text = str(stat.st_size)
 
     try:
-        mtime = path.stat().st_mtime
-        dt = datetime.fromtimestamp(mtime, tz=timezone.utc)
+        dt = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
         ET.SubElement(prop, _dav("getlastmodified")).text = dt.strftime(
             "%a, %d %b %Y %H:%M:%S GMT"
         )
-    except OSError:
+    except (OSError, OverflowError, ValueError):
         pass
 
     ET.SubElement(propstat, _dav("status")).text = "HTTP/1.1 200 OK"
@@ -77,7 +82,12 @@ def propfind_response(request: Request, path: Path, root: Path) -> Response:
 
     if depth_header != "0" and path.is_dir():
         for child in sorted(path.iterdir()):
-            multistatus.append(_prop_response(_href_for_path(child, root), child))
+            try:
+                multistatus.append(_prop_response(_href_for_path(child, root), child))
+            except (OSError, UnicodeEncodeError):
+                # Vanished entry or a name that cannot be sent as UTF-8: skip it
+                # rather than failing the whole listing.
+                continue
 
     xml_bytes = ET.tostring(multistatus, encoding="utf-8", xml_declaration=True)
     return Response(
@@ -97,7 +107,7 @@ def mkcol_response(path: Path) -> Response:
         )
     try:
         path.mkdir(parents=False)
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):
         return Response(status_code=409, content="Parent does not exist")
     return Response(status_code=201)
 
@@ -113,10 +123,15 @@ def _unique_hidden_path(parent: Path, name: str, suffix: str) -> Path:
     return parent / f".{name}.{uuid.uuid4().hex}{suffix}"
 
 
-def _install_staged_path(staged: Path, dest: Path) -> None:
+def _install_staged_path(staged: Path, dest: Path) -> Path | None:
+    """Move ``staged`` onto ``dest``; return the displaced old destination.
+
+    The old destination is renamed to a hidden ``.bak`` first so a failed
+    install can put it back. On success the caller owns the returned backup.
+    """
     backup = None
     try:
-        if dest.exists():
+        if os.path.lexists(dest):
             backup = _unique_hidden_path(dest.parent, dest.name, ".bak")
             dest.replace(backup)
         try:
@@ -124,67 +139,98 @@ def _install_staged_path(staged: Path, dest: Path) -> None:
         except OSError:
             shutil.move(str(staged), str(dest))
     except Exception:
-        if backup is not None and backup.exists():
-            if dest.exists():
+        if backup is not None and os.path.lexists(backup):
+            if os.path.lexists(dest):
                 _cleanup_path(dest)
             backup.replace(dest)
         raise
-    finally:
-        if backup is not None and backup.exists():
-            _cleanup_path(backup)
+    return backup
 
 
-async def copy_response(src: Path, dest: Path, overwrite: bool) -> Response:
-    if not src.exists():
+async def _dispose_backup(backup: Path | None, dispose) -> None:
+    if backup is None:
+        return
+    if dispose is not None:
+        await dispose(backup)
+    else:
+        await anyio.to_thread.run_sync(_cleanup_path, backup)  # type: ignore[reportAttributeAccessIssue]
+
+
+async def copy_response(
+    src: Path, dest: Path, overwrite: bool, dispose=None
+) -> Response:
+    """COPY ``src`` to ``dest``.
+
+    An existing destination is displaced (hidden ``.bak``) while the new copy is
+    installed and then handed to ``dispose(backup)``; without one it is deleted.
+    Returns 204 when something was replaced, 201 otherwise. The caller has
+    already validated that ``dest`` is a legal target.
+    """
+    if not os.path.lexists(src):
         return Response(status_code=404)
-    if dest.exists():
-        if not overwrite:
-            return Response(status_code=412, content="Destination exists")
+    if os.path.lexists(dest) and not overwrite:
+        return Response(status_code=412, content="Destination exists")
 
     # Copy to a unique temp path first, then rename into place.
-    if src.is_dir():
-        temp_dest = Path(
-            tempfile.mkdtemp(prefix=f".{dest.name}.", suffix=".tmp", dir=dest.parent)
-        )
-        shutil.rmtree(temp_dest)
-    else:
-        temp_handle = tempfile.NamedTemporaryFile(
-            prefix=f".{dest.name}.",
-            suffix=".tmp",
-            dir=dest.parent,
-            delete=False,
-        )
-        temp_dest = Path(temp_handle.name)
-        temp_handle.close()
     try:
-        if src.is_dir():
+        if src.is_symlink() or src.is_dir():
+            temp_dest = Path(
+                tempfile.mkdtemp(
+                    prefix=f".{dest.name}.", suffix=".tmp", dir=dest.parent
+                )
+            )
+            shutil.rmtree(temp_dest)
+        else:
+            temp_handle = tempfile.NamedTemporaryFile(
+                prefix=f".{dest.name}.",
+                suffix=".tmp",
+                dir=dest.parent,
+                delete=False,
+            )
+            temp_dest = Path(temp_handle.name)
+            temp_handle.close()
+    except (FileNotFoundError, NotADirectoryError):
+        return Response(status_code=409, content="Destination parent does not exist")
+    except OSError:
+        return Response(status_code=500, content="Copy failed")
+    try:
+        if src.is_symlink():
+            # Copy the link itself, never what it points to.
+            os.symlink(os.readlink(src), temp_dest)
+        elif src.is_dir():
             await anyio.to_thread.run_sync(
                 lambda: shutil.copytree(src, temp_dest, symlinks=True)
             )  # type: ignore[reportAttributeAccessIssue]
         else:
             await anyio.to_thread.run_sync(lambda: shutil.copy2(src, temp_dest))  # type: ignore[reportAttributeAccessIssue]
-        await anyio.to_thread.run_sync(_install_staged_path, temp_dest, dest)  # type: ignore[reportAttributeAccessIssue]
+        backup = await anyio.to_thread.run_sync(_install_staged_path, temp_dest, dest)  # type: ignore[reportAttributeAccessIssue]
     except OSError:
         try:
             _cleanup_path(temp_dest)
         except Exception:
             pass
         return Response(status_code=500, content="Copy failed")
-    return Response(status_code=201)
+    await _dispose_backup(backup, dispose)
+    return Response(status_code=201 if backup is None else 204)
 
 
-async def move_response(src: Path, dest: Path, overwrite: bool) -> Response:
-    if not src.exists():
+async def move_response(
+    src: Path, dest: Path, overwrite: bool, dispose=None
+) -> Response:
+    """MOVE ``src`` to ``dest``; same replace/dispose contract as COPY."""
+    if not os.path.lexists(src):
         return Response(status_code=404)
-    if dest.exists():
-        if not overwrite:
-            return Response(status_code=412, content="Destination exists")
+    if os.path.lexists(dest) and not overwrite:
+        return Response(status_code=412, content="Destination exists")
 
     try:
-        await anyio.to_thread.run_sync(_install_staged_path, src, dest)  # type: ignore[reportAttributeAccessIssue]
+        backup = await anyio.to_thread.run_sync(_install_staged_path, src, dest)  # type: ignore[reportAttributeAccessIssue]
+    except (FileNotFoundError, NotADirectoryError):
+        return Response(status_code=409, content="Destination parent does not exist")
     except OSError:
         return Response(status_code=500, content="Move failed")
-    return Response(status_code=201)
+    await _dispose_backup(backup, dispose)
+    return Response(status_code=201 if backup is None else 204)
 
 
 def lock_response(path: Path) -> Response:

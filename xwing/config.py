@@ -208,17 +208,55 @@ class Settings(BaseModel):
             self.audit_db = data_home / "xwing" / "audit.db"
         return self
 
+    @property
+    def trash_dir(self) -> Path:
+        return self.root_dir / ".xwing-trash"
+
+    def is_internal_path(self, path: Path) -> bool:
+        """True for X-wing's own files: tmp dir, trash, and its config/audit files.
+
+        These live beside (or inside) the served tree but must never be readable,
+        writable, or addressable by clients.
+        """
+        resolved = path.resolve()
+        tmp_dir = self.tmp_dir.resolve() if self.tmp_dir is not None else None
+        files = [
+            p.resolve()
+            for p in (self.users_config, self.ldap_config, self.audit_db)
+            if p is not None
+        ]
+        if resolved in files:
+            return True
+        for directory in (tmp_dir, self.trash_dir.resolve()):
+            if directory is not None and (
+                resolved == directory or directory in resolved.parents
+            ):
+                return True
+        return False
+
     def perms_for(self, user: str) -> UserPerms:
         if self.users_config is not None:
             try:
                 mtime = self.users_config.stat().st_mtime
                 if mtime != self._config_mtime:
                     logger.info("Users config changed, reloading %s", self.users_config)
-                    self._user_config = UserConfig(self.users_config)
+                    # Remember the mtime even when the new file is bad, so a
+                    # half-written or invalid edit logs once, not on every request.
                     self._config_mtime = mtime
+                    self._user_config = UserConfig(self.users_config)
             except OSError as e:
                 logger.warning(
                     "Could not stat users config %s: %s — using cached permissions",
+                    self.users_config,
+                    e,
+                )
+            except Exception as e:
+                # Invalid or half-written file: keep serving the last good
+                # permissions. The first load happens in __init__ and fails
+                # startup loudly, so a cached config always exists here; if it
+                # somehow did not, the fallthrough below is read-only.
+                logger.warning(
+                    "Users config %s is invalid: %s — keeping previous permissions",
                     self.users_config,
                     e,
                 )

@@ -99,3 +99,58 @@ test("the user form explains a rejected name on the field", async ({ page }) => 
   await expect(username).toHaveAttribute("aria-describedby", "user-form-help user-form-error");
   await expect(username).toBeFocused();
 });
+
+// The activity filter padded its fields on the right for a select's chevron, which
+// the date field does not have: the calendar button sat 32px in from the edge with
+// a dead gap after it.
+test("the date filter keeps its calendar button at the edge of the field", async ({ page }) => {
+  await page.goto("/admin?tab=activity");
+  const since = page.getByLabel("Since");
+  await expect(since).toHaveCSS("padding-right", "12px");
+  await expect(since).toHaveCSS("padding-left", "12px");
+  // The select still reserves its chevron's room.
+  await expect(page.getByLabel("Show")).toHaveCSS("padding-right", "32px");
+});
+
+// The account wrapper was not positioned, so its menu was pinned to the viewport
+// edge and sat on top of the Sign out button instead of under its own trigger.
+test("the account menu opens under its trigger and clear of Sign out", async ({ page }) => {
+  await page.goto("/admin");
+  await page.locator(".account-trigger").click();
+  const [trigger, menu, signOut] = await Promise.all([
+    page.locator(".account-trigger").boundingBox(),
+    page.locator("#account-menu").boundingBox(),
+    page.getByRole("button", { name: "Sign out" }).boundingBox(),
+  ]);
+  expect(trigger && menu && signOut).toBeTruthy();
+  expect(Math.round(menu!.x + menu!.width)).toBe(Math.round(trigger!.x + trigger!.width));
+  expect(menu!.y).toBeGreaterThanOrEqual(trigger!.y + trigger!.height);
+  expect(menu!.x + menu!.width).toBeLessThanOrEqual(signOut!.x);
+});
+
+// An error toast has no countdown to match a timer that is not running: it stays
+// until it is replaced or dismissed, and says so with a button instead of a bar.
+test("an error toast stays until it is dismissed", async ({ page }) => {
+  await page.route(/\/api\/admin\/activity\?older_than_days=/, route =>
+    route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ detail: "Purge failed" }) }));
+  await page.goto("/admin?tab=activity");
+  await page.getByRole("button", { name: "Purge history" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Purge history" }).click();
+
+  const toast = page.getByRole("alert").filter({ hasText: "Purge failed" });
+  await expect(toast).toBeVisible();
+  await expect(toast.locator(".toast-timer")).toHaveCount(0);
+  await toast.getByRole("button", { name: "Dismiss" }).click();
+  await expect(toast).toHaveCount(0);
+});
+
+// The sign-out overlay's action is `hidden` until a session actually expires.
+// A `display` utility on the button outranked the `hidden` attribute and showed an
+// empty violet bar under "Signing out".
+test("the sign-out overlay does not show its Sign in now button", async ({ page }) => {
+  await page.route("**/_auth/logout", route => route.fulfill({ status: 204 }));
+  await page.goto("/admin");
+  await page.getByRole("button", { name: "Sign out" }).click();
+  await expect(page.locator("#auth-overlay")).toBeVisible();
+  await expect(page.locator("#auth-overlay-action")).toBeHidden();
+});

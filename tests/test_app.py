@@ -993,7 +993,8 @@ class TestCopy:
         r = client.request(
             "COPY", "/src.txt", headers={"Destination": "/dst.txt", "Overwrite": "T"}
         )
-        assert r.status_code == 201
+        # Replacing an existing item answers 204, creating a new one 201.
+        assert r.status_code == 204
         assert (root / "dst.txt").read_text() == "source"
 
     def test_copy_file_overwrite_failure_preserves_destination(

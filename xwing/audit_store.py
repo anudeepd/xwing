@@ -79,7 +79,7 @@ def _append_activity_filters(
     elif scope == "admin":
         clauses.append("method LIKE 'admin_%'")
     if username:
-        clauses.append("username = ?")
+        clauses.append("username = ? COLLATE NOCASE")
         values.append(username)
     if since:
         clauses.append("occurred_at >= ?")

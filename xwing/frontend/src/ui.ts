@@ -96,19 +96,34 @@ export const SIGNOUT =
 export const POPOVER =
   "popover absolute right-0 top-[38px] z-popover p-1 border border-solid border-[#3b465c] rounded-[7px] bg-[#111827] " +
   "shadow-[0_18px_45px_rgba(0,0,0,.46)] origin-top-right animate-[xw-surface-in_var(--xw-surface)_var(--xw-ease)]";
+/**
+ * A menu entry. A policy-disabled entry keeps the real `disabled` attribute and
+ * points at the permission notice with `aria-describedby`, and it also has to
+ * *look* disabled: at full strength, with a pointer cursor and a hover highlight,
+ * a click that does nothing reads as a broken control rather than a denied one.
+ * The hover is gated on `:not(:disabled)` for the same reason (an `<a>` entry is
+ * never `:disabled`, so links keep their hover).
+ */
 export const MENU_ITEM =
   "menu-item w-full h-8 min-h-8 flex items-center px-2 border-0 rounded-[5px] bg-transparent text-[#b9c1ce] " +
-  "no-underline cursor-pointer text-xs hover:bg-xw-hover hover:text-xw-text";
+  "no-underline cursor-pointer text-xs [&:hover:not(:disabled)]:bg-xw-hover [&:hover:not(:disabled)]:text-xw-text " +
+  "disabled:opacity-[.42] disabled:cursor-not-allowed";
 /** A destructive entry in a menu: the same red the danger button uses. */
-export const MENU_ITEM_DANGER = "text-[#ff9ba3] hover:text-[#ffc1c7]";
+export const MENU_ITEM_DANGER = "text-[#ff9ba3] [&:hover:not(:disabled)]:text-[#ffc1c7]";
 
 /**
  * The hint for a control that shows no text of its own. The shell matches a
  * popover, one layer in front of it (`z-rail` over `z-popover`) so a hint on a
  * row action is not buried under the menu that same button opens, and behind a
- * modal's backdrop. `-translate-x-1/2` centres it on the x the component measures.
+ * modal's backdrop.
+ *
+ * It carries no `translate` utility and the component places it with whole
+ * device pixels: a `-translate-x-1/2` centring is a CSS transform, and the
+ * entrance keyframes (`xw-tip-in`) set `transform` too, so the keyframe replaced
+ * the centring while it ran and the hint snapped half its width sideways when it
+ * ended. Centring in JS also keeps the text off fractional pixel offsets.
  */
 export const TOOLTIP =
   "tooltip fixed z-rail px-1.5 py-1 border border-solid border-[#3b465c] rounded-[7px] bg-[#111827] " +
   "shadow-[0_18px_45px_rgba(0,0,0,.46)] text-xw-text text-[11px] font-sans leading-[normal] whitespace-nowrap " +
-  "pointer-events-none -translate-x-1/2 animate-[xw-surface-in_var(--xw-micro)_var(--xw-ease)]";
+  "pointer-events-none animate-[xw-tip-in_var(--xw-micro)_var(--xw-ease)]";

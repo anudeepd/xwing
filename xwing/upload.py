@@ -15,6 +15,7 @@ import asyncio
 import json
 import logging
 import os
+import stat
 import time
 from pathlib import Path
 from typing import Any
@@ -39,15 +40,38 @@ from .upload_engine import (
 logger = logging.getLogger(__name__)
 
 
+def _read_umask() -> int:
+    # Round trip once at import (startup, before any request threads exist):
+    # os.umask can only be read by setting it, which is not thread safe later.
+    mask = os.umask(0o022)
+    os.umask(mask)
+    return mask
+
+
+_UMASK = _read_umask()
+
+
 def _open_staging(path: Path) -> int:
+    # Private while it is being written; _publish gives it its final mode.
     return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
 
 
-def _fsync_and_close(fd: int) -> None:
+def _publish(fd: int, staged: Path, destination: Path) -> None:
+    """fsync, set the final mode, and atomically replace ``destination``.
+
+    An overwrite keeps the existing file's mode; a new file gets what a plain
+    ``open()`` would: ``0o666`` minus the process umask.
+    """
     try:
         os.fsync(fd)
+        try:
+            mode = stat.S_IMODE(os.stat(destination).st_mode)
+        except OSError:
+            mode = 0o666 & ~_UMASK
+        os.fchmod(fd, mode)
     finally:
         os.close(fd)
+    staged.replace(destination)
 
 
 def _pwrite_all(fd: int, data: memoryview, offset: int) -> None:
@@ -99,8 +123,7 @@ class LocalFileSink:
         if fd is None:
             # An empty upload never wrote, so the staging file does not exist yet.
             fd = await anyio.to_thread.run_sync(_open_staging, self._staged)
-        await anyio.to_thread.run_sync(_fsync_and_close, fd)
-        await anyio.to_thread.run_sync(self._staged.replace, self._destination)
+        await anyio.to_thread.run_sync(_publish, fd, self._staged, self._destination)
 
     async def abort(self) -> None:
         fd = self._take_descriptor()
@@ -142,7 +165,7 @@ def create_upload_router(settings: Settings, store: UploadStore) -> APIRouter:
             raise HTTPException(status_code=400, detail="Invalid filename")
         # Strip path components: only the bare filename is accepted.
         filename = Path(raw_name).name
-        if not filename or filename in (".", ".."):
+        if not filename or filename in (".", "..") or "\x00" in filename:
             raise HTTPException(status_code=400, detail="Invalid filename")
         if is_ignored_system_file(filename):
             return {"ignored": True}
@@ -153,7 +176,8 @@ def create_upload_router(settings: Settings, store: UploadStore) -> APIRouter:
 
         try:
             size = int(body.get("size", 0))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError: JSON ``Infinity`` / ``1e999`` parse to float inf.
             raise HTTPException(status_code=400, detail="size must be an integer") from None
 
         raw_dir = body.get("dir", "")
@@ -163,8 +187,15 @@ def create_upload_router(settings: Settings, store: UploadStore) -> APIRouter:
             dest_dir = safe_path(settings.root_dir, unquote(raw_dir))
         except PermissionError:
             raise HTTPException(status_code=403, detail="Forbidden destination") from None
+        # InvalidPath (NUL byte) becomes a 400 in the app's exception handler.
+        if settings.is_internal_path(dest_dir) or settings.is_internal_path(
+            dest_dir / filename
+        ):
+            raise HTTPException(status_code=404, detail="Destination directory not found")
         if not dest_dir.exists() or not dest_dir.is_dir():
             raise HTTPException(status_code=404, detail="Destination directory not found")
+        if (dest_dir / filename).is_dir():
+            raise HTTPException(status_code=409, detail="A folder with that name exists")
 
         return UploadTarget(
             session_id=str(body["session_id"]),

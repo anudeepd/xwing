@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
-import { AnimatePresence, LazyMotion, MotionConfig, domAnimation } from "motion/react";
+import { AnimatePresence, LazyMotion, MotionConfig, domMax } from "motion/react";
 import * as m from "motion/react-m";
 import { escapeHtml, formatBytes, formatDate, prefersReducedMotion } from "./format";
 import { AuthOverlay } from "./auth-overlay";
@@ -60,7 +60,7 @@ interface Toast {
   action?: { label: string; run: () => void };
 }
 type Dialog =
-  | { kind: "mkdir"; value: string; error?: string | undefined }
+  | { kind: "mkdir"; value: string; pending: boolean; error?: string | undefined }
   | { kind: "delete"; paths: string[]; pending: boolean; error?: string | undefined }
   | { kind: "rename"; path: string; name: string; value: string; pending: boolean; error?: string | undefined }
   | null;
@@ -77,6 +77,9 @@ type PendingFocus =
   | { kind: "path"; path: string | null; fallbackToFirst: boolean }
   | { kind: "name"; name: string };
 
+/** Where focus lands after a listing the user asked for is re-read: the top row. */
+const FIRST_ROW: PendingFocus = { kind: "path", path: null, fallbackToFirst: true };
+
 const uploadManager = new UploadManager();
 const PARALLEL_VALUES: Parallelism[] = [1, 2, 4, 8];
 const AUTH_REDIRECT_DELAY_MS = 1500;
@@ -88,6 +91,17 @@ const AUTO_REFRESH_MS = 15000;
 /** How many consecutive background refreshes may fail before the statusbar says so. */
 const REFRESH_FAILURE_NOTICE = 3;
 const DELETE_KEYS: Record<string, true> = { Delete: true, Backspace: true };
+/**
+ * Keys that do something when pressed on a row. Auto-repeat of any of them is
+ * ignored: a repeat is delivered to whichever element holds focus *now*, so a
+ * key still held down when a dialog closes would act on the row that just took
+ * focus (Enter opening the new folder, Space flipping a selection over and over).
+ */
+const ROW_ACTION_KEYS: Record<string, true> = { Enter: true, " ": true, F2: true, Delete: true };
+/** How long the listing takes to leave before a folder's rows are swapped in. */
+const LIST_LEAVE_MS = 130;
+/** A load slower than this earns a spinner; anything quicker would only flicker one. */
+const SLOW_LOAD_MS = 400;
 /** The sort button inside a header cell is `height:100%`, so its cell must have a definite height. */
 const SORT_CELL: React.CSSProperties = { height: "100%" };
 /** ARIA requires columnheader cells inside a row; `display:contents` keeps that wrapper out of the CSS grid so the header cells still lay out as direct grid children of `.table-head`. */
@@ -145,6 +159,7 @@ function Icon({ name }: { name: string }): React.JSX.Element {
     trash: <><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7"/><path d="M10 11v5m4-5v5"/></>,
     check: <path d="m5 12.5 4.25 4.25L19 7.5"/>, chevron: <path d="m7 10 5 5 5-5"/>,
     close: <path d="m6 6 12 12M18 6 6 18"/>, retry: <path d="M20 11a8 8 0 1 0-2 5.3M20 4v7h-7"/>,
+    alert: <><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5.5m0 3.5h.01"/></>,
   };
   return <svg className="ui-icon" viewBox="0 0 24 24" aria-hidden="true">{paths[name]}</svg>;
 }
@@ -200,6 +215,13 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   const [dropWaitState, setDropWaitState] = useState<DropWaitState>(null);
   const [arrivingNames, setArrivingNames] = useState<Set<string>>(() => new Set());
   const [pageLeaving, setPageLeaving] = useState(false);
+  // Opening a folder moves the listing only. The page itself never fades for it:
+  // `pageLeaving` is for the hand-off to another document (editor, console).
+  const [listLeaving, setListLeaving] = useState(false);
+  const [slowLoad, setSlowLoad] = useState(false);
+  // The listing animates in when the folder changes, but not on first paint,
+  // where the page's own entrance is already running.
+  const listEntrance = useRef(false);
   // Arriving from another panel: the shell is the whole show, so the boot card
   // stays out of it and the entrance matches the 170ms the other side left on.
   const [handover] = useState(() => consumeHandover());
@@ -255,6 +277,10 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   // Kept in a ref so the poll interval is not re-created on every upload tick.
   const backgroundBusy = useRef(paneBusy);
   useEffect(() => { backgroundBusy.current = paneBusy; });
+  // Mirrors `directoryState` for `servePendingFocus`, which also runs from a
+  // dialog's exit callback and so cannot read a render-time closure.
+  const directoryStateRef = useRef(directoryState);
+  useEffect(() => { directoryStateRef.current = directoryState; });
   const upload = useSyncExternalStore(uploadManager.subscribe, uploadManager.getSnapshot);
 
   /** Close the parallel-uploads popover; focus returns to its trigger when the
@@ -329,17 +355,18 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     window.setTimeout(() => location.assign(href), prefersReducedMotion() ? 0 : 170);
   };
 
-  const navigate = async (path: string, historyMode: "push" | "replace" | "none" = "push"): Promise<void> => {
+  const navigate = async (path: string, historyMode: "push" | "replace" | "none" = "push", focus: PendingFocus | null = FIRST_ROW): Promise<void> => {
     const id = ++requestId.current;
     abort.current?.abort();
     navigationInFlight.current = true;
     const animate = historyMode === "push" && !prefersReducedMotion();
     try {
+      // Only the rows leave and arrive; the header and the toolbar stay put.
       if (animate) {
-        setPageLeaving(true);
-        await new Promise(resolve => window.setTimeout(resolve, 170));
+        setListLeaving(true);
+        await new Promise(resolve => window.setTimeout(resolve, LIST_LEAVE_MS));
         if (id !== requestId.current) return;
-      } else setPageLeaving(false);
+      } else setListLeaving(false);
       const controller = new AbortController();
       abort.current = controller;
       setDirectoryState("loading");
@@ -365,13 +392,14 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
         // A folder URL carries no filter: the query belongs to the listing the
         // user was filtering, not to the folder they just opened.
         if (historyMode !== "none") setQuery("");
-        if (animate) setPageLeaving(false);
-        pendingFocus.current = { kind: "path", path: null, fallbackToFirst: true };
+        if (animate) setListLeaving(false);
+        // `null` re-reads the folder without moving focus (a background refresh).
+        pendingFocus.current = focus;
       } catch (error) {
         if (controller.signal.aborted) return;
         setDirectoryState("error");
         setDirectoryError(errorMessage(error));
-        if (animate) setPageLeaving(false);
+        if (animate) setListLeaving(false);
       }
     } finally {
       if (id === requestId.current) navigationInFlight.current = false;
@@ -465,7 +493,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     setLastSelected(file.path);
   };
 
-  const refresh = (): Promise<void> => navigate(directory.path, "none");
+  const refresh = (focus: PendingFocus | null = FIRST_ROW): Promise<void> => navigate(directory.path, "none", focus);
 
   // Re-read the open folder without disturbing the view: no loading veil, no
   // selection reset, no error surface, and no re-render when nothing changed.
@@ -537,7 +565,10 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
       const names = new Set(pendingArrivalNames.current);
       pendingArrivalNames.current.clear();
       setArrivingNames(names);
-      void navigate(refreshPath, "none").finally(() => {
+      // The quiet path: a finished upload is background news, so the listing is
+      // re-read without a loading state, without clearing the selection and
+      // without taking focus from whatever the user is typing into.
+      void refreshListing().finally(() => {
         if (arrivalTimer.current !== null) window.clearTimeout(arrivalTimer.current);
         arrivalTimer.current = window.setTimeout(
           () => setArrivingNames(new Set()),
@@ -553,15 +584,22 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   }, []);
 
   const createFolder = async (): Promise<void> => {
-    if (!dialog || dialog.kind !== "mkdir") return;
+    // A second submit while the request is in flight (a double Enter) would
+    // MKCOL the same name again, hit the 405 for the folder it had just made and
+    // reopen the dialog with an error about a success.
+    if (!dialog || dialog.kind !== "mkdir" || dialog.pending) return;
     const value = dialog.value.trim();
-    if (!value || value.includes("/")) { setDialog({ ...dialog, error: "Enter one valid folder name." }); return; }
+    if (!value || value.includes("/") || value === "." || value === "..") { setDialog({ ...dialog, error: "Enter one valid folder name." }); return; }
     const target = `${directory.path === "/" ? "" : directory.path}/${encodeURIComponent(value)}/`;
+    setDialog({ ...dialog, pending: true, error: undefined });
     let response: Response;
     try { response = await authFetch(target, { method: "MKCOL" }); }
-    catch (error) { setDialog({ ...dialog, error: errorMessage(error) }); return; }
-    if (!response.ok) { setDialog({ ...dialog, error: await responseError(response) }); return; }
-    setDialog(null); addToast(`Created ${value}`); await refresh();
+    catch (error) { setDialog({ ...dialog, pending: false, error: errorMessage(error) }); return; }
+    if (!response.ok) { setDialog({ ...dialog, pending: false, error: await responseError(response) }); return; }
+    setDialog(null); addToast(`Created ${value}`);
+    // Focus follows the folder the user just made, wherever the sort puts it,
+    // not whichever row happens to be first.
+    await refresh({ kind: "name", name: value });
   };
 
   // Rename is a same-directory WebDAV MOVE: the name changes, the location does
@@ -579,12 +617,11 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     catch (error) { setDialog({ ...dialog, pending: false, error: errorMessage(error) }); return; }
     if (!response.ok) { setDialog({ ...dialog, pending: false, error: await responseError(response) }); return; }
     setDialog(null); addToast(`Renamed to ${value}`, "success");
-    await refresh();
-    pendingFocus.current = { kind: "name", name: value };
+    await refresh({ kind: "name", name: value });
   };
 
   const deletePaths = async (): Promise<void> => {
-    if (!dialog || dialog.kind !== "delete") return;
+    if (!dialog || dialog.kind !== "delete" || dialog.pending) return;
     const focusAfterDelete = nearestSurvivor(files, dialog.paths);
     setDialog({ ...dialog, pending: true, error: undefined });
     let response: Response;
@@ -602,8 +639,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     addToast(`${dialog.paths.length} item${dialog.paths.length === 1 ? "" : "s"} deleted`, "deleted", data.transaction_id ? {
       label: "Undo", run: () => void restore(data.transaction_id!),
     } : undefined, 15000);
-    await refresh();
-    pendingFocus.current = { kind: "path", path: focusAfterDelete, fallbackToFirst: false };
+    await refresh({ kind: "path", path: focusAfterDelete, fallbackToFirst: false });
   };
 
   const restore = async (transaction: string): Promise<void> => {
@@ -710,7 +746,17 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     uploadManager.add(entries, directory.path, directory.upload.chunkSize);
   };
 
-  const transitioning = directoryState === "loading" || pageLeaving;
+  // The veil is for a load that is actually slow. A folder that answers within a
+  // blink needs no spinner, and one that flashed in for a frame on every quick
+  // refresh read as a flicker over the whole page.
+  const loading = directoryState === "loading";
+  useEffect(() => {
+    if (!loading) { setSlowLoad(false); return; }
+    const timer = window.setTimeout(() => setSlowLoad(true), SLOW_LOAD_MS);
+    return () => window.clearTimeout(timer);
+  }, [loading]);
+  useEffect(() => { listEntrance.current = true; }, []);
+  const transitioning = slowLoad;
   // One notice names every capability this account is missing, and every control
   // policy disables points at it: a dimmed control is never the only signal.
   // `permissionNotice` returns null only when write and delete are both granted,
@@ -718,19 +764,28 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   // hint can never reference a notice that is not on the page.
   const notice = permissionNotice(directory.permissions);
   const policyHint = notice ? "permission-notice" : undefined;
-  // Served here, after the commit, so the rows belong to the listing the request
-  // was made for. An auto-refresh re-enters this effect with nothing queued and
-  // leaves the user's focus alone.
-  useEffect(() => {
+  /**
+   * Serve the focus an action queued, once the listing it targets has committed
+   * (so the rows belong to the request) and no dialog is on screen. A dialog that
+   * is still open, or still animating out, owns the keyboard: handing focus to a
+   * row behind it would let the next Enter (a reflexive double tap, a key held
+   * through the close) act on that row. The dialog's own exit callback serves it
+   * instead, with `afterDialog` set because that callback runs one render before
+   * the dialog leaves the DOM. An auto-refresh queues nothing and leaves the
+   * user's focus alone.
+   */
+  const servePendingFocus = useCallback((afterDialog = false): void => {
     const pending = pendingFocus.current;
-    if (!pending || directoryState !== "ready") return;
+    if (!pending || directoryStateRef.current !== "ready") return;
+    if (!afterDialog && document.querySelector("[aria-modal='true']")) return;
     pendingFocus.current = null;
     const rows = [...document.querySelectorAll<HTMLElement>(".file-row")];
     const target = pending.kind === "name"
       ? rows.find(row => row.querySelector(".filename")?.getAttribute("title") === pending.name)
       : (rows.find(row => row.dataset.path === pending.path) ?? (pending.fallbackToFirst ? rows[0] : null));
     (target ?? document.getElementById("file-list"))?.focus();
-  }, [directory, directoryState]);
+  }, []);
+  useEffect(() => { servePendingFocus(); }, [directory, directoryState, servePendingFocus]);
   // The empty state is an invitation or an orientation, so it follows the same
   // capability rule as the notice: a delete-only account is not read-only.
   const emptyStateHint = directory.permissions.write
@@ -772,7 +827,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
       <section className="location flex items-center justify-between min-w-0" aria-label="Current location">
         <nav className="crumbs flex items-center gap-1 min-w-0 text-xw-muted text-xs font-mono leading-[normal]" aria-label="Breadcrumb">{directory.breadcrumbs.map((crumb, index) => <React.Fragment key={crumb.path}>
           {index > 0 && <span className="slash text-[#444f63]">/</span>}
-          {index === directory.breadcrumbs.length - 1 ? <span className="crumb current text-[#aab3c2] no-underline rounded-[4px] px-1 py-0.5 whitespace-nowrap max-w-[260px] overflow-hidden text-ellipsis text-xw-text font-semibold">{crumbLabel(crumb.name)}</span> : <a className="crumb text-[#aab3c2] no-underline rounded-[4px] px-1 py-0.5 whitespace-nowrap max-w-[260px] overflow-hidden text-ellipsis hover:bg-xw-hover hover:text-xw-text" href={crumb.path} onClick={event => spaActivate(event, () => void navigate(crumb.path))}>{crumbLabel(crumb.name)}</a>}
+          {index === directory.breadcrumbs.length - 1 ? <span className="crumb current no-underline rounded-[4px] px-1 py-0.5 whitespace-nowrap max-w-[260px] overflow-hidden text-ellipsis text-xw-text font-semibold">{crumbLabel(crumb.name)}</span> : <a className="crumb text-[#aab3c2] no-underline rounded-[4px] px-1 py-0.5 whitespace-nowrap max-w-[260px] overflow-hidden text-ellipsis hover:bg-xw-hover hover:text-xw-text" href={crumb.path} onClick={event => spaActivate(event, () => void navigate(crumb.path))}>{crumbLabel(crumb.name)}</a>}
         </React.Fragment>)}</nav>
         <div className="location-meta flex gap-3 text-xw-faint text-[11px] font-mono leading-[normal] tabular-nums max-[900px]:hidden"><span>{query.trim() ? `${files.length} of ${directory.files.length} items` : `${directory.files.length} items`}</span></div>
       </section>
@@ -783,7 +838,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
         <div className="toolbar-group flex items-center gap-2 min-w-0">
           <button className={cn("button", BTN, BTN_PRIMARY)} disabled={!directory.permissions.write} aria-describedby={policyHint} onClick={() => fileInput.current?.click()}><Icon name="upload"/><span className="label">Upload files</span></button>
           <button className={cn("button hide-tablet max-[900px]:hidden", BTN)} aria-label="Upload folder" disabled={!directory.permissions.write} aria-describedby={policyHint} onClick={() => folderInput.current?.click()}><Icon name="folderUpload"/><span className="label">Upload folder</span></button>
-          <button className={cn("button", BTN)} aria-label="New folder" disabled={!directory.permissions.write} aria-describedby={policyHint} onClick={() => setDialog({ kind: "mkdir", value: "" })}><Icon name="folderAdd"/><span className="label">New folder</span></button>
+          <button className={cn("button", BTN)} aria-label="New folder" disabled={!directory.permissions.write} aria-describedby={policyHint} onClick={() => setDialog({ kind: "mkdir", value: "", pending: false })}><Icon name="folderAdd"/><span className="label">New folder</span></button>
           <input ref={fileInput} type="file" multiple hidden onChange={event => { if (event.target.files) { clearDropFeedback(); queueFiles(event.target.files); } event.currentTarget.value = ""; }}/>
           <input ref={folderInput} type="file" multiple hidden {...({ webkitdirectory: "" } as React.InputHTMLAttributes<HTMLInputElement>)} onChange={event => { if (event.target.files) { clearDropFeedback(); queueFiles(event.target.files); } event.currentTarget.value = ""; }}/>
         </div>
@@ -818,13 +873,16 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
       }}>
         <div className="file-table grid grid-rows-[36px_minmax(0,1fr)] min-h-0 overflow-auto [scrollbar-gutter:stable]" role="table" aria-label="Files" aria-rowcount={files.length + 1} aria-describedby={policyHint}>
         <div className={cn("table-head sticky top-0 z-raise border-0 border-b border-solid border-xw-line bg-[#0b101a] text-xw-faint text-[11px] font-medium font-mono uppercase items-stretch", "grid grid-cols-[38px_34px_minmax(240px,1fr)_112px_168px_92px] px-2 max-[900px]:grid-cols-[38px_34px_minmax(180px,1fr)_90px_120px_92px] max-[640px]:grid-cols-[38px_30px_minmax(120px,1fr)_64px_56px]")} role="rowgroup"><span role="row" style={ROW_CONTENTS}><label className="select-all h-full grid place-items-center bg-transparent border-0 cursor-pointer" role="columnheader"><SelectionCheckbox label={selected.size === files.length ? "Deselect all" : "Select all"} checked={files.length > 0 && selected.size === files.length} indeterminate={selected.size > 0 && selected.size < files.length} onToggle={() => { setSelected(selected.size === files.length ? new Set() : new Set(files.map(file => file.path))); setLastSelected(null); }}/></label><span role="columnheader" aria-label="Type"/>{(["name", "size", "modified"] as SortKey[]).map(key => { const index = sort.findIndex(entry => entry.key === key); const entry = sort[index]; const label = key === "modified" ? "Modified" : key[0]!.toUpperCase() + key.slice(1); return <span key={key} className={cn("sort-cell flex", key === "modified" && "max-[640px]:hidden")} role="columnheader" aria-sort={entry ? (entry.direction === "asc" ? "ascending" : "descending") : "none"} style={SORT_CELL}><button className={cn("sort h-full w-full flex items-center gap-1 bg-transparent text-inherit text-left uppercase hover:text-[#aab5c9]", key === "modified" && "date max-[640px]:hidden", entry && "active")} aria-label={`${label}, ${entry ? `${entry.direction === "asc" ? "ascending" : "descending"}, priority ${index + 1}` : "not sorted"}`} onClick={() => updateSort(key)}>{label} {entry && <span>{entry.direction === "asc" ? "▲" : "▼"}{sort.length > 1 ? index + 1 : ""}</span>}</button></span>; })}<span role="columnheader" aria-label="Actions"/></span></div>
-        <div id="file-list" className="file-list min-h-0 transition-[opacity,transform] duration-150 ease-in-out" role="rowgroup" tabIndex={-1}>
+        <m.div id="file-list" key={directory.path} className="file-list min-h-0" role="rowgroup" tabIndex={-1}
+          initial={listEntrance.current && !reduced ? { opacity: 0, y: 6 } : false}
+          animate={listLeaving ? { opacity: 0, y: -4 } : { opacity: 1, y: 0 }}
+          transition={listLeaving ? { duration: presenceDuration(reduced, LIST_LEAVE_MS / 1000), ease: "easeIn" } : { duration: presenceDuration(reduced, 0.24), ease: [0.16, 1, 0.3, 1] }}>
           {directoryState === "error" && <div className="state-panel h-full min-h-[220px] flex flex-col items-center justify-center gap-2 text-xw-muted text-pretty"><strong>Couldn’t open this folder</strong><span>{directoryError}</span><button className={cn("button", BTN)} onClick={() => void refresh()}>Retry</button></div>}
           {!files.length && directoryState !== "error" && <div className="state-panel empty h-full min-h-[220px] flex flex-col items-center justify-center gap-2 text-xw-muted text-pretty"><span className="empty-icon w-[46px] h-[46px] grid place-items-center border border-solid border-xw-line rounded-[10px] bg-xw-raised text-[#d8b963] [&_.ui-icon]:w-[22px] [&_.ui-icon]:h-[22px]"><Icon name="folder"/></span><strong>{query.trim() ? "No matches" : "This folder is empty"}</strong><span>{query.trim() ? `Nothing here matches “${query.trim()}”.` : emptyStateHint}</span>{directory.permissions.write && !query.trim() && <button className={cn("button", BTN, BTN_PRIMARY)} onClick={() => fileInput.current?.click()}><Icon name="upload"/><span className="label">Upload files</span></button>}</div>}
           {files.map((file, index) => <FileRow key={file.path} file={file} index={index} selected={selected.has(file.path)} loading={directoryState === "loading"} arriving={arrivingNames.has(file.name)} tabStop={file.path === anchorPath} onFocusRow={setRovingPath} actionsOpen={actionsPath === file.path} onToggleActions={() => setActionsPath(current => current === file.path ? null : file.path)} onCloseActions={() => setActionsPath(current => current === file.path ? null : current)} permissions={directory.permissions} policyHint={policyHint} onSelect={(gesture) => toggleSelection(file, index, gesture)} onOpen={() => file.kind === "directory" ? void navigate(file.path) : openDocument(`${file.path}${file.editable ? "?edit" : ""}`, file.editable)} onRename={() => { if (directory.permissions.write && directory.permissions.delete) setDialog({ kind: "rename", path: file.path, name: file.name, value: file.name, pending: false }); }} onDelete={() => setDialog({ kind: "delete", paths: [file.path], pending: false })} onDeleteKey={() => { if (directory.permissions.delete) setDialog({ kind: "delete", paths: selected.size ? [...selected] : [file.path], pending: false }); }} onClear={() => { setSelected(new Set()); setLastSelected(null); }}/>) }
           {/* Space the rail's height, so the last rows can scroll clear of it. */}
           <div className="rail-clearance h-[var(--xw-rail-clearance,0)]" aria-hidden="true"/>
-        </div>
+        </m.div>
         </div>
         <div className="statusbar flex items-center justify-between px-3 border-0 border-t border-solid border-xw-line bg-[#0b101a] text-xw-faint text-[11px] font-mono leading-[normal] tabular-nums max-[640px]:justify-center"><span className="statusbar-count min-[901px]:hidden">{query.trim() ? `${files.length} of ${directory.files.length} items` : `${directory.files.length} items`}</span><span className="drop-hint text-[#7f779c] max-[640px]:hidden">{directory.permissions.write ? "Drop files anywhere to upload" : "Browsing — uploads are disabled"}</span>{refreshFailures >= REFRESH_FAILURE_NOTICE && <span role="status">Couldn't refresh — retrying</span>}</div>
       </section>
@@ -850,7 +908,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
       </div>
       {zipPending > 0 && <div className="zip-overlay fixed inset-0 z-popover flex items-center justify-center p-4 bg-[rgba(2,6,23,.72)] animate-[zip-overlay-in_150ms_ease-out]" role="status" aria-live="polite"><div className="zip-overlay-card flex items-center gap-3 w-[min(100%,384px)] p-5 border border-solid border-xw-line-hi rounded-lg bg-[rgba(15,23,42,.96)] shadow-[0_24px_70px_rgba(0,0,0,.45)]"><span className="zip-spinner w-7 h-7 flex-none border-[3px] border-solid border-[rgba(124,58,237,.25)] border-t-xw-accent rounded-full animate-[zip-spin_.8s_linear_infinite]" aria-hidden="true"/><span className="zip-overlay-text font-sans text-sm font-semibold text-[#f8fafc]">Zipping {zipPending} file{zipPending === 1 ? "" : "s"}…</span></div></div>}
     </main>
-    <AnimatePresence initial={false}>{dialog && <DialogView key="dialog" dialog={dialog} setDialog={setDialog} onMkdir={() => void createFolder()} onRename={() => void renamePath()} onDelete={() => void deletePaths()}/>}</AnimatePresence> 
+    <AnimatePresence initial={false} onExitComplete={() => servePendingFocus(true)}>{dialog && <DialogView key="dialog" dialog={dialog} setDialog={setDialog} focusHandedOff={() => pendingFocus.current !== null || navigationInFlight.current} onMkdir={() => void createFolder()} onRename={() => void renamePath()} onDelete={() => void deletePaths()}/>}</AnimatePresence>
     {authOverlay && <AuthOverlay kind={authOverlay}/>}
   </m.div>;
 }
@@ -874,7 +932,8 @@ function ToastView({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
     return () => window.clearTimeout(timer);
   }, [toast.id, toast.duration, dismiss]);
 
-  const icon = toast.kind === "deleted" || toast.kind === "error" ? "trash" : "check";
+  // An error gets an alert glyph; the trash can means "deleted" and nothing else.
+  const icon = toast.kind === "error" ? "alert" : toast.kind === "deleted" ? "trash" : "check";
   return <m.div className={cn(TOAST, toast.kind, toast.kind === "error" || toast.kind === "deleted" ? TOAST_ERROR : TOAST_SUCCESS)} role={toast.kind === "error" ? "alert" : "status"} layout
     initial={reduced ? false : { opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={reduced ? { opacity: 1 } : { opacity: 0, y: 6 }} transition={{ duration: presenceDuration(reduced) }}>
     <span className={TOAST_ICON}><Icon name={icon}/></span>
@@ -891,11 +950,45 @@ function FileRow({ file, index, selected, loading, arriving, tabStop, onFocusRow
   const canRename = permissions.write && permissions.delete;
   const actionsTrigger = useRef<HTMLButtonElement>(null);
   const actionsMenu = useRef<HTMLDivElement>(null);
-  // Opening the menu moves focus to its first enabled item; Escape on the
-  // menu below returns it to the trigger.
-  useEffect(() => {
-    if (!actionsOpen) return;
-    actionsMenu.current?.querySelector<HTMLElement>("button:not([disabled]), a[href]")?.focus();
+  const [menuUp, setMenuUp] = useState(false);
+  // Opening the menu moves focus to its first enabled item; Escape on the menu
+  // below returns it to the trigger. The side it opens on is measured rather than
+  // guessed: the menu lives inside the table's scroll container, so a row near the
+  // bottom of the visible listing showed a menu with its lower items cut off below
+  // the fold. Measured in a layout effect (before paint, so it never flashes the
+  // wrong side) and re-measured while open, because scrolling moves the row.
+  useLayoutEffect(() => {
+    if (!actionsOpen) {
+      setMenuUp(false);
+      return;
+    }
+    const menu = actionsMenu.current;
+    if (!menu) return;
+    const place = (): void => {
+      const row = menu.closest<HTMLElement>(".file-row");
+      const scroller = row ? scrollParent(row) : null;
+      if (!row || !scroller) return;
+      const rowBox = row.getBoundingClientRect();
+      const clip = scroller.getBoundingClientRect();
+      // The sticky column header sits inside the scroller; a menu flipped above the
+      // row must not land under it.
+      const sticky = scroller.querySelector<HTMLElement>(".table-head");
+      const ceiling = sticky ? Math.max(clip.top, sticky.getBoundingClientRect().bottom) : clip.top;
+      const needed = menu.offsetHeight + 8;
+      const below = clip.bottom - rowBox.bottom;
+      const above = rowBox.top - ceiling;
+      // Prefer the side with room. When neither has enough (a very short window),
+      // take the roomier one so the most items stay reachable without scrolling.
+      setMenuUp(below < needed && (above >= needed || above > below));
+    };
+    place();
+    menu.querySelector<HTMLElement>("button:not([disabled]), a[href]")?.focus();
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
   }, [actionsOpen]);
   const moveFocus = (row: HTMLElement, direction: "next" | "previous" | "first" | "last"): void => {
     const rows = [...(row.parentElement?.querySelectorAll<HTMLElement>(".file-row") ?? [])];
@@ -912,6 +1005,8 @@ function FileRow({ file, index, selected, loading, arriving, tabStop, onFocusRow
     onKeyDown={event => {
       const rowOwnsKey = event.target === event.currentTarget;
       if (!rowOwnsKey && event.key !== "Delete" && event.key !== "Escape") return;
+      // See ROW_ACTION_KEYS: a held key must not act on the row that just took focus.
+      if (event.repeat && ROW_ACTION_KEYS[event.key]) { event.preventDefault(); return; }
       if (event.key === " ") { event.preventDefault(); onSelect({ range: event.shiftKey, additive: !event.shiftKey }); }
       else if (event.key === "Enter") { event.preventDefault(); onOpen(); }
       else if (event.key === "Delete") { event.preventDefault(); onDeleteKey(); }
@@ -935,7 +1030,7 @@ function FileRow({ file, index, selected, loading, arriving, tabStop, onFocusRow
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) onCloseActions();
       }}>
       <Tooltip label={`Actions for ${file.name}`}><button ref={actionsTrigger} className={cn(CONTROL_ICON, CONTROL_ICON_ROW)} aria-label={`Actions for ${file.name}`} aria-expanded={actionsOpen} aria-controls={actionsOpen ? "row-actions-menu" : undefined} onClick={onToggleActions}><Icon name="chevron"/></button></Tooltip>
-      {actionsOpen && <div id="row-actions-menu" ref={actionsMenu} role="group" aria-label={`Actions for ${file.name}`} className={cn(POPOVER, "row-actions-menu right-2 top-full min-w-[180px]")} onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onCloseActions(); actionsTrigger.current?.focus(); } }}>
+      {actionsOpen && <div id="row-actions-menu" ref={actionsMenu} role="group" aria-label={`Actions for ${file.name}`} className={cn(POPOVER, "row-actions-menu right-2 min-w-[180px]", menuUp ? "top-auto bottom-full origin-bottom-right" : "top-full")} onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onCloseActions(); actionsTrigger.current?.focus(); } }}>
         <button className={cn(MENU_ITEM, "justify-start gap-2 text-left")} aria-label={`Rename ${file.name}`} disabled={!canRename} aria-describedby={!canRename ? policyHint : undefined} onClick={onRename}><Icon name="rename"/><span>Rename</span></button>
         <a className={cn(MENU_ITEM, "justify-start gap-2")} href={file.kind === "directory" ? `${file.path}?zip` : file.path} download aria-label={`Download ${file.name}`} onClick={() => { onCloseActions(); actionsTrigger.current?.focus(); }}><Icon name="download"/><span>Download</span></a>
         <button className={cn(MENU_ITEM, MENU_ITEM_DANGER, "justify-start gap-2 text-left")} aria-label={`Delete ${file.name}`} disabled={!permissions.delete} aria-describedby={!permissions.delete ? policyHint : undefined} onClick={onDelete}><Icon name="trash"/><span>Delete</span></button>
@@ -960,6 +1055,16 @@ function focusFileRow(path: string | null, fallbackToFirst = false): void {
   });
 }
 
+/** The nearest ancestor that scrolls vertically — the table, for a row. Used to
+ *  decide whether a popover anchored to a row has room on the side it wants. */
+function scrollParent(element: HTMLElement): HTMLElement | null {
+  for (let node = element.parentElement; node; node = node.parentElement) {
+    const overflowY = getComputedStyle(node).overflowY;
+    if (overflowY === "auto" || overflowY === "scroll") return node;
+  }
+  return null;
+}
+
 function UploadDock({ snapshot }: { snapshot: ReturnType<UploadManager["getSnapshot"]> }): React.JSX.Element | null {
   const reduced = prefersReducedMotion();
   useEffect(() => {
@@ -975,14 +1080,17 @@ function UploadDock({ snapshot }: { snapshot: ReturnType<UploadManager["getSnaps
 
   if (!snapshot.items.length) return null;
   const dismissible = snapshot.items.some(item => item.status === "completed" || item.status === "cancelled");
-  return <m.aside className="upload-dock w-[360px] max-[900px]:w-[330px] max-[640px]:w-auto max-h-[min(520px,70vh)] flex flex-col border border-solid border-[#3b465c] rounded-lg bg-[rgba(15,20,32,.97)] shadow-[0_24px_70px_rgba(0,0,0,.5)] backdrop-blur-[18px] overflow-hidden z-raise"
+  // No `backdrop-filter`: the card is 97% opaque, so the blur was invisible, and a
+  // blurred backdrop makes the browser re-rasterise everything behind the card on
+  // every progress tick and during its entrance (a source of dropped frames).
+  return <m.aside className="upload-dock w-[360px] max-[900px]:w-[330px] max-[640px]:w-auto max-h-[min(520px,70vh)] flex flex-col border border-solid border-[#3b465c] rounded-lg bg-[rgba(15,20,32,.97)] shadow-[0_24px_70px_rgba(0,0,0,.5)] overflow-hidden z-raise"
     initial={reduced ? false : { opacity: 0, y: 10, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={reduced ? { opacity: 1 } : { opacity: 0, y: 9, scale: 0.98 }} transition={{ duration: presenceDuration(reduced) }}
     aria-label="Uploads"><div className="upload-header min-h-12 flex items-center justify-between pl-3 pr-2 border-0 border-b border-solid border-xw-line [&>div]:flex [&>div]:items-baseline [&>div]:gap-2 [&_strong]:font-semibold"><div><strong>Uploads</strong><span className={cn("upload-summary text-[11px] tabular-nums", uploadSummaryKind(snapshot) === "active" ? "text-xw-accent-hi" : uploadSummaryKind(snapshot) === "complete" ? "text-xw-success" : uploadSummaryKind(snapshot) === "error" ? "text-[#ff9ba3]" : "text-xw-muted")} role="status">{uploadSummary(snapshot)}</span></div><Tooltip label="Clear finished uploads"><button className={CONTROL_ICON} aria-label="Clear finished uploads" disabled={!dismissible} onClick={() => uploadManager.dismissCompleted()}><Icon name="close"/></button></Tooltip></div>
     <div className="upload-items overflow-auto">{snapshot.items.map(item => { const percent = item.size ? Math.round(item.uploaded / item.size * 100) : 0; return <m.div className={cn("upload-item p-3 border-0 border-b border-solid border-[#1d2534] last:border-b-0", item.status)} key={item.id} layout initial={{ opacity: 0 }} animate={{ opacity: 1 }} role="group" aria-label={`${item.relativePath}, ${uploadItemLabel(item)}`}><div className="upload-line flex justify-between gap-3 text-[11px] font-mono [&>span]:whitespace-nowrap [&>span]:overflow-hidden [&>span]:text-ellipsis"><span title={item.relativePath}>{item.relativePath}</span><strong>{item.status === "completed" ? "Done" : `${percent}%`}</strong></div><div className={cn("progress-track h-1 my-2 mb-1 bg-[#273148] rounded-[3px] overflow-hidden [&>span]:block [&>span]:h-full [&>span]:origin-left [&>span]:transition-transform [&>span]:duration-micro", item.status === "completed" ? "[&>span]:bg-xw-success" : item.status === "failed" ? "[&>span]:bg-xw-danger" : item.status === "cancelled" ? "[&>span]:bg-xw-muted" : "[&>span]:bg-xw-accent")} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent} aria-label={`${item.relativePath} upload progress`}><span style={{ transform: `scaleX(${percent / 100})` }}/></div><div className="upload-meta flex justify-between gap-2 text-xw-faint text-[11px] tabular-nums [&>span:first-child]:overflow-hidden [&>span:first-child]:text-ellipsis [&>span:first-child]:whitespace-nowrap [&_button]:border-0 [&_button]:bg-transparent [&_button]:text-xw-accent-hi [&_button]:cursor-pointer [&_button]:text-[11px] [&_button]:font-medium [&_button]:flex [&_button]:items-center [&_button]:gap-1"><span>{uploadItemLabel(item)}{item.status === "uploading" && item.speed > 0 ? ` · ${formatBytes(item.speed)}/s` : ""}</span><span>{item.status === "failed" || item.status === "cancelled" ? <button onClick={() => uploadManager.retry(item.id)}><Icon name="retry"/> Retry</button> : item.status !== "completed" ? <button onClick={() => uploadManager.cancel(item.id)}>Cancel</button> : null}</span></div></m.div>; })}</div>
   </m.aside>;
 }
 
-function DialogView({ dialog, setDialog, onMkdir, onRename, onDelete }: { dialog: Exclude<Dialog, null>; setDialog: (value: Dialog) => void; onMkdir: () => void; onRename: () => void; onDelete: () => void }): React.JSX.Element {
+function DialogView({ dialog, setDialog, focusHandedOff, onMkdir, onRename, onDelete }: { dialog: Exclude<Dialog, null>; setDialog: (value: Dialog) => void; focusHandedOff: () => boolean; onMkdir: () => void; onRename: () => void; onDelete: () => void }): React.JSX.Element {
   const kind = dialog.kind;
   // mkdir and rename are the same shape: one labelled name field and a primary
   // confirm. Delete is the destructive variant.
@@ -995,24 +1103,32 @@ function DialogView({ dialog, setDialog, onMkdir, onRename, onDelete }: { dialog
     if (pending) return;
     setDialog(null);
   };
-  const modalRef = useModalFocus<HTMLDivElement>(close, !pending);
+  // When the action that closed this dialog queued a focus target of its own (the
+  // new folder, the renamed row, the survivor of a delete), the trap must not first
+  // park focus on the opener: that stop is where a stray Enter used to land.
+  const modalRef = useModalFocus<HTMLDivElement>(close, !pending, () => !focusHandedOff());
   const confirmRef = useRef<HTMLButtonElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
-    // A failed delete disables the confirm button mid-flight, which drops
-    // focus to <body>; hand it back to Cancel rather than stranding it.
-    if (pending || !modalRef.current || modalRef.current.contains(document.activeElement)) return;
+    // A failure has to leave the keyboard somewhere useful. Chromium drops focus
+    // to <body> when the confirm button it was on is disabled mid-flight; Firefox
+    // keeps it on that disabled button, which swallows Enter. Either way the
+    // dialog owns the focus, so hand it to Cancel (or the field, for the text
+    // dialogs) unless it is already on something operable.
+    if (pending || !modalRef.current) return;
+    const active = document.activeElement as (HTMLElement & { disabled?: boolean }) | null;
+    if (active && modalRef.current.contains(active) && !active.disabled) return;
     (textDialog ? confirmRef.current : cancelRef.current)?.focus();
   }, [pending, textDialog, modalRef]);
   const title = kind === "mkdir" ? "New folder" : kind === "rename" ? `Rename ${dialog.name}` : `Delete ${dialog.paths.length} item${dialog.paths.length === 1 ? "" : "s"}?`;
   const description = kind === "mkdir" ? "Create a folder in the current directory." : kind === "rename" ? "Enter a new name. The item stays in this folder." : "The items will move to X-wing’s recoverable trash.";
-  const submitLabel = pending ? (kind === "rename" ? "Renaming…" : "Deleting…") : kind === "mkdir" ? "Create folder" : kind === "rename" ? "Rename" : "Delete";
+  const submitLabel = pending ? (kind === "mkdir" ? "Creating…" : kind === "rename" ? "Renaming…" : "Deleting…") : kind === "mkdir" ? "Create folder" : kind === "rename" ? "Rename" : "Delete";
   return <m.div ref={modalRef} className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) close(); }}
     initial={reduced ? false : { opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: presenceDuration(reduced) }}>
     <m.form className="modal" initial={reduced ? false : { opacity: 0, y: 10, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={reduced ? { opacity: 1 } : { opacity: 0, y: 7, scale: 0.98 }} transition={{ duration: presenceDuration(reduced) }} role="dialog" aria-modal="true" aria-labelledby="dialog-title" aria-describedby="dialog-description" onSubmit={event => { event.preventDefault(); if (kind === "mkdir") onMkdir(); else if (kind === "rename") onRename(); else onDelete(); }}>
     <h2 id="dialog-title">{title}</h2>
     <p id="dialog-description">{description}</p>
-    {"value" in dialog && <label>{kind === "mkdir" ? "Folder name" : "New name"}<input data-autofocus value={dialog.value} aria-invalid={dialog.error ? "true" : undefined} aria-describedby={dialog.error ? "dialog-error" : undefined} onChange={event => setDialog({ ...dialog, value: event.target.value, error: undefined })}/></label>}
+    {"value" in dialog && <label>{kind === "mkdir" ? "Folder name" : "New name"}<input data-autofocus value={dialog.value} readOnly={pending} aria-invalid={dialog.error ? "true" : undefined} aria-describedby={dialog.error ? "dialog-error" : undefined} onChange={event => setDialog({ ...dialog, value: event.target.value, error: undefined })}/></label>}
     {dialog.error && <div id="dialog-error" className="dialog-error" role="alert">{dialog.error}</div>}
     <div className="modal-actions"><button ref={cancelRef} type="button" className={cn("button", BTN)} data-autofocus={kind === "delete" ? "" : undefined} disabled={pending} onClick={close}>Cancel</button><button ref={confirmRef} className={cn("button", BTN, textDialog ? BTN_PRIMARY : BTN_DANGER)} disabled={pending}>{submitLabel}</button></div>
     </m.form></m.div>;
@@ -1061,8 +1177,11 @@ function contentDispositionFilename(header: string | null): string | null { cons
 try {
   const root = document.getElementById("xwing-root");
   if (!root) throw new Error("X-wing root is missing");
+  // `domMax`, not `domAnimation`: the toast stack and the upload dock use `layout`
+  // so their siblings glide when one leaves. Without the layout feature that prop
+  // is silently ignored and the neighbours jump a whole toast height instead.
   createRoot(root).render(
-    <LazyMotion features={domAnimation} strict>
+    <LazyMotion features={domMax} strict>
       <MotionConfig reducedMotion="user">
         <App initial={readBootstrap()}/>
       </MotionConfig>

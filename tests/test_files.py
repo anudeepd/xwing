@@ -1,6 +1,12 @@
 import pytest
 
-from xwing.files import human_size, is_editable, is_ignored_system_file, safe_path
+from xwing.files import (
+    InvalidPath,
+    human_size,
+    is_editable,
+    is_ignored_system_file,
+    safe_path,
+)
 
 
 class TestSafePath:
@@ -109,3 +115,50 @@ class TestIsEditable:
         f = tmp_path / "Makefile"
         f.write_bytes(b"x" * (2 * 1024 * 1024 + 1))
         assert is_editable(f)
+
+    def test_nul_byte_means_binary_even_with_a_text_suffix(self, tmp_path):
+        f = tmp_path / "notes.txt"
+        f.write_bytes(b"text\x00more")
+        assert not is_editable(f)
+
+    def test_invalid_utf8_is_not_editable(self, tmp_path):
+        f = tmp_path / "latin1"
+        f.write_bytes(b"caf\xe9\n")
+        assert not is_editable(f)
+
+    def test_multibyte_char_cut_by_the_sniff_window_is_still_text(self, tmp_path):
+        f = tmp_path / "wide.txt"
+        # 8191 ASCII bytes then a 3-byte character straddling the 8 KiB window.
+        f.write_bytes(b"a" * 8191 + "€".encode() + b"tail")
+        assert is_editable(f)
+
+
+class TestSafePathFinalComponent:
+    def test_final_symlink_is_followed_by_default(self, tmp_path):
+        (tmp_path / "real.txt").write_text("x")
+        (tmp_path / "link").symlink_to(tmp_path / "real.txt")
+        assert safe_path(tmp_path, "link") == tmp_path / "real.txt"
+
+    def test_final_symlink_is_kept_when_not_following(self, tmp_path):
+        (tmp_path / "real.txt").write_text("x")
+        (tmp_path / "link").symlink_to(tmp_path / "real.txt")
+        assert safe_path(tmp_path, "link", follow_final=False) == tmp_path / "link"
+
+    def test_escaping_final_symlink_can_still_be_addressed_as_itself(self, tmp_path):
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "out").symlink_to(tmp_path)
+        assert safe_path(root, "out", follow_final=False) == root / "out"
+        with pytest.raises(PermissionError):
+            safe_path(root, "out")
+
+    def test_escaping_parent_chain_is_rejected_when_not_following(self, tmp_path):
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "out").symlink_to(tmp_path)
+        with pytest.raises(PermissionError):
+            safe_path(root, "out/file", follow_final=False)
+
+    def test_nul_byte_is_invalid(self, tmp_path):
+        with pytest.raises(InvalidPath):
+            safe_path(tmp_path, "a\x00b")

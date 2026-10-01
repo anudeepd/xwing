@@ -182,7 +182,7 @@ Permission levels:
 |------|--------|
 | `r`  | Browse directories, download files (GET, HEAD, PROPFIND) |
 | `w`  | Upload files, create directories, copy (PUT, MKCOL, COPY) |
-| `d`  | Delete and move files (DELETE, MOVE) |
+| `d`  | Delete files and undo a delete (DELETE, restore); MOVE needs `w` and `d`, and COPY/MOVE onto an existing item also needs `d` (the replaced item goes to the trash) |
 
 The config file is reloaded automatically when it changes on disk — no restart needed.
 

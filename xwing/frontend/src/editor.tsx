@@ -81,6 +81,24 @@ function saveChunkBytes(boot: EditorBootstrap): number {
   return Math.max(1, Math.min(SAVE_CHUNK_BYTES, serverMax));
 }
 
+/**
+ * CodeMirror folds every line ending to `\n` while a document is open, so the
+ * ending the file arrived with is read once and written back on save. Without
+ * this a CRLF file saved from the editor came back with every line changed.
+ */
+type LineEnding = "\r\n" | "\r" | "\n";
+function detectEol(text: string): LineEnding {
+  // Plain counts, no lookbehind: older Safari rejects `(?<!…)` while parsing the
+  // whole bundle, which would take the editor down with it.
+  const crlf = (text.match(/\r\n/g) ?? []).length;
+  const lf = (text.match(/\n/g) ?? []).length - crlf;
+  const cr = (text.match(/\r/g) ?? []).length - crlf;
+  if (crlf > lf && crlf >= cr) return "\r\n";
+  if (cr > lf && cr > crlf) return "\r";
+  return "\n";
+}
+const normalizeEol = (text: string): string => text.replace(/\r\n?/g, "\n");
+
 function Logo(): React.JSX.Element {
   return <svg className="brand-mark" viewBox="0 0 200 200" role="img" aria-label="X-wing logo"><rect x="6" y="6" width="188" height="188" rx="36"/><g fill="none" strokeLinecap="round" strokeLinejoin="round"><polygon points="71,78 23,48 15,100 23,152 71,122"/><polyline points="71,78 30,100 71,122"/><polygon points="129,78 177,48 185,100 177,152 129,122"/><polyline points="129,78 170,100 129,122"/><path d="m71 78 15 8m-15 36 15-8m43-36-15 8m15 36-15-8"/><circle cx="100" cy="100" r="20"/><circle cx="100" cy="100" r="13"/></g><circle className="brand-core" cx="100" cy="100" r="4.5"/></svg>;
 }
@@ -90,7 +108,8 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
   const view = useRef<CodeMirrorView | null>(null);
   const closingRef = useRef(false);
   const logoutForm = useRef<HTMLFormElement>(null);
-  const saved = useRef(boot.content);
+  const saved = useRef(normalizeEol(boot.content));
+  const eol = useRef<LineEnding>(detectEol(boot.content));
   const allowLeave = useRef(false);
   const [dirty, setDirty] = useState(false);
   const [status, setStatus] = useState("");
@@ -235,7 +254,8 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
 
   const save = async (): Promise<void> => {
     if (!canEdit || !view.current) return;
-    const content = view.current.state.doc.toString();
+    const text = view.current.state.doc.toString();
+    const content = eol.current === "\n" ? text : text.replace(/\n/g, eol.current);
     // Blob slices are lazy views: chunking never copies the whole document,
     // unlike one giant request body that must fully buffer before sending.
     const blob = new Blob([content], { type: "text/plain; charset=utf-8" });
@@ -250,7 +270,7 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
         setStatus("Saving… 0%");
         await saveDocument(blob);
       }
-      saved.current = content; setDirty(false); setStatus("Saved");
+      saved.current = text; setDirty(false); setStatus("Saved");
       window.setTimeout(() => setStatus(""), 2500);
     } catch (error) {
       if (error instanceof UploadError && (error.status === 401 || error.status === 403 || error.code === "BAD_RESPONSE")) {
@@ -290,7 +310,7 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
     {/* The editor's view heading; the visible file name sits in the topbar. */}
     <h1 id="editor-title" className="sr-only">{boot.filename}</h1>
     {/* Three columns instead of the shared bar's two: brand, file name, actions. */}
-    <header className={cn("topbar editor-topbar", TOPBAR, "grid grid-cols-[1fr_minmax(220px,2fr)_1fr] max-[700px]:grid-cols-[auto_minmax(0,1fr)_auto] max-[700px]:px-3")}><a className={BRAND} href="/" aria-label="X-wing EDITOR, home" onClick={event => { if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return; event.preventDefault(); requestLeave("/"); }}><Logo/><span className="max-[700px]:hidden font-sans text-[13px] font-semibold leading-none text-[#f1f3f7]">X-wing</span><small className="max-[700px]:hidden brand-context h-[13px] inline-flex items-center -translate-y-px text-xw-faint text-[11px] font-medium leading-none">EDITOR</small></a><div className="editor-heading flex min-w-0 flex-col items-center leading-tight max-[700px]:items-start max-[700px]:pl-2"><strong className="max-w-full truncate font-mono text-xs font-medium">{boot.filename}</strong><span className="max-w-full truncate font-mono text-[11px] text-xw-faint" role="status" aria-live="polite">{status || (dirty ? "Unsaved changes" : boot.displayPath)}</span></div><div className="editor-actions flex items-center justify-end gap-2"><a className={cn("button max-[700px]:!hidden", BTN)} href={boot.path} download>Download</a><button className={cn("button primary", BTN, BTN_PRIMARY)} disabled={!canEdit || !dirty} onClick={() => void save()}>Save</button>{boot.user.authenticated ? <div className={cn(ACCOUNT_INLINE, "ml-2 border-0 border-l border-solid border-xw-line pl-2")}><span>{boot.user.name}</span><form ref={logoutForm} id="logout-form" method="post" action="/_auth/logout" onSubmit={event => { event.preventDefault(); if (dirty) setConfirmLeave("__logout__"); else { setAuthOverlay("logout"); const form = event.currentTarget; window.setTimeout(() => form.submit(), AUTH_REDIRECT_DELAY_MS); } }}><button className={SIGNOUT} type="submit">Sign out</button></form></div> : <span className="anonymous-label">anonymous</span>}</div></header>
+    <header className={cn("topbar editor-topbar", TOPBAR, "grid grid-cols-[1fr_minmax(220px,2fr)_1fr] max-[700px]:grid-cols-[auto_minmax(0,1fr)_auto] max-[700px]:px-3")}><a className={cn(BRAND, "justify-self-start")} href="/" aria-label="X-wing EDITOR, home" onClick={event => { if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return; event.preventDefault(); requestLeave("/"); }}><Logo/><span className="max-[700px]:hidden font-sans text-[13px] font-semibold leading-none text-[#f1f3f7]">X-wing</span><small className="max-[700px]:hidden brand-context h-[13px] inline-flex items-center -translate-y-px text-xw-faint text-[11px] font-medium leading-none">EDITOR</small></a><div className="editor-heading flex min-w-0 flex-col items-center leading-tight max-[700px]:items-start max-[700px]:pl-2"><strong className="max-w-full truncate font-mono text-xs font-medium">{boot.filename}</strong><span className="max-w-full truncate font-mono text-[11px] text-xw-faint" role="status" aria-live="polite">{status || (dirty ? "Unsaved changes" : boot.displayPath)}</span></div><div className="editor-actions flex items-center justify-end gap-2"><a className={cn("button max-[700px]:!hidden", BTN)} href={boot.path} download>Download</a><button className={cn("button primary", BTN, BTN_PRIMARY)} disabled={!canEdit || !dirty} onClick={() => void save()}>Save</button>{boot.user.authenticated ? <div className={cn(ACCOUNT_INLINE, "ml-2 border-0 border-l border-solid border-xw-line pl-2")}><span>{boot.user.name}</span><form ref={logoutForm} id="logout-form" method="post" action="/_auth/logout" onSubmit={event => { event.preventDefault(); if (dirty) setConfirmLeave("__logout__"); else { setAuthOverlay("logout"); const form = event.currentTarget; window.setTimeout(() => form.submit(), AUTH_REDIRECT_DELAY_MS); } }}><button className={SIGNOUT} type="submit">Sign out</button></form></div> : <span className="anonymous-label ml-2 border-0 border-l border-solid border-xw-line pl-2 text-xs font-medium text-[#a0a9b9]">anonymous</span>}</div></header>
     <AnimatePresence>
       {(!boot.canWrite || boot.truncated) && <m.div
         key="notices"
@@ -311,17 +331,19 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
 }
 
 /**
- * The unsaved-changes dialog. Its markup is the shared `.modal-backdrop` /
- * `.modal` shell, which owns the entrance (and is shared with the file
- * browser), so only the departure is the editor's: `AnimatePresence` holds it
- * for the 160ms `xw-surface-out` the dialog used to cut short.
+ * The unsaved-changes dialog. It wears the shared `.modal-backdrop` / `.modal`
+ * shell and carries its own motion both ways: the card rises in over 180ms and
+ * `AnimatePresence` holds it for the 160ms departure.
  */
 function DiscardDialog({ onCancel, onDiscard }: { onCancel: () => void; onDiscard: () => void }): React.JSX.Element {
   const modalRef = useModalFocus<HTMLDivElement>(onCancel);
   const reduceMotion = prefersReducedMotion();
+  const enter = reduceMotion ? { duration: 0 } : { duration: SURFACE_ENTER_SECONDS, ease: XW_EASE } as const;
   const exit = reduceMotion ? { duration: 0 } : { duration: SURFACE_EXIT_SECONDS, ease: "easeIn" } as const;
-  return <m.div ref={modalRef} className="modal-backdrop" initial={false} animate={{ opacity: 1 }} exit={{ opacity: 0, transition: exit }}>
-    <m.div className="modal" role="dialog" aria-modal="true" aria-labelledby="discard-title" aria-describedby="discard-description" initial={false} animate={{ opacity: 1 }} exit={{ opacity: 0, y: 7, scale: 0.98, transition: exit }}>
+  // The card used to start fully visible (`initial={false}`) and only animated on
+  // its way out; it now arrives the way the file browser's dialogs do.
+  return <m.div ref={modalRef} className="modal-backdrop" initial={reduceMotion ? false : { opacity: 0 }} animate={{ opacity: 1, transition: enter }} exit={{ opacity: 0, transition: exit }}>
+    <m.div className="modal" role="dialog" aria-modal="true" aria-labelledby="discard-title" aria-describedby="discard-description" initial={reduceMotion ? false : { opacity: 0, y: 10, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1, transition: enter }} exit={{ opacity: 0, y: 7, scale: 0.98, transition: exit }}>
       <h2 id="discard-title">Discard unsaved changes?</h2><p id="discard-description">This file has unsaved edits. Leave without saving?</p><div className="modal-actions"><button data-autofocus className={cn("button", BTN)} onClick={onCancel}>Keep editing</button><button className={cn("button danger", BTN, BTN_DANGER)} onClick={onDiscard}>Discard changes</button></div>
     </m.div>
   </m.div>;

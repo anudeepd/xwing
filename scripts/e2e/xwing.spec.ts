@@ -1,6 +1,15 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
 
+/**
+ * The writable root for the tests that create or delete real files — a server of
+ * its own (see e2e/prepare-roots.mjs). `e2e/fixtures` is shared with the tests
+ * that assert on its row order, selection counts and snapshots, and the chromium
+ * and firefox projects run all of them at the same time, so a file appearing in
+ * that listing mid-run breaks those assertions.
+ */
+const WRITABLE = "http://127.0.0.1:8992";
+
 interface BootstrapFile {
   name: string;
   path: string;
@@ -301,6 +310,12 @@ test("a completed browser upload refreshes the folder automatically", async ({ p
     });
   });
 
+  // A finished upload is background news. It must not take focus from the field
+  // the user is typing in, and it must not clear what they have selected.
+  await page.getByRole("checkbox", { name: "Select README.md" }).click();
+  const filter = page.getByRole("searchbox", { name: "Filter files by name" });
+  await filter.focus();
+
   await page.locator("input[type=file]").first().setInputFiles({
     name: "browser-upload.txt",
     mimeType: "text/plain",
@@ -311,6 +326,8 @@ test("a completed browser upload refreshes the folder automatically", async ({ p
   await expect(upload).toContainText("1 complete");
   await expect(upload).toContainText("Upload complete");
   await expect(page.getByRole("row", { name: /^browser-upload\.txt,/ })).toBeVisible();
+  await expect(filter).toBeFocused();
+  await expect(page.getByText("1 selected", { exact: true })).toBeVisible();
   await expect.poll(() => directoryRefreshes).toBe(1);
   await expect(page.getByRole("button", { name: "Refresh folder" })).toHaveCount(0);
   await expect(upload).not.toBeVisible({ timeout: 6000 });
@@ -405,7 +422,7 @@ test("failed deletion keeps the dialog keyboard-operable", async ({ page }) => {
 test("a row can be renamed from its control or with F2", async ({ page }, testInfo) => {
   // The dedicated writable root, and a name unique per invocation: the chromium
   // and firefox projects run this test at the same time against the same server.
-  const api = "http://127.0.0.1:8992";
+  const api = WRITABLE;
   const stamp = `${testInfo.project.name}-${Date.now()}`;
   const original = `e2e-rename-${stamp}.txt`;
   const renamed = `e2e-renamed-${stamp}.txt`;
@@ -460,7 +477,7 @@ test("a row can be renamed from its control or with F2", async ({ page }, testIn
 });
 
 test("renaming to an exotic name stores exactly that name", async ({ page }, testInfo) => {
-  const api = "http://127.0.0.1:8992";
+  const api = WRITABLE;
   const source = `e2e-exotic-${testInfo.project.name}-${Date.now()}.txt`;
   // A space, an apostrophe, a percent, a hash, a plus and a non-ASCII letter:
   // encodeURIComponent leaves some of these raw while the server re-encodes
@@ -497,7 +514,7 @@ test("renaming to an exotic name stores exactly that name", async ({ page }, tes
 });
 
 test("renaming refuses an empty name and never overwrites an existing one", async ({ page }, testInfo) => {
-  const api = "http://127.0.0.1:8992";
+  const api = WRITABLE;
   const stamp = `${testInfo.project.name}-${Date.now()}`;
   const first = `e2e-take-a-${stamp}.txt`;
   const second = `e2e-take-b-${stamp}.txt`;
@@ -741,7 +758,7 @@ test("listing controls are named and reachable, and the stylesheet keeps its gua
 
 
 test("an empty folder invites the next step and sorting survives a reload", async ({ page }) => {
-  await page.goto("/");
+  await page.goto(`${WRITABLE}/`);
 
   await page.getByRole("button", { name: "Name, not sorted" }).click();
   await expect(page.getByRole("button", { name: /^Name, ascending/ })).toBeVisible();
@@ -771,20 +788,23 @@ test("an empty folder invites the next step and sorting survives a reload", asyn
 });
 
 test("the editor reports saves in a live region and Escape returns to the folder", async ({ page }) => {
-  await page.request.put("/e2e-editor.txt", { data: "start" });
+  const path = `${WRITABLE}/e2e-editor.txt`;
+  await page.request.put(path, { data: "start" });
   try {
-    await page.goto("/e2e-editor.txt?edit");
+    await page.goto(`${path}?edit`);
     const editor = page.getByRole("textbox");
     await expect(editor).toContainText("start");
     await editor.press("End");
     await editor.type("\nmore");
     await page.getByRole("button", { name: "Save" }).click();
 
-    await expect(page.getByRole("status")).toContainText("Saved");
+    // Scoped to the editor's own banner: the boot card keeps role=status until
+    // its removal timer runs, so a bare lookup can match two elements.
+    await expect(page.getByRole("banner").getByRole("status")).toContainText("Saved");
     await page.keyboard.press("Escape");
     await expect(page).toHaveURL(/\/$/);
   } finally {
-    await page.request.delete("/e2e-editor.txt");
+    await page.request.delete(path);
   }
 });
 
@@ -840,14 +860,22 @@ test.describe("restricted permissions", () => {
     await expect(page.getByRole("button", { name: "Upload files" })).toBeEnabled();
     await expect(page.getByRole("button", { name: "New folder" })).toBeEnabled();
 
-    // Every control this profile disables points at the notice that explains it.
+    // Every control this profile disables points at the notice that explains it,
+    // and looks disabled: a full-strength entry that swallows the click reads as
+    // broken rather than denied.
     await page.getByRole("button", { name: "Actions for README.md" }).click();
     const rename = page.getByRole("button", { name: "Rename README.md" });
     await expect(rename).toBeDisabled();
     await expect(rename).toHaveAttribute("aria-describedby", "permission-notice");
+    await expect(rename).toHaveCSS("opacity", "0.42");
+    await expect(rename).toHaveCSS("cursor", "not-allowed");
     const rowDelete = page.getByRole("button", { name: "Delete README.md" });
     await expect(rowDelete).toBeDisabled();
     await expect(rowDelete).toHaveAttribute("aria-describedby", "permission-notice");
+    await expect(rowDelete).toHaveCSS("opacity", "0.42");
+    const download = page.getByRole("link", { name: "Download README.md" });
+    await expect(download).toHaveCSS("opacity", "1");
+    await expect(download).toHaveCSS("cursor", "pointer");
 
     await page.getByRole("checkbox", { name: "Select README.md" }).click();
     const toolbarDelete = page.getByRole("button", { name: "Delete selected" });
@@ -889,11 +917,13 @@ test.describe("restricted permissions", () => {
     const rename = page.getByRole("button", { name: "Rename README.md" });
     await expect(rename).toBeDisabled();
     await expect(rename).toHaveAttribute("aria-describedby", "permission-notice");
+    await expect(rename).toHaveCSS("opacity", "0.42");
     // Deletion stays available, so it must not be dimmed or pointed at a notice
     // that says it is not.
     const rowDelete = page.getByRole("button", { name: "Delete README.md" });
     await expect(rowDelete).toBeEnabled();
     await expect(rowDelete).not.toHaveAttribute("aria-describedby", "permission-notice");
+    await expect(rowDelete).toHaveCSS("opacity", "1");
     await page.getByRole("checkbox", { name: "Select README.md" }).click();
     await expect(page.getByRole("button", { name: "Delete selected" })).toBeEnabled();
   });
@@ -932,6 +962,10 @@ test("an icon-only control carries its name as a hover and focus hint", async ({
 
   await trigger.hover();
   await expect(hint).toHaveText("Actions for README.md");
+  // Centred by measurement, never by a `translate` utility: the entrance
+  // keyframes set `transform` too, so a translate-based centring was replaced
+  // while they ran and the hint snapped half its width sideways when they ended.
+  await expect(hint).toHaveCSS("transform", "none");
   // The trigger sits at the right edge of its row, so the hint has to be clamped
   // back inside the viewport rather than centred off the side of it.
   await expect
@@ -952,4 +986,179 @@ test("an icon-only control carries its name as a hover and focus hint", async ({
   await trigger.focus();
   await expect(hint).toHaveText("Actions for README.md");
   await expect(trigger).toHaveAttribute("aria-label", "Actions for README.md");
+});
+
+/**
+ * Enter in the New folder dialog. Two things used to go wrong. A second Enter
+ * submitted the form again, hit the 405 for the folder the first one had just
+ * made and reopened the dialog with an error about a success. And a key still
+ * held when the dialog closed auto-repeated onto the row that had just taken
+ * focus, which opened the folder that had just been made.
+ */
+test("creating a folder with Enter submits once and never opens the folder", async ({ page }) => {
+  await page.goto(`${WRITABLE}/`);
+  // Hold the MKCOL answer until both presses have been delivered, so the second
+  // Enter lands on the dialog while it is pending — that is the guard under test.
+  // A second press that arrives after the dialog is gone is a real press on the
+  // row that took focus, and opening the folder is then the right answer.
+  await page.route("**/*", async route => {
+    if (route.request().method() !== "MKCOL") return route.continue();
+    await page.waitForTimeout(400);
+    return route.continue();
+  });
+  // Sorted by name the new folder is not the top row, so focus landing on it
+  // cannot be mistaken for "focus the first row".
+  await page.getByRole("button", { name: "Name, not sorted" }).click();
+  const stamp = Date.now();
+  const first = `zz-e2e-enter-a-${stamp}`;
+  const second = `zz-e2e-enter-b-${stamp}`;
+  try {
+    await page.getByRole("button", { name: "New folder" }).click();
+    const dialog = page.getByRole("dialog", { name: "New folder" });
+    await dialog.getByRole("textbox", { name: "Folder name" }).fill(first);
+    await page.keyboard.press("Enter");
+    await page.keyboard.press("Enter");
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByRole("row", { name: new RegExp(`^${first},`) })).toBeFocused();
+    await expect(page.locator("[role=alert]")).toHaveCount(0);
+    await expect(page).toHaveURL(/\/$/);
+
+    // Hold Enter through the hand-over: the first keydown submits from the
+    // field, every one after it is an auto-repeat that lands on the new row.
+    await page.getByRole("button", { name: "New folder" }).click();
+    await dialog.getByRole("textbox", { name: "Folder name" }).fill(second);
+    await page.keyboard.down("Enter");
+    await expect(page.getByRole("row", { name: new RegExp(`^${second},`) })).toBeFocused();
+    await page.keyboard.down("Enter");
+    await page.keyboard.down("Enter");
+    await page.keyboard.up("Enter");
+    await expect(page).toHaveURL(/\/$/);
+  } finally {
+    await page.request.delete(`${WRITABLE}/${first}/`);
+    await page.request.delete(`${WRITABLE}/${second}/`);
+  }
+});
+
+// `.xw-app button{color:inherit}` once outranked every single-class `text-*`
+// utility on a button, so a label took whatever colour its parent had: inside an
+// empty folder the primary action came out muted grey on violet.
+test("buttons keep the label colour their own class gives them", async ({ page }) => {
+  const folder = `e2e-empty-colour-${Date.now()}`;
+  await page.request.fetch(`${WRITABLE}/${folder}/`, { method: "MKCOL" });
+  try {
+    await page.goto(`${WRITABLE}/${folder}/`);
+    await expect(page.getByText("This folder is empty")).toBeVisible();
+    const invite = page.getByLabel("Files and folders").getByRole("button", { name: "Upload files" });
+    await expect(invite).toHaveCSS("color", "rgb(255, 255, 255)");
+    await expect(page.getByLabel("File actions").getByRole("button", { name: "Upload files" })).toHaveCSS("color", "rgb(255, 255, 255)");
+  } finally {
+    await page.request.delete(`${WRITABLE}/${folder}/`);
+  }
+
+  await page.goto("/");
+  await page.getByRole("checkbox", { name: "Select README.md" }).click();
+  await expect(page.getByRole("button", { name: "Delete selected" })).toHaveCSS("color", "rgb(255, 155, 163)");
+  await expect(page.getByRole("button", { name: "Clear", exact: true })).toHaveCSS("color", "rgb(139, 149, 168)");
+});
+
+// Only Regular and Bold of JetBrains Mono ship. Mono text at 600 (the current
+// crumb, upload percentages) needs the Bold face declared, or the browser
+// smears the Regular outlines to fake it.
+test("monospace emphasis uses a real bold face", async ({ page }) => {
+  await page.goto("/releases/");
+  await expect
+    .poll(() => page.evaluate(() => [...document.fonts].filter(face => face.status === "loaded").map(face => `${face.family} ${face.weight}`)))
+    .toContain("JetBrains Mono 700");
+});
+
+// CodeMirror's own `.cm-scroller{line-height:1.4}` sat between the editor's 1.7
+// and its lines, so rows came out 18.1875px apart. A fractional pitch lands
+// alternate baselines between device pixels, which is what reads as soft text.
+test("editor lines sit a whole number of pixels apart", async ({ page }) => {
+  await page.goto("/README.md?edit");
+  await expect(page.locator(".cm-line").nth(2)).toBeVisible();
+  const pitches = await page.evaluate(() => {
+    const tops = [...document.querySelectorAll(".cm-line")].slice(0, 3).map(line => line.getBoundingClientRect().top);
+    return tops.slice(1).map((top, index) => top - tops[index]!);
+  });
+  for (const pitch of pitches) expect(pitch).toBe(22);
+});
+
+// CodeMirror scopes its theme as `.ͼ1 .cm-panel.cm-search …`, three classes deep.
+// The editor's own two-class selectors never beat it, so the panel kept
+// CodeMirror's cramped padding and every field its stray margin.
+test("the search panel wears the spacing the editor stylesheet gives it", async ({ page }) => {
+  await page.goto("/README.md?edit");
+  await page.locator(".cm-content").click();
+  await page.keyboard.press("Control+f");
+  const panel = page.locator(".cm-panel.cm-search");
+  await expect(panel).toBeVisible();
+  await expect(panel).toHaveCSS("padding", "8px 32px 8px 8px");
+  await expect(panel.locator("input.cm-textfield").first()).toHaveCSS("margin", "0px");
+  await expect(panel.locator("button.cm-button").first()).toHaveCSS("margin", "0px");
+});
+
+// The editor bootstrap used to be read in text mode, which translates CRLF to LF
+// before the page ever sees the file: CodeMirror then held LF and saving rewrote
+// every line of a Windows file. The bootstrap now keeps the bytes, so the ending
+// the file arrived with is what a save writes back.
+test("the editor preserves a file's CRLF line endings on save", async ({ page }) => {
+  const path = `${WRITABLE}/e2e-crlf-${Date.now()}.txt`;
+  await page.request.fetch(path, { method: "PUT", data: "one\r\ntwo\r\n" });
+  try {
+    await page.goto(`${path}?edit`);
+    const editor = page.getByRole("textbox");
+    await expect(editor).toContainText("one");
+    await editor.click();
+    await page.keyboard.press("Control+End");
+    await page.keyboard.type("three");
+    await page.getByRole("button", { name: "Save" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Saved" })).toBeVisible();
+
+    const saved = await page.request.get(path);
+    expect(await saved.text()).toBe("one\r\ntwo\r\nthree");
+  } finally {
+    await page.request.delete(path);
+  }
+});
+
+// The row actions menu is anchored to its row and clipped by the table's scroll
+// container. Opened on a row near the bottom of the visible listing it used to
+// open downwards anyway, showing Rename with Download and Delete cut off below
+// the fold; the side it opens on is measured now.
+test("the row actions menu stays inside the table at the bottom edge", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 700 });
+  const files = Array.from({ length: 24 }, (_, index) => ({
+    name: `row-${index}.txt`, path: `/row-${index}.txt`, kind: "file" as const,
+    size: 10, modified: "2026-07-19T12:00:00Z", editable: true,
+  }));
+  await gotoWithBootstrap(page, { files });
+
+  const target = await page.evaluate(() => {
+    const table = document.querySelector(".file-table")!;
+    table.scrollTop = 0;
+    const box = table.getBoundingClientRect();
+    const rows = [...document.querySelectorAll<HTMLElement>(".file-row")].filter(row => {
+      const r = row.getBoundingClientRect();
+      return r.top >= box.top && r.bottom <= box.bottom;
+    });
+    return rows[rows.length - 1]!.querySelector(".filename")!.getAttribute("title")!;
+  });
+
+  await page.getByRole("button", { name: `Actions for ${target}` }).click();
+  const menu = page.locator("#row-actions-menu");
+  await expect(menu).toBeVisible();
+  const state = await menu.evaluate(element => {
+    const table = document.querySelector(".file-table")!.getBoundingClientRect();
+    const box = element.getBoundingClientRect();
+    return {
+      outside: Math.max(0, Math.round(box.bottom - table.bottom), Math.round(table.top - box.top)),
+      itemsInside: [...element.children].map(child => {
+        const r = child.getBoundingClientRect();
+        return r.top >= table.top && r.bottom <= table.bottom;
+      }),
+    };
+  });
+  expect(state.outside).toBe(0);
+  expect(state.itemsInside).toEqual([true, true, true]);
 });

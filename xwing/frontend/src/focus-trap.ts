@@ -14,8 +14,11 @@ const FOCUSABLE = [
  * reports Escape through `onEscape`, and restores the previously focused
  * element on teardown. Returns the teardown function; call it once, when the
  * subtree leaves the document.
+ *
+ * `shouldRestore` is asked at teardown; answer false when whatever closed the
+ * modal is about to put focus somewhere of its own.
  */
-export function trapFocus(root: HTMLElement, options: { onEscape?: () => void } = {}): () => void {
+export function trapFocus(root: HTMLElement, options: { onEscape?: () => void; shouldRestore?: () => boolean } = {}): () => void {
   const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const focusable = (): HTMLElement[] => [...root.querySelectorAll<HTMLElement>(FOCUSABLE)]
     .filter(element => element.getClientRects().length > 0);
@@ -49,6 +52,13 @@ export function trapFocus(root: HTMLElement, options: { onEscape?: () => void } 
   root.addEventListener("keydown", handleKeyDown, true);
   return () => {
     root.removeEventListener("keydown", handleKeyDown, true);
-    if (previous?.isConnected) previous.focus();
+    // Hand focus back to what opened the modal, unless the app has already put it
+    // somewhere on purpose (the row a new folder or a rename lands on, the
+    // survivor after a delete) or says it is about to (`shouldRestore`). Restoring
+    // blindly bounced focus onto the opener for a moment and back, which flashed
+    // its focus ring and left a window in which a stray Enter reopened the dialog.
+    const active = document.activeElement;
+    const focusStillHere = !active || active === document.body || root.contains(active);
+    if (focusStillHere && options.shouldRestore?.() !== false && previous?.isConnected) previous.focus();
   };
 }

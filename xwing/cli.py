@@ -164,7 +164,8 @@ def serve(
             )
     _configure_logging(log_file)
 
-    url = f"http://{host}:{port}"
+    display_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    url = f"http://{display_host}:{port}"
 
     if ldap_config:
         os.environ["XWING_LDAP_CONFIG"] = ldap_config
@@ -255,6 +256,7 @@ def serve(
             reload=reload,
             log_level="info",
             log_config=None,
+            proxy_headers=False,
         )
     else:
         settings = Settings(**kwargs)
@@ -268,6 +270,7 @@ def serve(
             reload=False,
             log_level="info",
             log_config=None,
+            proxy_headers=False,
         )
 
 
@@ -321,8 +324,10 @@ def audit(
     "--audit-db", type=click.Path(dir_okay=False, path_type=Path), default=None
 )
 @click.option("--older-than", default=90, show_default=True, type=click.IntRange(1))
-def audit_purge(audit_db: Path | None, older_than: int):
+@click.pass_context
+def audit_purge(ctx: click.Context, audit_db: Path | None, older_than: int):
     """Purge old audit rows."""
-    db_path = _audit_db_path(audit_db)
+    # The group-level --audit-db applies unless the subcommand overrides it.
+    db_path = _audit_db_path(audit_db or ctx.parent.params.get("audit_db"))
     audit_store.init_db(db_path)
     click.echo(f"Purged {audit_store.purge_events(db_path, older_than)} audit events")

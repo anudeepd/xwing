@@ -36,5 +36,9 @@ if (!existsSync(oversized)) {
 
 const renameRoot = resolve(scriptDir, "..", ".e2e-rename");
 mkdirSync(renameRoot, { recursive: true });
+// A file, so the root's listing is never empty: the tests that create something
+// there need sorting to have something to sort and a folder that is not the top
+// row.
+writeFileSync(resolve(renameRoot, "aa-seed.txt"), "seed\n");
 
 console.log(`prepared ${limited} and ${renameRoot}`);

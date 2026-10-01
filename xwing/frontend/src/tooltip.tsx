@@ -41,14 +41,23 @@ export function Tooltip({ label, children, side = "top" }: Props): React.JSX.Ele
     if (!open) return;
     const place = () => {
       const anchor = anchorRef.current?.getBoundingClientRect();
-      if (!anchor) return;
+      const tip = tipRef.current;
+      if (!anchor || !tip) return;
+      // `offsetWidth`/`offsetHeight` are the layout box. `getBoundingClientRect`
+      // would report the box mid-entrance, scaled by the animation's transform.
+      const width = tip.offsetWidth;
+      const height = tip.offsetHeight;
       // The tip is centred on the control, but a control against an edge would
       // push it off screen, so it is clamped to the viewport.
-      const tip = tipRef.current?.getBoundingClientRect();
-      const half = (tip?.width ?? 0) / 2;
-      setPosition({
-        left: Math.min(Math.max(anchor.left + anchor.width / 2, half + 8), window.innerWidth - half - 8),
-        top: side === "top" ? anchor.top - (tip?.height ?? 0) - 6 : anchor.bottom + 6,
+      const left = Math.min(Math.max(anchor.left + anchor.width / 2 - width / 2, 8), Math.max(8, window.innerWidth - width - 8));
+      const top = side === "top" ? anchor.top - height - 6 : anchor.bottom + 6;
+      // Whole device pixels: a fractional offset resamples the glyphs and the
+      // hint reads soft next to the crisp text around it.
+      const scale = window.devicePixelRatio || 1;
+      const snap = (value: number): number => Math.round(value * scale) / scale;
+      setPosition(previous => {
+        const next = { left: snap(left), top: snap(top) };
+        return previous.left === next.left && previous.top === next.top ? previous : next;
       });
     };
     place();

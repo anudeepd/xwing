@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createPortal, flushSync } from "react-dom";
 import * as m from "motion/react-m";
-import { AnimatePresence, LazyMotion, MotionConfig, domAnimation, useAnimate, type Transition } from "motion/react";
+import { AnimatePresence, LazyMotion, MotionConfig, domAnimation, type Transition } from "motion/react";
 import { cn } from "./lib/cn";
 import {
   ACCOUNT_INLINE,
@@ -13,6 +13,7 @@ import {
   CONTROL,
   CONTROL_ADMIN,
   CONTROL_DANGER,
+  CONTROL_ICON,
   CONTROL_PRIMARY,
   CONTROL_SMALL,
   MENU_ITEM,
@@ -78,9 +79,21 @@ const EASE: [number, number, number, number] = [0.16, 1, 0.3, 1];
 const EXIT_EASE: [number, number, number, number] = [0.4, 0, 1, 1];
 const SHELL_ENTER: Transition = { duration: 0.34, ease: EASE };
 const SHELL_LEAVE: Transition = { duration: 0.17, ease: EXIT_EASE };
-const VIEW_ENTER: Transition = { duration: 0.18, ease: EASE };
+/**
+ * A tab switch: the arriving view springs up into place. Deliberately slower than
+ * interaction feedback — a whole view is arriving, and the settle is what makes
+ * the switch read as deliberate instead of a flicker. The fade runs alongside it
+ * and starts part-way visible, so the section never blanks out mid-switch.
+ */
+const VIEW_ENTER: Transition = {
+  opacity: { duration: 0.34, ease: EASE },
+  y: { type: "spring", stiffness: 150, damping: 20, mass: 1 },
+};
+/** How far the view rises from, and how visible it starts. */
+const VIEW_FROM = { opacity: 0.35, y: 14 };
 const TOAST_ENTER: Transition = { duration: 0.2, ease: EASE };
 const TOAST_EXIT: Transition = { duration: 0.18, ease: EXIT_EASE };
+const DIALOG_ENTER: Transition = { duration: 0.18, ease: EASE };
 const DIALOG_EXIT: Transition = { duration: 0.16, ease: EXIT_EASE };
 
 /** Matches the app's default toast duration, so admin feedback clears like a toast. */
@@ -216,10 +229,13 @@ const COUNT_BADGE = "count-badge inline-flex min-h-6 items-center rounded-full b
 const TABLE = "w-full table-fixed border-collapse text-left text-xs";
 const TABLE_BODY = "[&>tr:last-child>td]:border-b-0";
 const TH = "border-0 border-b border-solid border-admin-line-hi px-3 py-3 font-sans text-[11px] font-medium uppercase whitespace-nowrap text-admin-faint";
-const TD = "border-0 border-b border-solid border-admin-line px-3 py-3 align-top tabular-nums text-admin-muted";
+const TD = "border-0 border-b border-solid border-admin-line px-3 py-3 tabular-nums text-admin-muted";
 const CELL_STRONG = "font-medium text-admin-text";
 const ROW_ACTIONS = "row-actions flex flex-wrap justify-start gap-2 opacity-100 transform-none";
-const FIELD = "h-9 min-h-9 w-full rounded border border-solid border-admin-line-hi bg-admin-bg px-3 py-0 font-sans text-[13px] text-admin-text focus:border-admin-accent focus:ring-2 focus:ring-admin-accent";
+// The focus ring is the shared `:focus-visible` outline (2px, offset 2px). A
+// `focus:ring-2` on top of it drew a second solid band touching the outline, so
+// the field showed one fat ring instead of a ring with a gap.
+const FIELD = "h-9 min-h-9 w-full rounded border border-solid border-admin-line-hi bg-admin-bg px-3 py-0 font-sans text-[13px] text-admin-text focus:border-admin-accent";
 const LABEL = "font-sans text-xs font-medium text-admin-muted";
 const FIELD_HELP = "text-[11px] text-admin-faint";
 const FILTER_FIELD = "filter-field flex min-w-0 flex-col gap-1";
@@ -230,12 +246,20 @@ const TrashPath = ({ item, first }: { item: TrashItem; first: boolean }): React.
   </div>
 );
 
+/** Each permission keeps its own tint, so a row of badges reads at a glance. */
+const PERMISSION_TINT: Record<keyof PermissionSet, string> = {
+  read: "border-[#42627b] text-[#9cd5ee]",
+  write: "border-[#4d704f] text-[#a9dda7]",
+  delete: "border-[#765047] text-[#f0b59d]",
+};
+const BADGE = "inline-flex min-h-6 items-center rounded-full border border-solid px-2 font-sans text-[11px] font-medium";
+
 function PermissionBadges({ permissions }: { permissions: PermissionSet }): React.JSX.Element {
   const granted = (["read", "write", "delete"] as const).filter(permission => permissions[permission]);
   return <span className="permission-badges flex flex-wrap gap-1">
     {granted.length
-      ? granted.map(permission => <span key={permission} className={`permission-badge ${permission} inline-flex min-h-6 items-center rounded-full border border-solid border-admin-line-hi px-2 font-sans text-[11px] font-medium text-admin-muted`}>{permission}</span>)
-      : <span className="permission-badge none inline-flex min-h-6 items-center rounded-full border border-solid border-admin-line-hi px-2 font-sans text-[11px] font-medium text-admin-muted">none</span>}
+      ? granted.map(permission => <span key={permission} className={cn(`permission-badge ${permission}`, BADGE, PERMISSION_TINT[permission])}>{permission}</span>)
+      : <span className={cn("permission-badge none", BADGE, "border-admin-line-hi text-admin-muted")}>none</span>}
   </span>;
 }
 
@@ -253,17 +277,20 @@ function Logo(): React.JSX.Element {
 
 const Chevron = (): React.JSX.Element => <svg className="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>;
 
-/** Same glyphs the app's toasts use: check for success, trash for errors. */
+/** Same glyphs the app's toasts use: a check for success, an alert for an error.
+ *  (Errors used a trash can, which only ever meant "deleted".) */
 const TOAST_ICONS: Record<ToastKind, React.JSX.Element> = {
   success: <path d="m5 12.5 4.25 4.25L19 7.5"/>,
-  error: <><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7"/><path d="M10 11v5m4-5v5"/></>,
+  error: <><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5.5m0 3.5h.01"/></>,
 };
 
 /** The console's loading state shows the shape the payload will fill: a card
  *  heading, the toolbar, then rows. Static, so nothing moves while it waits. */
 function LoadingCard(): React.JSX.Element {
   const bar = "skeleton-bar block h-3.5 rounded bg-admin-raised";
-  return <div className="admin-card loading-card flex flex-col gap-3 shadow-none" role="status">
+  // It wears the card the payload will arrive in (border, radius, 20px padding),
+  // so the real heading lands where the skeleton's title was instead of 20px over.
+  return <div className={cn("admin-card loading-card flex flex-col gap-3", CARD, "p-5 shadow-none")} role="status">
     <span className="sr-only">Loading admin data…</span>
     <span className={`${bar} skeleton-title h-5 w-[30%] max-w-60`}/>
     <span className="skeleton-toolbar flex gap-2">{["skeleton-bar flex-1 h-9", "skeleton-bar flex-1 h-11", "skeleton-bar flex-1 h-11"].map((classes, index) => <span key={index} className={cn(bar, classes)}/>)}</span>
@@ -376,7 +403,10 @@ type ActivityViewProps = {
 };
 
 function ActivityView({ events, summary, filters, filterRef, onFilterChange, onFilterSubmit, onPurge }: ActivityViewProps): React.JSX.Element {
-  const input = cn(FIELD, "pr-8");
+  // Only the select reserves room on the right (`.xw-select` carries its own
+  // 32px for the chevron). Padding the date field the same way pushed the
+  // calendar button 32px in from the edge, leaving a dead gap after it.
+  const input = FIELD;
   return <article className={`admin-card ${CARD} p-5`}>
     <div className={CARD_HEADING}>
       <div><p className={EYEBROW}>AUDIT TRAIL</p><h2 className="text-lg font-semibold leading-tight text-balance">User activity</h2></div>
@@ -409,7 +439,7 @@ function ActivityView({ events, summary, filters, filterRef, onFilterChange, onF
           <p className="purge-title m-0 font-sans text-[13px] font-medium text-admin-text">Purge audit history</p>
           <p id="audit-purge-help" className="m-0 mt-1 font-sans text-[11px] leading-normal text-admin-faint text-pretty">Deletes matching events permanently. Files, users and the trash are untouched.</p>
         </div>
-        <div className="purge-controls flex flex-wrap items-end justify-end gap-2">
+        <div className="purge-controls flex flex-wrap items-end justify-end gap-2 max-[620px]:justify-start">
           <div className={FILTER_FIELD}>
             <label className={LABEL} htmlFor="audit-retention">Older than</label>
             <div className="input-with-unit flex min-w-0 items-center gap-2">
@@ -423,7 +453,7 @@ function ActivityView({ events, summary, filters, filterRef, onFilterChange, onF
       </form>
     </div>
     <div className="table-wrap relative activity-table">
-      <table className={TABLE}>
+      <table className={cn(TABLE, "max-[620px]:min-w-[640px]")}>
         <thead><tr>
           <th scope="col" className={cn(TH, "w-[16%]")}>Time</th>
           <th scope="col" className={cn(TH, "w-[12%]")}>User</th>
@@ -482,12 +512,14 @@ function TrashView({ trash, selected, allSelected, onToggle, onToggleAll, onRest
       <div className={cn(ROW_ACTIONS, "trash-card-actions max-[620px]:mt-4")}>
         <button type="button" className={cn("button primary", BTN, BTN_PRIMARY)} id="restore-selected-trash" disabled={selectedCount === 0} onClick={onRestoreSelected}>Restore selected{selectedCount ? ` (${selectedCount})` : ""}</button>
         <button type="button" className={cn("button danger", BTN, BTN_DANGER)} id="empty-trash" disabled={!hasTrash} onClick={onEmpty}>Empty trash</button>
-        {hasTrash && <button type="button" className={cn("button", BTN)} onClick={onRefresh}>Refresh</button>}
+        {/* Always present: it used to appear only once the trash had items, so
+            the two buttons before it slid 85px sideways each time that flipped. */}
+        <button type="button" className={cn("button", BTN)} onClick={onRefresh}>Refresh</button>
       </div>
     </div>
     <p className={cn("field-help trash-help mb-4", FIELD_HELP)}>Select deleted transactions to restore in bulk. Deleted items stay here until restored or permanently removed.</p>
     <div className="table-wrap relative">
-      <table className={`trash-table ${TABLE} max-[620px]:min-w-[680px]`}>
+      <table className={cn("trash-table", TABLE, hasTrash && "max-[620px]:min-w-[680px]")}>
         <thead><tr>
           <th scope="col" className={cn(TH, "trash-select-cell w-[5%] p-0 text-center")}>
             <label className="trash-select-target grid min-h-9 min-w-9 cursor-pointer place-items-center">
@@ -502,7 +534,7 @@ function TrashView({ trash, selected, allSelected, onToggle, onToggleAll, onRest
         </tr></thead>
         <tbody className={TABLE_BODY}>
           {trash.map(transaction => <tr key={transaction.transaction_id}>
-            <td className="trash-select-cell border-0 border-b border-solid border-admin-line p-0 pt-[3px] text-center align-top">
+            <td className="trash-select-cell border-0 border-b border-solid border-admin-line p-0 text-center">
               <label className="trash-select-target grid min-h-9 min-w-9 cursor-pointer place-items-center">
                 <input type="checkbox" data-select-trash={transaction.transaction_id} className="m-0 h-4 w-4 accent-xw-accent-fill"
                   aria-label={`Select trash transaction for ${transaction.items.map(item => item.path).join(", ")}`}
@@ -521,10 +553,7 @@ function TrashView({ trash, selected, allSelected, onToggle, onToggleAll, onRest
             </div></td>
           </tr>)}
           {!hasTrash && <tr><td colSpan={6} className="empty-cell px-4 py-8 text-center text-admin-faint max-[620px]:text-left">
-            <div className="empty-state flex flex-col items-center gap-3">
-              <span>Trash is empty. Deleted items stay recoverable here until restored or purged.</span>
-              <button type="button" className={cn("button", BTN)} onClick={onRefresh}>Refresh</button>
-            </div>
+            <span>Trash is empty. Deleted items stay recoverable here until restored or purged.</span>
           </td></tr>}
         </tbody>
       </table>
@@ -537,8 +566,12 @@ function TrashView({ trash, selected, allSelected, onToggle, onToggleAll, onRest
  *  second Enter after the one that opened it must not destroy anything. */
 function ConfirmDialog({ request, onClose }: { request: ConfirmRequest; onClose: (confirmed: boolean) => void }): React.JSX.Element {
   const backdropRef = useModalFocus<HTMLDivElement>(() => onClose(false));
-  return <m.div ref={backdropRef} className="modal-backdrop" initial={false} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={DIALOG_EXIT}>
-    <form className="modal" role="dialog" aria-modal="true" aria-labelledby="admin-dialog-title" aria-describedby="admin-dialog-description"
+  // A dialog arrives and leaves with the same pair of motions the file browser's
+  // dialogs use: the backdrop fades, the card rises and settles. It used to start
+  // fully visible (`initial={false}`) and only animate on the way out.
+  return <m.div ref={backdropRef} className="modal-backdrop" initial={{ opacity: 0 }} animate={{ opacity: 1, transition: DIALOG_ENTER }} exit={{ opacity: 0, transition: DIALOG_EXIT }}>
+    <m.form className="modal" initial={{ opacity: 0, y: 10, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1, transition: DIALOG_ENTER }} exit={{ opacity: 0, y: 7, scale: 0.98, transition: DIALOG_EXIT }}
+      role="dialog" aria-modal="true" aria-labelledby="admin-dialog-title" aria-describedby="admin-dialog-description"
       onSubmit={event => { event.preventDefault(); onClose(true); }}>
       <h2 id="admin-dialog-title">{request.title}</h2>
       <p id="admin-dialog-description">{request.message}</p>
@@ -546,7 +579,7 @@ function ConfirmDialog({ request, onClose }: { request: ConfirmRequest; onClose:
         <button type="button" className={cn("button", BTN)} data-autofocus="" onClick={() => onClose(false)}>Cancel</button>
         <button type="submit" className={cn("button danger", BTN, BTN_DANGER)}>{request.confirmText}</button>
       </div>
-    </form>
+    </m.form>
   </m.div>;
 }
 
@@ -571,7 +604,7 @@ function AccountMenu({ user, open, onToggle, onLeave }: { user: string; open: bo
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [open, onToggle]);
-  return <div className="account" id="account-control" ref={controlRef}>
+  return <div className="account relative" id="account-control" ref={controlRef}>
     <button className={ACCOUNT_TRIGGER} type="button" aria-expanded={open} aria-controls={open ? "account-menu" : undefined} onClick={onToggle}><span>{user}</span><Chevron/></button>
     {open && <div id="account-menu" className={cn(POPOVER, "account-menu min-w-[152px]")} role="group" aria-label="Workspace navigation">
       <a className={MENU_ITEM} href="/" data-leave="/" onClick={onLeave}>Files</a>
@@ -602,15 +635,16 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
   const [handover] = useState(() => consumeHandover());
   const [userFormError, setUserFormError] = useState<string | null>(null);
   const [userFormTitle, setUserFormTitle] = useState("Add or update user");
-  const [viewVersion, setViewVersion] = useState(0);
 
   const tabRef = useRef(tab);
-  const animateViewRef = useRef(false);
+  // The view animates when the tab changes, never when data lands: every payload
+  // is already on screen, so animating on arrival hid content that was visible
+  // and faded it back in (a flash on every refresh, save and restore).
+  const viewEntered = useRef(false);
   const toastTimer = useRef<number | null>(null);
   const toastId = useRef(0);
   const userFormRef = useRef<HTMLFormElement>(null);
   const filterRef = useRef<HTMLFormElement>(null);
-  const [viewScope, animateView] = useAnimate<HTMLElement>();
 
   useEffect(() => { tabRef.current = tab; }, [tab]);
 
@@ -640,12 +674,6 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
   }, []);
 
   // ── Data ───────────────────────────────────────────────────────────────────
-  /** A load repaints the view; only the payload that lands after a tab switch
-   *  animates, so the switch itself never moves twice. */
-  const landData = useCallback((): void => {
-    animateViewRef.current = true;
-    setViewVersion(version => version + 1);
-  }, []);
 
   const loadUsers = useCallback(async (): Promise<void> => {
     try {
@@ -653,18 +681,16 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
       setUsers(result.users);
       setDefaultPermissions(result.default);
       setStatus(usersAnnouncement(result.users.length));
-      landData();
     } catch (error) { showError(error); }
-  }, [landData, showError]);
+  }, [showError]);
 
   const loadMetrics = useCallback(async (): Promise<void> => {
     try {
       const result = await api<Metrics>("/api/admin/metrics");
       setMetrics(result);
       setStatus(overviewAnnouncement(result));
-      landData();
     } catch (error) { showError(error); }
-  }, [landData, showError]);
+  }, [showError]);
 
   const loadTrash = useCallback(async (): Promise<void> => {
     try {
@@ -672,9 +698,8 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
       setTrash(result.transactions);
       setSelectedTrash(current => new Set([...current].filter(id => result.transactions.some(transaction => transaction.transaction_id === id))));
       setStatus(trashAnnouncement(result.transactions.length));
-      landData();
     } catch (error) { showError(error); }
-  }, [landData, showError]);
+  }, [showError]);
 
   const loadActivity = useCallback(async (form?: HTMLFormElement): Promise<void> => {
     const username = formField<HTMLInputElement>(form ?? null, "username")?.value;
@@ -695,9 +720,8 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
       setActivitySummary(result.summary);
       setFilters(next);
       setStatus(activityAnnouncement(result.events.length));
-      landData();
     } catch (error) { showError(error); }
-  }, [landData, showError]);
+  }, [showError]);
 
   const loadActiveTab = useCallback((next: string): void => {
     if (next === "users") void loadUsers();
@@ -744,14 +768,9 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
     return cleanupIdle;
   }, []);
 
-  // The view's one animation: when the active tab's payload lands, the section
-  // rises into place. A tab switch paints without it, so the data carries it.
-  useEffect(() => {
-    if (viewVersion === 0 || !animateViewRef.current) return;
-    const node = viewScope.current;
-    if (!node) return;
-    void animateView(node, { opacity: [0, 1], y: [8, 0] }, VIEW_ENTER);
-  }, [viewVersion, animateView, viewScope]);
+  // The view's one animation: the section arrives when the tab changes (it is
+  // keyed by the tab below). The first paint is covered by the shell's entrance.
+  useEffect(() => { viewEntered.current = true; }, []);
 
   useEffect(() => {
     const onPopState = (): void => {
@@ -776,9 +795,7 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
     if (!spaClick(event)) return;
     if (next === tabRef.current) return;
     history.pushState(null, "", `?tab=${next}`);
-    // The tab switch paints the new section without motion; the data that lands
-    // in it carries the one animation the switch gets.
-    animateViewRef.current = false;
+    // The new section animates in on its own: it is keyed by the tab.
     setTab(next);
     loadActiveTab(next);
   }, [loadActiveTab]);
@@ -969,26 +986,35 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
       <nav className="admin-tabs mb-5 flex gap-1 overflow-x-auto border-0 border-b border-solid border-admin-line" aria-label="Admin sections">
         {TABS.map(entry => <a key={entry.id}
           className={cn("admin-tab inline-flex min-h-11 items-center border-b-2 border-solid px-4 font-sans text-xs font-medium whitespace-nowrap no-underline transition-colors duration-micro",
+            // The strip scrolls (`overflow-x:auto` clips y as well), so the focus
+            // ring sits inside the link instead of being cut off above and below.
+            "focus-visible:outline-offset-[-2px]",
             entry.id === tab ? "active border-b-admin-accent text-admin-accent-hi" : "border-b-transparent text-admin-muted hover:bg-admin-raised hover:text-admin-text")}
           href={`?tab=${entry.id}`}
           aria-current={entry.id === tab ? "page" : undefined}
           onClick={event => selectTab(event, entry.id)}>{entry.label}</a>)}
       </nav>
-      <section id="admin-view" ref={viewScope} className="admin-view min-h-72">
+      <m.section id="admin-view" key={tab} className="admin-view min-h-72" initial={viewEntered.current ? VIEW_FROM : false} animate={{ opacity: 1, y: 0 }} transition={VIEW_ENTER}>
         {!loaded ? <LoadingCard/>
           : tab === "users" ? <UsersView users={users} defaultPermissions={defaultPermissions} ldapConfigured={bootstrap.ldapConfigured} formError={userFormError} formTitle={userFormTitle} formRef={userFormRef} onSave={form => void saveUser(form)} onDraftChange={() => { if (userFormError) setUserFormError(null); }} onEdit={editUser} onDelete={username => void confirmDeleteUser(username)} onClear={clearUserForm}/>
             : tab === "activity" ? <ActivityView events={events} summary={activitySummary} filters={filters} filterRef={filterRef} onFilterChange={patch => setFilters(current => ({ ...current, ...patch }))} onFilterSubmit={form => void loadActivity(form)} onPurge={form => void confirmPurge(form)}/>
               : tab === "trash" ? <TrashView trash={trash} selected={selectedTrash} allSelected={allSelected} onToggle={toggleTrash} onToggleAll={toggleAllTrash} onRestore={id => void restoreTrash(id)} onDelete={id => void confirmDeleteTrash(id)} onRestoreSelected={() => void confirmRestoreSelected()} onEmpty={() => void confirmEmptyTrash()} onRefresh={() => void loadTrash()}/>
                 : <OverviewView metrics={metrics}/>}
-      </section>
+      </m.section>
       <p id="admin-status" className="sr-only" role="status">{status}</p>
     </main>
     <div className={RAIL}>
-      <AnimatePresence initial={false}>
-        {toast && <m.div key={toast.id} className={cn(TOAST, toast.kind, toast.kind === "error" ? TOAST_ERROR : TOAST_SUCCESS)} role={toast.kind === "error" ? "alert" : "status"} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0, transition: TOAST_ENTER }} exit={{ opacity: 0, y: 6, transition: TOAST_EXIT }}>
+      {/* popLayout: the toast that is leaving is lifted out of the column at once, so
+          the one arriving takes its place instead of shoving it up by its height. */}
+      <AnimatePresence initial={false} mode="popLayout">
+        {toast && <m.div key={toast.id} className={cn(TOAST, toast.kind, "w-[min(420px,calc(100vw-56px))]", toast.kind === "error" ? TOAST_ERROR : TOAST_SUCCESS)} role={toast.kind === "error" ? "alert" : "status"} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0, transition: TOAST_ENTER }} exit={{ opacity: 0, y: 6, transition: TOAST_EXIT }}>
           <span className={TOAST_ICON}><svg className="ui-icon" viewBox="0 0 24 24" aria-hidden="true">{TOAST_ICONS[toast.kind]}</svg></span>
           <span className={TOAST_MESSAGE}>{toast.message}</span>
-          <span className={TOAST_TIMER} aria-hidden="true" style={{ animationDuration: `${FEEDBACK_DURATION_MS}ms` }}/>
+          {/* A success clears itself and counts down; an error stays until it is
+              replaced or dismissed, so it carries a button instead of a timer bar. */}
+          {toast.kind === "error"
+            ? <button type="button" className={CONTROL_ICON} aria-label="Dismiss" onClick={() => setToast(null)}><svg className="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg></button>
+            : <span className={TOAST_TIMER} aria-hidden="true" style={{ animationDuration: `${FEEDBACK_DURATION_MS}ms` }}/>}
         </m.div>}
       </AnimatePresence>
     </div>
