@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
+import { createPortal } from "react-dom";
 import { AnimatePresence, LazyMotion, MotionConfig, domMax } from "motion/react";
 import * as m from "motion/react-m";
 import { escapeHtml, formatBytes, formatDate, prefersReducedMotion } from "./format";
@@ -28,6 +29,7 @@ import {
   MENU_ITEM,
   MENU_ITEM_DANGER,
   POPOVER,
+  POPOVER_CHROME,
   RAIL,
   SIGNOUT,
   TOAST,
@@ -37,6 +39,7 @@ import {
   TOAST_SUCCESS,
   TOAST_TIMER,
   TOPBAR,
+  TRIGGER_HIT_AREA,
 } from "./ui";
 
 import { useModalFocus } from "./keyboard";
@@ -50,6 +53,7 @@ import type { Parallelism, XwingBootstrapV1, XwingFile } from "./types";
 import { collectDroppedEntries } from "./drop-entries";
 import { AUTH_OVERLAY_COPY, AUTH_REDIRECT_EVENT, beginAuthRedirect, consumeHandover, dismissBootCard, markHandover } from "./shared.js";
 import { UploadManager } from "./upload-manager";
+import type { UploadSnapshot } from "./upload-manager";
 import { uploadItemLabel, uploadSummary, uploadSummaryKind } from "./upload-summary";
 
 interface Toast {
@@ -97,7 +101,9 @@ const DELETE_KEYS: Record<string, true> = { Delete: true, Backspace: true };
  * key still held down when a dialog closes would act on the row that just took
  * focus (Enter opening the new folder, Space flipping a selection over and over).
  */
-const ROW_ACTION_KEYS: Record<string, true> = { Enter: true, " ": true, F2: true, Delete: true };
+const ROW_ACTION_KEYS: Record<string, true> = { Enter: true, " ": true, F2: true, Delete: true, F10: true, ContextMenu: true };
+/** The project's ease-out, as motion wants it. `--xw-ease` in `style.css` is the same curve. */
+const EASE_OUT: [number, number, number, number] = [0.16, 1, 0.3, 1];
 /** How long the listing takes to leave before a folder's rows are swapped in. */
 const LIST_LEAVE_MS = 130;
 /** A load slower than this earns a spinner; anything quicker would only flicker one. */
@@ -158,6 +164,12 @@ function Icon({ name }: { name: string }): React.JSX.Element {
     rename: <><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></>,
     trash: <><path d="M4 7h16M9 7V4h6v3m3 0-1 13H7L6 7"/><path d="M10 11v5m4-5v5"/></>,
     check: <path d="m5 12.5 4.25 4.25L19 7.5"/>, chevron: <path d="m7 10 5 5 5-5"/>,
+    // Three round dots as one path of zero-length segments: a round cap turns each
+    // into a dot and a stroke of its own sets how big. One node, because it is drawn
+    // on every row — three `<circle>`s were two extra DOM nodes per file. The row
+    // trigger uses this rather than `chevron`, which would read as "expand" beside
+    // a table whose headers already use triangles for sort.
+    more: <path d="M12 5h.01M12 12h.01M12 19h.01" strokeWidth="3.8"/>,
     close: <path d="m6 6 12 12M18 6 6 18"/>, retry: <path d="M20 11a8 8 0 1 0-2 5.3M20 4v7h-7"/>,
     alert: <><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5.5m0 3.5h.01"/></>,
   };
@@ -210,6 +222,9 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   // One row-actions menu open at a time; a path that leaves the listing
   // simply matches no row, so stale values close themselves.
   const [actionsPath, setActionsPath] = useState<string | null>(null);
+  // Where the open actions menu hangs from: `null` is the row's own trigger (the
+  // `⋮` and Shift+F10), a point is a right click, which opens it there.
+  const [actionsAnchor, setActionsAnchor] = useState<{ x: number; y: number } | null>(null);
   const [zipPending, setZipPending] = useState(0);
   const [dragging, setDragging] = useState(false);
   const [dropWaitState, setDropWaitState] = useState<DropWaitState>(null);
@@ -834,7 +849,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
 
       <div className="workspace-controls min-w-0 flex flex-col gap-3">
       {notice && <div id="permission-notice" className="readonly-notice m-0 px-3 py-2 border border-solid border-[#544829] rounded-lg bg-[#211d14] text-[#e6c77f] text-xs" role="status">{notice}</div>}
-      <section className={cn("actionbar min-h-11 flex items-center justify-between gap-3 p-1 border border-solid border-xw-line rounded bg-xw-panel max-[640px]:overflow-x-auto max-[640px]:gap-1", selected.size && "max-[640px]:flex-wrap")} aria-label="File actions" aria-describedby={policyHint}>
+      <section className={cn("actionbar min-h-11 flex items-center justify-between gap-3 p-1 border border-solid border-xw-line rounded bg-xw-panel max-[640px]:overflow-x-auto max-[640px]:gap-1 min-[641px]:flex-wrap", selected.size && "max-[640px]:flex-wrap")} aria-label="File actions" aria-describedby={policyHint}>
         <div className="toolbar-group flex items-center gap-2 min-w-0">
           <button className={cn("button", BTN, BTN_PRIMARY)} disabled={!directory.permissions.write} aria-describedby={policyHint} onClick={() => fileInput.current?.click()}><Icon name="upload"/><span className="label">Upload files</span></button>
           <button className={cn("button hide-tablet max-[900px]:hidden", BTN)} aria-label="Upload folder" disabled={!directory.permissions.write} aria-describedby={policyHint} onClick={() => folderInput.current?.click()}><Icon name="folderUpload"/><span className="label">Upload folder</span></button>
@@ -849,7 +864,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
           <button className={cn("button ghost", BTN, BTN_GHOST)} disabled={!selected.size} onClick={() => { const focusPath = lastSelected ?? selected.values().next().value ?? null; setSelected(new Set()); setLastSelected(null); focusFileRow(focusPath); }}>Clear</button>
         </div>
         <div className="toolbar-group toolbar-end flex items-center gap-2 min-w-0 ml-auto">
-          <input className="filter-input w-[132px] h-[31px] min-h-[31px] px-3 border border-solid border-xw-line-hi rounded-md bg-xw-raised text-xw-text text-xs appearance-none placeholder:text-xw-faint max-[640px]:w-[112px] max-[640px]:px-2 max-[640px]:text-base" type="search" aria-label="Filter files by name" placeholder="Filter files…" value={query} onChange={event => updateQuery(event.target.value)}/>
+          <input className="filter-input w-[132px] h-[31px] min-h-[31px] px-3 border border-solid border-xw-line-hi rounded-md bg-xw-raised text-xw-text text-xs appearance-none placeholder:text-xw-faint max-[640px]:w-[112px] max-[640px]:px-2 max-[640px]:text-base max-[640px]:placeholder:text-sm" type="search" aria-label="Filter files by name" placeholder="Filter files…" value={query} onChange={event => updateQuery(event.target.value)}/>
           <div className="parallel-wrap relative" ref={parallelRef} onBlur={event => { if (parallelOpen && !event.currentTarget.contains(event.relatedTarget as Node | null)) setParallelOpen(false); }}>
             <button className="parallel-trigger w-[126px] max-[640px]:w-[64px] h-[31px] min-h-[31px] grid grid-cols-[1fr_auto] items-center gap-2 pl-3 pr-2 max-[640px]:pl-2 border border-solid border-xw-line-hi rounded-md bg-xw-raised text-xs font-medium hover:border-xw-accent-border hover:bg-[#171d2e] aria-expanded:border-xw-accent-border aria-expanded:bg-[#171d2e] [&[aria-expanded=true]>.ui-icon]:rotate-180" aria-label={`Parallel uploads: ${upload.parallel}`} aria-expanded={parallelOpen} aria-controls={parallelOpen ? "parallel-menu" : undefined} onClick={() => parallelOpen ? closeParallel(true) : setParallelOpen(true)}>
               <span className="parallel-copy flex items-baseline justify-between gap-2 font-sans [&>span]:text-[#7f8a9e] [&>span]:text-[11px] [&>span]:font-medium [&>span]:uppercase max-[640px]:[&>span]:hidden [&>strong]:text-[#eef0f5] [&>strong]:text-xs [&>strong]:font-medium [&>strong]:font-mono"><span>Parallel</span><strong>{upload.parallel}</strong></span><Icon name="chevron"/>
@@ -871,15 +886,15 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
         if (DELETE_KEYS[event.key] && directory.permissions.delete && selected.size) { event.preventDefault(); setDialog({ kind: "delete", paths: [...selected], pending: false }); }
         else if (event.key === "Escape" && selected.size) { event.preventDefault(); setSelected(new Set()); setLastSelected(null); }
       }}>
-        <div className="file-table grid grid-rows-[36px_minmax(0,1fr)] min-h-0 overflow-auto [scrollbar-gutter:stable]" role="table" aria-label="Files" aria-rowcount={files.length + 1} aria-describedby={policyHint}>
-        <div className={cn("table-head sticky top-0 z-raise border-0 border-b border-solid border-xw-line bg-[#0b101a] text-xw-faint text-[11px] font-medium font-mono uppercase items-stretch", "grid grid-cols-[38px_34px_minmax(240px,1fr)_112px_168px_92px] px-2 max-[900px]:grid-cols-[38px_34px_minmax(180px,1fr)_90px_120px_92px] max-[640px]:grid-cols-[38px_30px_minmax(120px,1fr)_64px_56px]")} role="rowgroup"><span role="row" style={ROW_CONTENTS}><label className="select-all h-full grid place-items-center bg-transparent border-0 cursor-pointer" role="columnheader"><SelectionCheckbox label={selected.size === files.length ? "Deselect all" : "Select all"} checked={files.length > 0 && selected.size === files.length} indeterminate={selected.size > 0 && selected.size < files.length} onToggle={() => { setSelected(selected.size === files.length ? new Set() : new Set(files.map(file => file.path))); setLastSelected(null); }}/></label><span role="columnheader" aria-label="Type"/>{(["name", "size", "modified"] as SortKey[]).map(key => { const index = sort.findIndex(entry => entry.key === key); const entry = sort[index]; const label = key === "modified" ? "Modified" : key[0]!.toUpperCase() + key.slice(1); return <span key={key} className={cn("sort-cell flex", key === "modified" && "max-[640px]:hidden")} role="columnheader" aria-sort={entry ? (entry.direction === "asc" ? "ascending" : "descending") : "none"} style={SORT_CELL}><button className={cn("sort h-full w-full flex items-center gap-1 bg-transparent text-inherit text-left uppercase hover:text-[#aab5c9]", key === "modified" && "date max-[640px]:hidden", entry && "active")} aria-label={`${label}, ${entry ? `${entry.direction === "asc" ? "ascending" : "descending"}, priority ${index + 1}` : "not sorted"}`} onClick={() => updateSort(key)}>{label} {entry && <span>{entry.direction === "asc" ? "▲" : "▼"}{sort.length > 1 ? index + 1 : ""}</span>}</button></span>; })}<span role="columnheader" aria-label="Actions"/></span></div>
-        <m.div id="file-list" key={directory.path} className="file-list min-h-0" role="rowgroup" tabIndex={-1}
+        <div className={cn("file-table grid grid-rows-[36px_minmax(0,1fr)] min-h-0 overflow-auto [scrollbar-gutter:stable]", dialog && "modal-open")} role="table" aria-label="Files" aria-rowcount={files.length + 1} aria-describedby={policyHint}>
+        <div className={cn("table-head sticky top-0 z-raise border-0 border-b border-solid border-xw-line bg-[#0b101a] text-xw-faint text-[11px] font-medium font-mono uppercase items-stretch", "grid grid-cols-[38px_34px_minmax(240px,1fr)_112px_168px_40px] px-2 max-[900px]:grid-cols-[38px_34px_minmax(180px,1fr)_90px_120px_40px] max-[640px]:grid-cols-[38px_30px_minmax(120px,1fr)_64px_40px]")} role="rowgroup"><span role="row" style={ROW_CONTENTS}><label className="select-all h-full grid place-items-center bg-transparent border-0 cursor-pointer" role="columnheader"><SelectionCheckbox label={selected.size === files.length ? "Deselect all" : "Select all"} checked={files.length > 0 && selected.size === files.length} indeterminate={selected.size > 0 && selected.size < files.length} onToggle={() => { setSelected(selected.size === files.length ? new Set() : new Set(files.map(file => file.path))); setLastSelected(null); }}/></label><span role="columnheader" aria-label="Type"/>{(["name", "size", "modified"] as SortKey[]).map(key => { const index = sort.findIndex(entry => entry.key === key); const entry = sort[index]; const label = key === "modified" ? "Modified" : key[0]!.toUpperCase() + key.slice(1); return <span key={key} className={cn("sort-cell flex", key === "modified" && "max-[640px]:hidden")} role="columnheader" aria-sort={entry ? (entry.direction === "asc" ? "ascending" : "descending") : "none"} style={SORT_CELL}><button className={cn("sort h-full w-full flex items-center gap-1 bg-transparent text-inherit text-left uppercase hover:text-[#aab5c9]", key === "modified" && "date max-[640px]:hidden", entry && "active")} aria-label={`${label}, ${entry ? `${entry.direction === "asc" ? "ascending" : "descending"}, priority ${index + 1}` : "not sorted"}`} onClick={() => updateSort(key)}>{label} {entry && <span>{entry.direction === "asc" ? "▲" : "▼"}{sort.length > 1 ? index + 1 : ""}</span>}</button></span>; })}<span role="columnheader" aria-label="Actions"/></span></div>
+        <m.div id="file-list" key={directory.path} className="file-list min-h-0 overflow-x-clip" role="rowgroup" tabIndex={-1}
           initial={listEntrance.current && !reduced ? { opacity: 0, y: 6 } : false}
           animate={listLeaving ? { opacity: 0, y: -4 } : { opacity: 1, y: 0 }}
           transition={listLeaving ? { duration: presenceDuration(reduced, LIST_LEAVE_MS / 1000), ease: "easeIn" } : { duration: presenceDuration(reduced, 0.24), ease: [0.16, 1, 0.3, 1] }}>
           {directoryState === "error" && <div className="state-panel h-full min-h-[220px] flex flex-col items-center justify-center gap-2 text-xw-muted text-pretty"><strong>Couldn’t open this folder</strong><span>{directoryError}</span><button className={cn("button", BTN)} onClick={() => void refresh()}>Retry</button></div>}
           {!files.length && directoryState !== "error" && <div className="state-panel empty h-full min-h-[220px] flex flex-col items-center justify-center gap-2 text-xw-muted text-pretty"><span className="empty-icon w-[46px] h-[46px] grid place-items-center border border-solid border-xw-line rounded-[10px] bg-xw-raised text-[#d8b963] [&_.ui-icon]:w-[22px] [&_.ui-icon]:h-[22px]"><Icon name="folder"/></span><strong>{query.trim() ? "No matches" : "This folder is empty"}</strong><span>{query.trim() ? `Nothing here matches “${query.trim()}”.` : emptyStateHint}</span>{directory.permissions.write && !query.trim() && <button className={cn("button", BTN, BTN_PRIMARY)} onClick={() => fileInput.current?.click()}><Icon name="upload"/><span className="label">Upload files</span></button>}</div>}
-          {files.map((file, index) => <FileRow key={file.path} file={file} index={index} selected={selected.has(file.path)} loading={directoryState === "loading"} arriving={arrivingNames.has(file.name)} tabStop={file.path === anchorPath} onFocusRow={setRovingPath} actionsOpen={actionsPath === file.path} onToggleActions={() => setActionsPath(current => current === file.path ? null : file.path)} onCloseActions={() => setActionsPath(current => current === file.path ? null : current)} permissions={directory.permissions} policyHint={policyHint} onSelect={(gesture) => toggleSelection(file, index, gesture)} onOpen={() => file.kind === "directory" ? void navigate(file.path) : openDocument(`${file.path}${file.editable ? "?edit" : ""}`, file.editable)} onRename={() => { if (directory.permissions.write && directory.permissions.delete) setDialog({ kind: "rename", path: file.path, name: file.name, value: file.name, pending: false }); }} onDelete={() => setDialog({ kind: "delete", paths: [file.path], pending: false })} onDeleteKey={() => { if (directory.permissions.delete) setDialog({ kind: "delete", paths: selected.size ? [...selected] : [file.path], pending: false }); }} onClear={() => { setSelected(new Set()); setLastSelected(null); }}/>) }
+          {files.map((file, index) => <FileRow key={file.path} file={file} index={index} selected={selected.has(file.path)} loading={directoryState === "loading"} arriving={arrivingNames.has(file.name)} tabStop={file.path === anchorPath} onFocusRow={setRovingPath} actionsOpen={actionsPath === file.path} actionsAnchor={actionsPath === file.path ? actionsAnchor : null} onToggleActions={() => { const next = actionsPath === file.path ? null : file.path; setActionsPath(next); if (next) setActionsAnchor(null); }} onOpenActions={() => { setActionsPath(file.path); setActionsAnchor(null); }} onOpenActionsAt={point => { setActionsPath(file.path); setActionsAnchor(point); }} onCloseActions={() => { setActionsPath(current => current === file.path ? null : current); }} permissions={directory.permissions} policyHint={policyHint} onSelect={(gesture) => toggleSelection(file, index, gesture)} onOpen={() => file.kind === "directory" ? void navigate(file.path) : openDocument(`${file.path}${file.editable ? "?edit" : ""}`, file.editable)} onRename={() => { if (directory.permissions.write && directory.permissions.delete) setDialog({ kind: "rename", path: file.path, name: file.name, value: file.name, pending: false }); }} onDelete={() => setDialog({ kind: "delete", paths: [file.path], pending: false })} onDeleteKey={() => { if (directory.permissions.delete) setDialog({ kind: "delete", paths: selected.size ? [...selected] : [file.path], pending: false }); }} onClear={() => { setSelected(new Set()); setLastSelected(null); }}/>) }
           {/* Space the rail's height, so the last rows can scroll clear of it. */}
           <div className="rail-clearance h-[var(--xw-rail-clearance,0)]" aria-hidden="true"/>
         </m.div>
@@ -943,73 +958,220 @@ function ToastView({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
   </m.div>;
 }
 
-function FileRow({ file, index, selected, loading, arriving, tabStop, onFocusRow, actionsOpen, onToggleActions, onCloseActions, permissions, policyHint, onSelect, onOpen, onRename, onDelete, onDeleteKey, onClear }: { file: XwingFile; index: number; selected: boolean; loading: boolean; arriving: boolean; tabStop: boolean; onFocusRow: (path: string) => void; actionsOpen: boolean; onToggleActions: () => void; onCloseActions: () => void; permissions: XwingBootstrapV1["permissions"]; policyHint: string | undefined; onSelect: (gesture: { range: boolean; additive: boolean }) => void; onOpen: () => void; onRename: () => void; onDelete: () => void; onDeleteKey: () => void; onClear: () => void }): React.JSX.Element {
+/** Where a row's context menu, the `⋮` popover and Shift+F10 all land. The item
+ *  set is queried per call because the menu's content is swapped for another row:
+ *  a policy-disabled entry is a real `disabled` button and stays out of the walk. */
+function moveMenuFocus(menu: HTMLElement, to: "first" | "last" | "next" | "previous"): void {
+  const items = [...menu.querySelectorAll<HTMLElement>("button:not([disabled]), a[href]")];
+  if (!items.length) return;
+  if (to === "first") {
+    items[0]?.focus();
+    return;
+  }
+  if (to === "last") {
+    items[items.length - 1]?.focus();
+    return;
+  }
+  const current = items.indexOf(document.activeElement as HTMLElement);
+  const step = to === "next" ? 1 : -1;
+  // Both ends wrap, which is what a menu is expected to do. `indexOf` returns -1
+  // only if focus is outside the menu, which the modulo still lands inside.
+  items[(current + step + items.length) % items.length]?.focus();
+}
+
+function FileRow({ file, index, selected, loading, arriving, tabStop, onFocusRow, actionsOpen, actionsAnchor, onToggleActions, onOpenActions, onOpenActionsAt, onCloseActions, permissions, policyHint, onSelect, onOpen, onRename, onDelete, onDeleteKey, onClear }: { file: XwingFile; index: number; selected: boolean; loading: boolean; arriving: boolean; tabStop: boolean; onFocusRow: (path: string) => void; actionsOpen: boolean; actionsAnchor: { x: number; y: number } | null; onToggleActions: () => void; onOpenActions: () => void; onOpenActionsAt: (point: { x: number; y: number }) => void; onCloseActions: () => void; permissions: XwingBootstrapV1["permissions"]; policyHint: string | undefined; onSelect: (gesture: { range: boolean; additive: boolean }) => void; onOpen: () => void; onRename: () => void; onDelete: () => void; onDeleteKey: () => void; onClear: () => void }): React.JSX.Element {
   // Rename is a move, so the server demands both write and delete; delete only
   // needs delete. Either control, when policy disables it, points at the
   // permission notice instead of relying on the dimmed style alone.
   const canRename = permissions.write && permissions.delete;
+  const reduced = prefersReducedMotion();
   const actionsTrigger = useRef<HTMLButtonElement>(null);
   const actionsMenu = useRef<HTMLDivElement>(null);
-  const [menuUp, setMenuUp] = useState(false);
-  // Opening the menu moves focus to its first enabled item; Escape on the menu
-  // below returns it to the trigger. The side it opens on is measured rather than
-  // guessed: the menu lives inside the table's scroll container, so a row near the
-  // bottom of the visible listing showed a menu with its lower items cut off below
-  // the fold. Measured in a layout effect (before paint, so it never flashes the
-  // wrong side) and re-measured while open, because scrolling moves the row.
+  // What had focus when the menu opened: where focus goes back to when it goes.
+  const opener = useRef<HTMLElement | null>(null);
+  // The latest `dismissMenu`, for the scroll listener, which is registered once
+  // per open and must not hold on to a stale one.
+  const dismissRef = useRef<(() => void) | null>(null);
+  const [menuBox, setMenuBox] = useState<{ left: number; top: number; above: boolean } | null>(null);
+  // Whether the menu's portal is mounted at all. Every row carries the menu and
+  // almost none are open, so a closed row renders nothing for it: a portal and an
+  // `AnimatePresence` per file was a tenth of a 3000-row listing's mount time. It
+  // stays mounted from the moment the menu opens until its exit finishes, which is
+  // the only time it has anything to animate.
+  const [menuMounted, setMenuMounted] = useState(false);
+  if (actionsOpen && !menuMounted) setMenuMounted(true);
+  // Opening the menu moves focus to its first enabled item, and whatever had it
+  // goes in `opener`. Every way the menu goes away — Escape, an entry, the dialog
+  // an entry opens being cancelled — hands focus back there. Where the menu opens
+  // is measured rather than guessed, in a layout effect so it never flashes the
+  // wrong side.
+  //
+  // It is `fixed` and portalled to the body rather than positioned inside the
+  // row, because the menu has two anchors and only one of them is the trigger. A
+  // right click opens it *at the pointer* — that is what a context menu is — and
+  // a menu whose box is the row's actions cell can only ever open at the right
+  // edge of the row, however far left the click landed. Portalling also takes it
+  // out of the listing's scroll container, so a row near the bottom edge no
+  // longer needs a measured flip to keep its last item reachable.
+  //
+  // The measured box is deliberately *not* reset when the menu closes. It leaves
+  // through `AnimatePresence`, so a reset repainted the leaving menu somewhere
+  // else for its exit. It is re-measured on every open instead.
+  //
+  // `file.path` and the anchor are dependencies because a right click on another
+  // row moves this same node: without them the menu kept the previous row's box,
+  // since `actionsOpen` never went false.
   useLayoutEffect(() => {
+    const leaving = actionsMenu.current;
     if (!actionsOpen) {
-      setMenuUp(false);
+      opener.current = null;
+      // A menu that is leaving stays mounted for the exit animation — `motion`
+      // keeps the node, and so does this ref. It must not stay reachable (its
+      // entries still act on the row it belongs to) and it must not hold the id
+      // the open row's trigger points at, because right-clicking a second row
+      // mounts that row's menu while this one is still on its way out.
+      if (leaving) {
+        leaving.removeAttribute("id");
+        leaving.style.pointerEvents = "none";
+      }
       return;
     }
-    const menu = actionsMenu.current;
+    const menu = leaving;
     if (!menu) return;
+    // First open only: a right click on this row while the menu is already up
+    // re-runs the effect with focus inside the menu, which is not where to go back to.
+    if (!opener.current) {
+      const active = document.activeElement;
+      opener.current = active instanceof HTMLElement && !menu.contains(active) ? active : null;
+    }
+    const EDGE = 8;
     const place = (): void => {
-      const row = menu.closest<HTMLElement>(".file-row");
-      const scroller = row ? scrollParent(row) : null;
-      if (!row || !scroller) return;
-      const rowBox = row.getBoundingClientRect();
-      const clip = scroller.getBoundingClientRect();
-      // The sticky column header sits inside the scroller; a menu flipped above the
-      // row must not land under it.
-      const sticky = scroller.querySelector<HTMLElement>(".table-head");
-      const ceiling = sticky ? Math.max(clip.top, sticky.getBoundingClientRect().bottom) : clip.top;
-      const needed = menu.offsetHeight + 8;
-      const below = clip.bottom - rowBox.bottom;
-      const above = rowBox.top - ceiling;
-      // Prefer the side with room. When neither has enough (a very short window),
-      // take the roomier one so the most items stay reachable without scrolling.
-      setMenuUp(below < needed && (above >= needed || above > below));
+      const width = menu.offsetWidth;
+      const height = menu.offsetHeight;
+      const viewportWidth = window.innerWidth;
+      const viewportHeight = window.innerHeight;
+      let left: number;
+      let top: number;
+      if (actionsAnchor) {
+        // Where the pointer was. A right click in the right half of the screen
+        // would otherwise run off it, so the box is flipped to the other side of
+        // the point rather than slid away from it: the near edge stays put.
+        left = actionsAnchor.x + width + EDGE > viewportWidth ? actionsAnchor.x - width : actionsAnchor.x;
+        top = actionsAnchor.y;
+      } else {
+        const trigger = actionsTrigger.current?.getBoundingClientRect();
+        if (!trigger) return;
+        // The keyboard path and the trigger: the box hangs off the trigger's
+        // trailing edge, which is where the user is looking.
+        left = trigger.right - width;
+        top = trigger.bottom + 4;
+      }
+      // A menu flipped above its anchor must clear the sticky column header, so
+      // the ceiling is the header's bottom edge rather than the viewport's top.
+      const header = document.querySelector<HTMLElement>(".file-table .table-head");
+      const ceiling = header ? header.getBoundingClientRect().bottom : EDGE;
+      const above = top + height + EDGE > viewportHeight;
+      const flipped = above && (actionsAnchor ? actionsAnchor.y - height - EDGE : top - height - EDGE) >= ceiling;
+      top = flipped ? (actionsAnchor ? actionsAnchor.y - height : top - height - 8) : top;
+      const box = {
+        left: Math.round(Math.min(Math.max(left, EDGE), Math.max(EDGE, viewportWidth - width - EDGE))),
+        top: Math.round(Math.min(Math.max(top, EDGE), Math.max(EDGE, viewportHeight - height - EDGE))),
+        above: flipped,
+      };
+      // Both coordinates are written straight to the node. They can only come
+      // from measuring, and the effect that measures runs before paint, so the
+      // frame the user sees is the placed one. Nothing here is hidden to cover
+      // the first frame: an entry inside a `visibility: hidden` box cannot take
+      // focus, which is the focus this effect owes the first entry.
+      menu.style.left = `${box.left}px`;
+      menu.style.top = `${box.top}px`;
+      setMenuBox(box);
     };
     place();
-    menu.querySelector<HTMLElement>("button:not([disabled]), a[href]")?.focus();
-    window.addEventListener("scroll", place, true);
+    moveMenuFocus(menu, "first");
+    // The menu is `fixed` at a measured point, so scrolling the listing would leave
+    // it floating over other rows, detached from the one it belongs to. A menu that
+    // cannot follow its row goes away instead, the way a context menu does.
+    const scroller = actionsTrigger.current?.closest<HTMLElement>(".file-table") ?? null;
+    const scrolledFrom = scroller?.scrollTop ?? 0;
+    const onScroll = (event: Event): void => {
+      if (menu.contains(event.target as Node)) return;
+      // A scroll the browser queued before the menu opened (focusing a row that is
+      // partly out of view scrolls it in) arrives after this listener does, so only
+      // a listing that has actually moved since the menu opened closes it.
+      if (scroller && Math.abs(scroller.scrollTop - scrolledFrom) < 1) return;
+      dismissRef.current?.();
+    };
+    window.addEventListener("scroll", onScroll, true);
     window.addEventListener("resize", place);
     return () => {
-      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("resize", place);
     };
-  }, [actionsOpen]);
+  }, [actionsOpen, file.path, actionsAnchor]);
   const moveFocus = (row: HTMLElement, direction: "next" | "previous" | "first" | "last"): void => {
     const rows = [...(row.parentElement?.querySelectorAll<HTMLElement>(".file-row") ?? [])];
     const current = rows.indexOf(row);
     const target = direction === "first" ? rows[0] : direction === "last" ? rows[rows.length - 1] : rows[current + (direction === "next" ? 1 : -1)];
     target?.focus();
   };
-  return <div className={cn("file-row items-center", "grid grid-cols-[38px_34px_minmax(240px,1fr)_112px_168px_92px] px-2 max-[900px]:grid-cols-[38px_34px_minmax(180px,1fr)_90px_120px_92px] max-[640px]:grid-cols-[38px_30px_minmax(120px,1fr)_64px_56px]", "relative min-h-[42px] border-0 border-b border-solid border-[#1c2433] group cursor-pointer select-none transition-[background-color,opacity,box-shadow] duration-micro ease-xw hover:bg-xw-hover [scroll-margin-block:48px_var(--xw-rail-clearance,110px)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-[-1px] focus-visible:outline-[#7062b3]", actionsOpen && "z-raise", selected && "selected bg-[#1c1732] shadow-[inset_3px_0_var(--xw-accent)] hover:bg-[#211a3a]", loading && "muted opacity-[.58]", arriving && "arriving animate-[xw-row-arrive_420ms_var(--xw-ease)]")} role="row" aria-rowindex={index + 2} aria-label={`${file.name}, ${file.kind}`} aria-selected={selected} data-path={file.path} tabIndex={tabStop ? 0 : -1}
+  // A pointer event belongs to the row itself only if it did not come from the
+  // row's actions — and the menu is portalled to the body, so it is not a
+  // descendant of this row and `closest` cannot find it. React still delivers its
+  // events through the React tree, so without this a click on a menu entry would
+  // also select the row and move focus onto it, which is the focus the dialog
+  // that entry opens has to hand back.
+  const fromActions = (event: React.SyntheticEvent): boolean => {
+    const target = event.target as Element;
+    return !!target.closest(".row-actions") || !!actionsMenu.current?.contains(target);
+  };
+  // The menu goes away and focus goes back to where it was when the menu opened:
+  // the row for a right click or Shift+F10, the `⋮` for a click on it. That is the
+  // element that invoked the menu, so it is also what a dialog an entry opens
+  // restores to when cancelled — its focus trap records whatever has focus at the
+  // moment it mounts, and the entry that was focused is on its way out and cannot
+  // be that element. An opener that is gone, or not inside this row (Safari does
+  // not focus a button on click), falls back to the trigger.
+  const dismissMenu = (): void => {
+    const trigger = actionsTrigger.current;
+    const row = trigger?.closest<HTMLElement>(".file-row");
+    const back = opener.current;
+    (back && back.isConnected && row?.contains(back) ? back : trigger)?.focus({ preventScroll: true });
+    onCloseActions();
+  };
+  dismissRef.current = dismissMenu;
+  return <div className={cn("file-row items-center", "grid grid-cols-[38px_34px_minmax(240px,1fr)_112px_168px_40px] px-2 max-[900px]:grid-cols-[38px_34px_minmax(180px,1fr)_90px_120px_40px] max-[640px]:grid-cols-[38px_30px_minmax(120px,1fr)_64px_40px]", "relative min-h-[42px] border-0 border-b border-solid border-[#1c2433] group cursor-pointer select-none transition-[background-color,opacity,box-shadow] duration-micro ease-xw hover:bg-xw-hover [scroll-margin-block:48px_var(--xw-rail-clearance,110px)] focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-[-1px] focus-visible:outline-[#7062b3]", selected ? "selected bg-[#1c1732] shadow-[inset_3px_0_var(--xw-accent)] hover:bg-[#211a3a]" : actionsOpen && "bg-xw-hover", loading && "muted opacity-[.58]", arriving && "arriving animate-[xw-row-arrive_420ms_var(--xw-ease)]")} role="row" aria-rowindex={index + 2} aria-label={`${file.name}, ${file.kind}`} aria-selected={selected} data-path={file.path} tabIndex={tabStop ? 0 : -1}
     onFocus={() => onFocusRow(file.path)}
-    onMouseDown={event => { if (event.shiftKey && !(event.target as Element).closest(".row-actions")) event.preventDefault(); }}
+    onMouseDown={event => { if (event.shiftKey && !fromActions(event)) event.preventDefault(); }}
     onDragStart={event => event.preventDefault()}
-    onClick={event => { if ((event.target as Element).closest(".row-actions")) return; window.getSelection()?.removeAllRanges(); onSelect({ range: event.shiftKey, additive: event.metaKey || event.ctrlKey }); event.currentTarget.focus(); }}
-    onDoubleClick={event => { if (!(event.target as Element).closest(".row-actions")) onOpen(); }}
+    onClick={event => { if (fromActions(event)) return; window.getSelection()?.removeAllRanges(); onSelect({ range: event.shiftKey, additive: event.metaKey || event.ctrlKey }); event.currentTarget.focus(); }}
+    onDoubleClick={event => { if (!fromActions(event)) onOpen(); }}
+    onContextMenu={event => {
+      // A row is not a link, so the browser's own menu has nothing to say about
+      // it; xwing's actions take its place, at the point the click landed. A
+      // right click on a row outside the selection selects it first, because the
+      // menu that opens acts on it — but a right click inside an existing
+      // multi-selection leaves the set alone. Inside the open menu itself the
+      // browser menu is still suppressed, so the listing never gains a menu it
+      // does not own, and the open menu stays where it is.
+      event.preventDefault();
+      // The `⋮` is part of the row, so a right click on it opens the menu too.
+      if (actionsMenu.current?.contains(event.target as Node)) return;
+      if (!selected) onSelect({ range: false, additive: false });
+      onOpenActionsAt({ x: event.clientX, y: event.clientY });
+    }}
     onKeyDown={event => {
       const rowOwnsKey = event.target === event.currentTarget;
-      if (!rowOwnsKey && event.key !== "Delete" && event.key !== "Escape") return;
+      // Shift+F10 and the Menu key are the keyboard's right-click: they belong to
+      // the row wherever focus sits inside it, the way Delete and Escape already do.
+      const menuKey = event.key === "ContextMenu" || (event.shiftKey && event.key === "F10");
+      if (!rowOwnsKey && !menuKey && event.key !== "Delete" && event.key !== "Escape") return;
       // See ROW_ACTION_KEYS: a held key must not act on the row that just took focus.
       if (event.repeat && ROW_ACTION_KEYS[event.key]) { event.preventDefault(); return; }
       if (event.key === " ") { event.preventDefault(); onSelect({ range: event.shiftKey, additive: !event.shiftKey }); }
+      else if (menuKey) { event.preventDefault(); onOpenActions(); }
       else if (event.key === "Enter") { event.preventDefault(); onOpen(); }
-      else if (event.key === "Delete") { event.preventDefault(); onDeleteKey(); }
+      else if (event.key === "Delete") { event.preventDefault(); if (actionsMenu.current?.contains(event.target as Node)) dismissMenu(); onDeleteKey(); }
       else if (event.key === "F2") { event.preventDefault(); onRename(); }
       else if (event.key === "Escape") { event.preventDefault(); onClear(); }
       else if (event.key === "ArrowDown") { event.preventDefault(); moveFocus(event.currentTarget, "next"); }
@@ -1022,19 +1184,51 @@ function FileRow({ file, index, selected, loading, arriving, tabStop, onFocusRow
     <span className={cn("filename min-w-0 text-xs font-mono whitespace-nowrap overflow-hidden text-ellipsis no-underline", file.kind === "directory" ? "directory text-[#ece1b6]" : "text-[#dfe4ec]")} role="cell" title={file.name}>{file.name}{file.kind === "directory" ? "/" : ""}</span>
     <span className="cell text-[#818da2] text-[11px] font-mono leading-[normal] tabular-nums" role="cell">{file.size === null ? "—" : formatBytes(file.size)}</span>
     <span className="cell date text-[#818da2] text-[11px] font-mono leading-[normal] tabular-nums max-[640px]:hidden" role="cell">{file.modified ? formatDate(file.modified) : "—"}</span>
-    <span className={cn("row-actions", "flex justify-end gap-0.5 opacity-0 translate-x-[5px] transition-[opacity,transform] duration-micro ease-xw group-hover:opacity-100 group-hover:translate-x-0 group-focus-within:opacity-100 group-focus-within:translate-x-0 max-[640px]:opacity-100 max-[640px]:translate-x-0 [@media(hover:none)]:opacity-100 [@media(hover:none)]:translate-x-0")} role="cell"
+    <span className={cn("row-actions", "flex justify-end gap-0.5 opacity-0 translate-x-[5px] transition-[opacity,transform] duration-micro ease-xw group-hover:opacity-100 group-hover:translate-x-0 group-focus-within:opacity-100 group-focus-within:translate-x-0 max-[640px]:opacity-100 max-[640px]:translate-x-0 [@media(hover:none)]:opacity-100 [@media(hover:none)]:translate-x-0", actionsOpen && "opacity-100 translate-x-0")} role="cell"
       onBlur={event => {
-        // A dialog taking focus is not the user leaving: keep the menu mounted
-        // so the dialog's focus trap can hand focus back to its item on close.
-        if (document.querySelector("[aria-modal='true']")) return;
-        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) onCloseActions();
+        const target = event.relatedTarget as Node | null;
+        // The menu is portalled to the body, so it is not a descendant of this
+        // cell; tabbing from the trigger into the menu must not read as leaving.
+        if (!event.currentTarget.contains(target) && !actionsMenu.current?.contains(target)) onCloseActions();
       }}>
-      <Tooltip label={`Actions for ${file.name}`}><button ref={actionsTrigger} className={cn(CONTROL_ICON, CONTROL_ICON_ROW)} aria-label={`Actions for ${file.name}`} aria-expanded={actionsOpen} aria-controls={actionsOpen ? "row-actions-menu" : undefined} onClick={onToggleActions}><Icon name="chevron"/></button></Tooltip>
-      {actionsOpen && <div id="row-actions-menu" ref={actionsMenu} role="group" aria-label={`Actions for ${file.name}`} className={cn(POPOVER, "row-actions-menu right-2 min-w-[180px]", menuUp ? "top-auto bottom-full origin-bottom-right" : "top-full")} onKeyDown={event => { if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onCloseActions(); actionsTrigger.current?.focus(); } }}>
-        <button className={cn(MENU_ITEM, "justify-start gap-2 text-left")} aria-label={`Rename ${file.name}`} disabled={!canRename} aria-describedby={!canRename ? policyHint : undefined} onClick={onRename}><Icon name="rename"/><span>Rename</span></button>
-        <a className={cn(MENU_ITEM, "justify-start gap-2")} href={file.kind === "directory" ? `${file.path}?zip` : file.path} download aria-label={`Download ${file.name}`} onClick={() => { onCloseActions(); actionsTrigger.current?.focus(); }}><Icon name="download"/><span>Download</span></a>
-        <button className={cn(MENU_ITEM, MENU_ITEM_DANGER, "justify-start gap-2 text-left")} aria-label={`Delete ${file.name}`} disabled={!permissions.delete} aria-describedby={!permissions.delete ? policyHint : undefined} onClick={onDelete}><Icon name="trash"/><span>Delete</span></button>
-      </div>}
+      <Tooltip label={`Actions for ${file.name}`}><button ref={actionsTrigger} className={cn(CONTROL_ICON, CONTROL_ICON_ROW, TRIGGER_HIT_AREA)} aria-label={`Actions for ${file.name}`} aria-haspopup="menu" aria-expanded={actionsOpen} aria-controls={actionsOpen ? "row-actions-menu" : undefined} onClick={onToggleActions}><Icon name="more"/></button></Tooltip>
+      {menuMounted && createPortal(
+        <AnimatePresence onExitComplete={() => setMenuMounted(false)}>
+          {actionsOpen && <m.div id="row-actions-menu" ref={actionsMenu} role="menu" aria-label={`Actions for ${file.name}`} className={cn(POPOVER_CHROME, "row-actions-menu fixed top-0 left-0 min-w-[180px]", menuBox?.above ? "origin-bottom-left" : "origin-top-left")}
+            style={{ left: menuBox?.left ?? 0, top: menuBox?.top ?? 0 }}
+            initial={reduced ? false : { opacity: 0, y: 10, scale: 0.97 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={reduced ? { opacity: 0 } : { opacity: 0, y: 4, scale: 0.98, transition: { duration: presenceDuration(reduced, 0.12), ease: EASE_OUT } }}
+            transition={{ duration: presenceDuration(reduced, 0.18), ease: EASE_OUT }}
+            onKeyDown={event => {
+              if (event.key === "Escape") {
+                // The row reads Escape as "clear the selection", so the menu has to
+                // take the key before it gets there.
+                event.preventDefault();
+                event.stopPropagation();
+                dismissMenu();
+                return;
+              }
+              // The entries are not a tab stop of their own: Tab leaves the menu, which
+              // closes it, and carries on from where the menu was opened. Focus is moved
+              // before the browser's own Tab runs, so it continues from there rather than
+              // from the end of the document, where this menu is portalled.
+              if (event.key === "Tab") {
+                dismissMenu();
+                return;
+              }
+              if (event.key === "ArrowDown") { event.preventDefault(); moveMenuFocus(event.currentTarget, "next"); }
+              else if (event.key === "ArrowUp") { event.preventDefault(); moveMenuFocus(event.currentTarget, "previous"); }
+              else if (event.key === "Home") { event.preventDefault(); moveMenuFocus(event.currentTarget, "first"); }
+              else if (event.key === "End") { event.preventDefault(); moveMenuFocus(event.currentTarget, "last"); }
+            }}>
+            <button role="menuitem" className={cn(MENU_ITEM, "justify-start gap-2 text-left")} aria-label={`Rename ${file.name}`} disabled={!canRename} aria-describedby={!canRename ? policyHint : undefined} onClick={() => { dismissMenu(); onRename(); }}><Icon name="rename"/><span>Rename</span></button>
+            <a role="menuitem" className={cn(MENU_ITEM, "justify-start gap-2")} href={file.kind === "directory" ? `${file.path}?zip` : file.path} download aria-label={`Download ${file.name}`} onClick={dismissMenu}><Icon name="download"/><span>Download</span></a>
+            <button role="menuitem" className={cn(MENU_ITEM, MENU_ITEM_DANGER, "justify-start gap-2 text-left")} aria-label={`Delete ${file.name}`} disabled={!permissions.delete} aria-describedby={!permissions.delete ? policyHint : undefined} onClick={() => { dismissMenu(); onDelete(); }}><Icon name="trash"/><span>Delete</span></button>
+          </m.div>}
+        </AnimatePresence>,
+        document.body,
+      )}
     </span>
   </div>;
 }
@@ -1055,17 +1249,7 @@ function focusFileRow(path: string | null, fallbackToFirst = false): void {
   });
 }
 
-/** The nearest ancestor that scrolls vertically — the table, for a row. Used to
- *  decide whether a popover anchored to a row has room on the side it wants. */
-function scrollParent(element: HTMLElement): HTMLElement | null {
-  for (let node = element.parentElement; node; node = node.parentElement) {
-    const overflowY = getComputedStyle(node).overflowY;
-    if (overflowY === "auto" || overflowY === "scroll") return node;
-  }
-  return null;
-}
-
-function UploadDock({ snapshot }: { snapshot: ReturnType<UploadManager["getSnapshot"]> }): React.JSX.Element | null {
+function UploadDock({ snapshot }: { snapshot: UploadSnapshot }): React.JSX.Element | null {
   const reduced = prefersReducedMotion();
   useEffect(() => {
     const hasCompleted = snapshot.items.some(item => item.status === "completed");

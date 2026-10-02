@@ -31,6 +31,23 @@ export const CONTROL_ICON =
   "bg-transparent text-[#9ca6b8] no-underline transition-colors duration-micro touch-manipulation " +
   "hover:border-xw-line-hi hover:bg-[#172034] hover:text-xw-text";
 export const CONTROL_ICON_ROW = "w-7 h-7 min-w-7 min-h-7";
+/**
+ * The row trigger's *target* is bigger than its 28px face. `better-accessibility`'s
+ * aim is 40px on desktop and 44px on touch, and a centred 40px box reaches the
+ * first. It is a fixed box rather than an inset because `inset` measures the
+ * padding box, which the 1px transparent border has already shrunk, and because
+ * 44 is what the 42px row cannot give without the neighbouring rows' targets
+ * overlapping — which the same rule forbids.
+ *
+ * At rest the trigger's cell is also translated 5px (it slides in on hover), so
+ * the target ends 6 + 5 - 8 = 3px past the row's right edge. The row can't hold
+ * that, and the file table is a scroll container: in Gecko, which draws a classic
+ * 12px bar for it, that was a bar along the bottom of the listing. The listing
+ * clips sideways (`overflow-x-clip` on `.file-list`) instead of the geometry
+ * being shrunk, so a later change to either number cannot bring the bar back.
+ */
+export const TRIGGER_HIT_AREA =
+  "relative after:absolute after:left-1/2 after:top-1/2 after:h-10 after:w-10 after:-translate-x-1/2 after:-translate-y-1/2 after:content-['']";
 
 /** The file browser's toolbar collapses to squares on a phone; the console's
  *  record tables keep their labels, so this is opt-in per surface. */
@@ -93,9 +110,17 @@ export const ACCOUNT_TRIGGER =
 export const SIGNOUT =
   "signout-button h-8 min-h-8 px-2 border border-solid border-xw-line-hi rounded-md bg-transparent text-[#aeb6c5] " +
   "text-xs font-medium hover:border-[#67323b] hover:bg-[#24161d] hover:text-[#ff9ba3]";
+/**
+ * The popover's chrome — border, radius, background, shadow, stacking — with no
+ * offset, because where a popover hangs from depends on what opened it: the
+ * account and parallel menus drop from their own trigger, while the row menu is
+ * `fixed` at a measured point and carries its own coordinates.
+ */
+export const POPOVER_CHROME =
+  "popover absolute z-popover p-1 border border-solid border-[#3b465c] rounded-[7px] bg-[#111827] " +
+  "shadow-[0_18px_45px_rgba(0,0,0,.46)]";
 export const POPOVER =
-  "popover absolute right-0 top-[38px] z-popover p-1 border border-solid border-[#3b465c] rounded-[7px] bg-[#111827] " +
-  "shadow-[0_18px_45px_rgba(0,0,0,.46)] origin-top-right animate-[xw-surface-in_var(--xw-surface)_var(--xw-ease)]";
+  POPOVER_CHROME + " right-0 top-[38px] origin-top-right animate-[xw-surface-in_var(--xw-surface)_var(--xw-ease)]";
 /**
  * A menu entry. A policy-disabled entry keeps the real `disabled` attribute and
  * points at the permission notice with `aria-describedby`, and it also has to

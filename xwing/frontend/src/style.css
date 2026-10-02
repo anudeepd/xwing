@@ -100,7 +100,12 @@
 /* Visually hidden helper (browser and editor pages load this stylesheet only). */
 .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 html,body,#xwing-root{height:100%}
-body:has(.xw-app){overflow:hidden;background:var(--xw-bg);color:var(--xw-text);font:13px/1.45 Inter,system-ui,sans-serif}
+/* The shell's own overflow, keyed on a class the browser template carries rather
+   than on `body:has(.xw-app)`: `:has()` arrived in Gecko 121, and on anything
+   older the rule was dropped whole, so the document could scroll and every
+   stray pixel of overflow became a scrollbar along the bottom of the window.
+   The console already scopes itself the same way with `.admin-body`. */
+body.xw-browser{overflow:hidden;background:var(--xw-bg);color:var(--xw-text);font:13px/1.45 Inter,system-ui,sans-serif}
 
 /* Zero specificity on purpose, so a utility on the control always wins.
    A plain `.xw-app button{color:inherit}` used to follow this rule: at (0,1,1)
@@ -141,13 +146,18 @@ body:has(.xw-app){overflow:hidden;background:var(--xw-bg);color:var(--xw-text);f
 .modal-backdrop{position:fixed;inset:0;display:grid;place-items:center;padding:16px;background:rgba(5,8,14,.72);z-index:var(--z-modal);overscroll-behavior:contain}.modal{width:min(420px,100%);display:flex;flex-direction:column;gap:12px;border:1px solid #3b465c;border-radius:9px;background:#111722;padding:20px;box-shadow:0 30px 90px rgba(0,0,0,.58);}.modal h2{font:600 16px Inter,sans-serif;color:var(--xw-text)}.modal p{color:var(--xw-muted)}.modal label{display:flex;flex-direction:column;gap:4px;color:#aeb7c7;font-size:11px}.modal input{height:36px;border:1px solid var(--xw-line-hi);border-radius:6px;background:#0b1019;color:var(--xw-text);padding:0 12px;font:13px Inter,system-ui,sans-serif}.modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:4px}.dialog-error{border:1px solid #a65260;border-radius:6px;background:#24161d;color:#ff9ba3;padding:8px 12px;font-size:11px}
 .modal-backdrop.closing .modal{animation:xw-surface-out 160ms ease-in forwards}
 /* A dialog owns the page while it is open: the scroll container behind it stops
-   moving, so a wheel or trackpad flick cannot drift the listing under the card. */
-body:has(.modal-backdrop) .file-table,body:has(.modal-backdrop) .admin-shell{overflow:hidden}
+   moving, so a wheel or trackpad flick cannot drift the listing under the card.
+   The class sits on the container itself rather than on the body through
+   `:has(.modal-backdrop)` — the console already has `.admin-body`, and a rule
+   that a browser without `:has()` drops whole is a rule that stops existing. */
+.file-table.modal-open,.admin-shell.modal-open{overflow:hidden}
 
 /* The boot card sits over the app and fades out under it, so the handover has no
    frame where neither the card nor the shell is on screen. */
 
-.xw-app :focus-visible{outline:2px solid var(--xw-accent);outline-offset:2px}
+/* The row menu is portalled to <body>, outside `.xw-app`, so the shared ring has to
+   name popovers too — otherwise its entries fall back to the browser's own ring. */
+.xw-app :focus-visible,.popover :focus-visible{outline:2px solid var(--xw-accent);outline-offset:2px}
 @keyframes xw-page-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 @keyframes xw-view-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 /* Opacity, rise and scale only. A blur ramping in on a menu made its text read
@@ -160,8 +170,7 @@ body:has(.modal-backdrop) .file-table,body:has(.modal-backdrop) .admin-shell{ove
 @keyframes xw-search-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}@keyframes xw-search-out{to{opacity:0;transform:translateY(6px)}}
 @keyframes xw-surface-out{to{opacity:0;transform:translateY(7px) scale(.98)}}@keyframes xw-backdrop-in{from{opacity:0}to{opacity:1}}@keyframes xw-backdrop-out{to{opacity:0}}@keyframes xw-drop-in{from{opacity:0;transform:scale(.985)}to{opacity:1;transform:none}}
 @keyframes xw-toast-out{to{opacity:0;transform:translateY(6px) scale(.97)}}
-@media(max-width:640px){.xw-app input:not([type="checkbox"]):not([type="radio"]){font-size:16px}.xw-app{grid-template-rows:48px minmax(0,1fr)}
- /* The row drops its whole date cell; the header only dropped the button, so the empty cell stayed and wrapped the header into a second grid row. */.table-head [role="columnheader"]:has(> .date){display:none}}
+@media(max-width:640px){.xw-app input:not([type="checkbox"]):not([type="radio"]){font-size:16px}.xw-app{grid-template-rows:48px minmax(0,1fr)}}
 @media(prefers-reduced-motion:reduce){.xw-app,.editor-app,.xw-app *,.editor-app *,.xw-app *::before,.editor-app *::before,.xw-app *::after,.editor-app *::after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
 @keyframes xw-spin{to{transform:rotate(360deg)}}
 /* CodeMirror's own DOM keeps its styling here: the editor surface and its
@@ -207,10 +216,26 @@ body {
 }
 
 /* ── Scrollbar ──────────────────────────────────────────────────────────────── */
+/* Two dialects, one look, and they must not both be active.
+   `::-webkit-scrollbar` is the only one Blink reads, and it is what makes the
+   bar 6px, app-coloured, and always drawn. Gecko ignores it and draws the
+   desktop's own bar instead: twice as wide and themed by the GTK theme.
+   The standard properties fix that in Gecko — but in Blink, naming
+   `scrollbar-width` hands the scrollbar back to the platform, which ignores
+   `::-webkit-scrollbar` from then on and paints an overlay bar that only
+   appears while hovering or scrolling. So they are scoped to Gecko, by a
+   feature only Gecko answers true: `(-moz-appearance: none)`.
+   It is not `not selector(::-webkit-scrollbar)`. Gecko 153 (Waterfox) parses
+   that selector as valid — it just never matches — so the `not` was false
+   there and the bar stayed the GTK one, while Playwright's older Firefox
+   answers false and passed. Check a scrollbar change in the real browser. */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: var(--xw-bg); }
 ::-webkit-scrollbar-thumb { background: var(--xw-line-hi); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: #475569; }
+@supports (-moz-appearance: none) {
+  * { scrollbar-width: thin; scrollbar-color: var(--xw-line-hi) var(--xw-bg); }
+}
 
 main:focus-visible {
  outline: 2px solid #c4b5fd;

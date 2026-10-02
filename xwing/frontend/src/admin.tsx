@@ -967,7 +967,7 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
     <a className={`button ${BTN} mt-2`} href="/">Return to files</a>
   </div>;
 
-  return <m.div className="admin-shell h-dvh overflow-y-auto [scrollbar-gutter:stable]" initial={{ opacity: 0, y: 6 }} animate={leaving ? { opacity: 0, y: -5 } : { opacity: 1, y: 0 }} transition={leaving ? SHELL_LEAVE : handover ? { duration: 0.17, ease: EASE } : SHELL_ENTER}>
+  return <m.div className={cn("admin-shell h-dvh overflow-y-auto [scrollbar-gutter:stable]", dialog && "modal-open")} initial={{ opacity: 0, y: 6 }} animate={leaving ? { opacity: 0, y: -5 } : { opacity: 1, y: 0 }} transition={leaving ? SHELL_LEAVE : handover ? { duration: 0.17, ease: EASE } : SHELL_ENTER}>
     <header className={cn("topbar admin-topbar", TOPBAR)}>
       <a className={BRAND} href="/" aria-label="X-wing ADMIN, home" data-leave="/" onClick={event => leaveTo(event, "/")}><Logo/><span className={BRAND_NAME}>X-wing</span><small className={BRAND_CONTEXT}>ADMIN</small></a>
       <div className={ACCOUNT_INLINE}>

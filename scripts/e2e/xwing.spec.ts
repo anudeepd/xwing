@@ -98,7 +98,7 @@ test("file keyboard commands respect focus ownership", async ({ page }) => {
   const releases = page.getByRole("row", { name: /^releases,/ });
   const releaseCheckbox = page.getByRole("checkbox", { name: "Select releases" });
   const releaseActions = page.getByRole("button", { name: "Actions for releases" });
-  const releaseDelete = page.getByRole("button", { name: "Delete releases" });
+  const releaseDelete = page.getByRole("menuitem", { name: "Delete releases" });
 
   await releases.focus();
   await page.keyboard.press("Tab");
@@ -116,6 +116,9 @@ test("file keyboard commands respect focus ownership", async ({ page }) => {
   await page.keyboard.press("Enter");
   const dialog = page.getByRole("dialog", { name: "Delete 1 item?" });
   await expect(dialog).toBeVisible();
+  // The menu is a transient overlay and the dialog owns the screen, so choosing an
+  // entry closes it. It used to stay mounted behind the dialog.
+  await expect(page.getByRole("menu")).toHaveCount(0);
   await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(dialog.getByRole("button", { name: "Delete" })).toBeFocused();
@@ -123,7 +126,9 @@ test("file keyboard commands respect focus ownership", async ({ page }) => {
   await expect(dialog.getByRole("button", { name: "Cancel" })).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(dialog).not.toBeVisible();
-  await expect(releaseDelete).toBeFocused();
+  // Cancelled: focus goes back to what opened the menu — here the `⋮`, not the
+  // entry that was chosen, which left with the menu.
+  await expect(releaseActions).toBeFocused();
   await expect(page).toHaveURL(/\/$/);
 });
 
@@ -157,14 +162,14 @@ test("Delete works again after dismissing a mouse-opened delete dialog", async (
   await releaseCheckbox.click();
   await expect(releaseCheckbox).toBeChecked();
 
-  const rowDelete = page.getByRole("button", { name: "Delete releases" });
+  const rowDelete = page.getByRole("menuitem", { name: "Delete releases" });
   await page.getByRole("button", { name: "Actions for releases" }).click();
   await rowDelete.click();
   const dialog = page.getByRole("dialog", { name: "Delete 1 item?" });
   await page.keyboard.press("Escape");
   await expect(dialog).not.toBeVisible();
   await expect(releaseCheckbox).toBeChecked();
-  await expect(rowDelete).toBeFocused();
+  await expect(page.getByRole("button", { name: "Actions for releases" })).toBeFocused();
 
   await page.keyboard.press("Delete");
   await expect(dialog).toBeVisible();
@@ -345,14 +350,17 @@ test("nested file controls preserve native keys and file commands", async ({ pag
   await expect(page.getByRole("row", { name: /^README\.md,/ })).toBeFocused();
   await expect.poll(() => page.evaluate(() => window.getSelection()?.toString() ?? "")).toBe("");
 
-  const download = page.getByRole("link", { name: "Download releases" });
+  const download = page.getByRole("menuitem", { name: "Download releases" });
   await page.getByRole("button", { name: "Actions for releases" }).click();
   await download.focus();
   await page.keyboard.press("Delete");
   const dialog = page.getByRole("dialog", { name: "Delete 2 items?" });
   await expect(dialog).toBeVisible();
+  // Delete is a row shortcut that also works from inside the open menu, and it
+  // takes the menu with it the same way choosing the entry does.
+  await expect(page.getByRole("menu")).toHaveCount(0);
   await page.keyboard.press("Escape");
-  await expect(download).toBeFocused();
+  await expect(page.getByRole("button", { name: "Actions for releases" })).toBeFocused();
 
   await page.getByRole("button", { name: /Name/ }).focus();
   await page.keyboard.press("Delete");
@@ -435,7 +443,7 @@ test("a row can be renamed from its control or with F2", async ({ page }, testIn
     await expect(page.getByRole("row", { name: `${original}, file`, exact: true })).toBeVisible();
 
     await page.getByRole("button", { name: `Actions for ${original}` }).click();
-    await page.getByRole("button", { name: `Rename ${original}` }).click();
+    await page.getByRole("menuitem", { name: `Rename ${original}` }).click();
     const dialog = page.getByRole("dialog", { name: `Rename ${original}` });
     await expect(dialog).toBeVisible();
     const input = dialog.getByRole("textbox");
@@ -461,7 +469,7 @@ test("a row can be renamed from its control or with F2", async ({ page }, testIn
 
     // A folder keeps its trailing slash through the move.
     await page.getByRole("button", { name: `Actions for ${folder}` }).click();
-    await page.getByRole("button", { name: `Rename ${folder}` }).click();
+    await page.getByRole("menuitem", { name: `Rename ${folder}` }).click();
     const folderDialog = page.getByRole("dialog", { name: `Rename ${folder}` });
     await folderDialog.getByRole("textbox").fill(renamedFolder);
     await folderDialog.getByRole("button", { name: "Rename" }).click();
@@ -487,7 +495,7 @@ test("renaming to an exotic name stores exactly that name", async ({ page }, tes
   try {
     await page.goto(`${api}/`);
     await page.getByRole("button", { name: `Actions for ${source}` }).click();
-    await page.getByRole("button", { name: `Rename ${source}` }).click();
+    await page.getByRole("menuitem", { name: `Rename ${source}` }).click();
     const dialog = page.getByRole("dialog", { name: `Rename ${source}` });
     await dialog.getByRole("textbox").fill(exotic);
     await dialog.getByRole("button", { name: "Rename" }).click();
@@ -523,7 +531,7 @@ test("renaming refuses an empty name and never overwrites an existing one", asyn
   try {
     await page.goto(`${api}/`);
     await page.getByRole("button", { name: `Actions for ${first}` }).click();
-    await page.getByRole("button", { name: `Rename ${first}` }).click();
+    await page.getByRole("menuitem", { name: `Rename ${first}` }).click();
     const dialog = page.getByRole("dialog", { name: `Rename ${first}` });
     const input = dialog.getByRole("textbox");
 
@@ -703,7 +711,7 @@ test("a dialog owns the viewport and explains itself", async ({ page }) => {
   // document flow at the bottom of the page with its description clipped.
   await page.goto("/");
   await page.getByRole("button", { name: "Actions for README.md" }).click();
-  await page.getByRole("button", { name: "Rename README.md" }).click();
+  await page.getByRole("menuitem", { name: "Rename README.md" }).click();
 
   const backdrop = page.locator(".modal-backdrop");
   await expect(backdrop).toBeVisible();
@@ -729,11 +737,11 @@ test("listing controls are named and reachable, and the stylesheet keeps its gua
   await skip.focus();
   await expect(skip).toBeFocused();
 
-  await expect(page.getByRole("link", { name: "Download README.md" })).toBeHidden();
+  await expect(page.getByRole("menuitem", { name: "Download README.md" })).toBeHidden();
   await page.getByRole("button", { name: "Actions for README.md" }).click();
-  await expect(page.getByRole("link", { name: "Download README.md" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Rename README.md" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Delete README.md" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Download README.md" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Rename README.md" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "Delete README.md" })).toBeVisible();
 
   await page.getByRole("checkbox", { name: "Select all" }).click();
   await expect(page.getByRole("checkbox", { name: "Deselect all" })).toBeVisible();
@@ -823,11 +831,11 @@ test.describe("limited access server", () => {
 
     // Rename and delete are policy-disabled and point at the permission notice.
     await page.getByRole("button", { name: "Actions for oversized.txt" }).click();
-    const rename = page.getByRole("button", { name: "Rename oversized.txt" });
+    const rename = page.getByRole("menuitem", { name: "Rename oversized.txt" });
     await expect(rename).toBeDisabled();
     await expect(rename).toHaveAttribute("aria-describedby", "permission-notice");
-    await expect(page.getByRole("button", { name: "Delete oversized.txt" })).toBeDisabled();
-    await expect(page.getByRole("link", { name: "Download oversized.txt" })).toBeEnabled();
+    await expect(page.getByRole("menuitem", { name: "Delete oversized.txt" })).toBeDisabled();
+    await expect(page.getByRole("menuitem", { name: "Download oversized.txt" })).toBeEnabled();
 
     await page.goto("http://127.0.0.1:8991/empty/");
     await expect(page.getByText("This folder is empty")).toBeVisible();
@@ -864,16 +872,16 @@ test.describe("restricted permissions", () => {
     // and looks disabled: a full-strength entry that swallows the click reads as
     // broken rather than denied.
     await page.getByRole("button", { name: "Actions for README.md" }).click();
-    const rename = page.getByRole("button", { name: "Rename README.md" });
+    const rename = page.getByRole("menuitem", { name: "Rename README.md" });
     await expect(rename).toBeDisabled();
     await expect(rename).toHaveAttribute("aria-describedby", "permission-notice");
     await expect(rename).toHaveCSS("opacity", "0.42");
     await expect(rename).toHaveCSS("cursor", "not-allowed");
-    const rowDelete = page.getByRole("button", { name: "Delete README.md" });
+    const rowDelete = page.getByRole("menuitem", { name: "Delete README.md" });
     await expect(rowDelete).toBeDisabled();
     await expect(rowDelete).toHaveAttribute("aria-describedby", "permission-notice");
     await expect(rowDelete).toHaveCSS("opacity", "0.42");
-    const download = page.getByRole("link", { name: "Download README.md" });
+    const download = page.getByRole("menuitem", { name: "Download README.md" });
     await expect(download).toHaveCSS("opacity", "1");
     await expect(download).toHaveCSS("cursor", "pointer");
 
@@ -914,13 +922,13 @@ test.describe("restricted permissions", () => {
     await expect(page.getByRole("button", { name: "Upload files" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "New folder" })).toBeDisabled();
     await page.getByRole("button", { name: "Actions for README.md" }).click();
-    const rename = page.getByRole("button", { name: "Rename README.md" });
+    const rename = page.getByRole("menuitem", { name: "Rename README.md" });
     await expect(rename).toBeDisabled();
     await expect(rename).toHaveAttribute("aria-describedby", "permission-notice");
     await expect(rename).toHaveCSS("opacity", "0.42");
     // Deletion stays available, so it must not be dimmed or pointed at a notice
     // that says it is not.
-    const rowDelete = page.getByRole("button", { name: "Delete README.md" });
+    const rowDelete = page.getByRole("menuitem", { name: "Delete README.md" });
     await expect(rowDelete).toBeEnabled();
     await expect(rowDelete).not.toHaveAttribute("aria-describedby", "permission-notice");
     await expect(rowDelete).toHaveCSS("opacity", "1");
@@ -1077,11 +1085,18 @@ test("monospace emphasis uses a real bold face", async ({ page }) => {
 test("editor lines sit a whole number of pixels apart", async ({ page }) => {
   await page.goto("/README.md?edit");
   await expect(page.locator(".cm-line").nth(2)).toBeVisible();
-  const pitches = await page.evaluate(() => {
-    const tops = [...document.querySelectorAll(".cm-line")].slice(0, 3).map(line => line.getBoundingClientRect().top);
-    return tops.slice(1).map((top, index) => top - tops[index]!);
-  });
-  for (const pitch of pitches) expect(pitch).toBe(22);
+  // The pitch is a layout measurement, so wait for the faces the editor draws
+  // with: reading the first painted frame under load measured a line box the
+  // font had not settled into yet, and reported 23 instead of 22.
+  await page.evaluate(() => document.fonts.ready);
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const tops = [...document.querySelectorAll(".cm-line")].slice(0, 3).map(line => line.getBoundingClientRect().top);
+        return tops.slice(1).map((top, index) => top - tops[index]!);
+      }),
+    )
+    .toEqual([22, 22]);
 });
 
 // CodeMirror scopes its theme as `.ͼ1 .cm-panel.cm-search …`, three classes deep.
@@ -1122,11 +1137,11 @@ test("the editor preserves a file's CRLF line endings on save", async ({ page })
   }
 });
 
-// The row actions menu is anchored to its row and clipped by the table's scroll
-// container. Opened on a row near the bottom of the visible listing it used to
-// open downwards anyway, showing Rename with Download and Delete cut off below
-// the fold; the side it opens on is measured now.
-test("the row actions menu stays inside the table at the bottom edge", async ({ page }) => {
+// The menu is `fixed`, so what it has to stay inside is the viewport, not the
+// table's scroll container: it used to be clipped by the container, and a row
+// near the bottom edge opened a menu with its lower items cut off below the
+// fold. The side it opens on is measured now.
+test("the row actions menu stays inside the viewport at the bottom edge", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 700 });
   const files = Array.from({ length: 24 }, (_, index) => ({
     name: `row-${index}.txt`, path: `/row-${index}.txt`, kind: "file" as const,
@@ -1148,17 +1163,259 @@ test("the row actions menu stays inside the table at the bottom edge", async ({ 
   await page.getByRole("button", { name: `Actions for ${target}` }).click();
   const menu = page.locator("#row-actions-menu");
   await expect(menu).toBeVisible();
+  // The menu rises into place over 180ms and the entrance transform is part of
+  // its box, so measure the settled one: this test is about where it ends up.
+  await expect(menu).toHaveCSS("opacity", "1");
   const state = await menu.evaluate(element => {
-    const table = document.querySelector(".file-table")!.getBoundingClientRect();
     const box = element.getBoundingClientRect();
     return {
-      outside: Math.max(0, Math.round(box.bottom - table.bottom), Math.round(table.top - box.top)),
+      outside: Math.max(0, Math.round(box.bottom - window.innerHeight), Math.round(-box.top), Math.round(box.right - window.innerWidth), Math.round(-box.left)),
       itemsInside: [...element.children].map(child => {
         const r = child.getBoundingClientRect();
-        return r.top >= table.top && r.bottom <= table.bottom;
+        return r.top >= 0 && r.bottom <= window.innerHeight;
       }),
     };
   });
   expect(state.outside).toBe(0);
   expect(state.itemsInside).toEqual([true, true, true]);
+});
+
+/**
+ * A row is not a link, so the browser's own menu has nothing to say about it;
+ * xwing's actions replace it, and `Shift+F10` is the keyboard's right click.
+ * The row the menu belongs to is the one it acts on, so a right click on a row
+ * outside the selection selects it first.
+ */
+test("a row opens its actions menu by right click and by Shift+F10", async ({ page }) => {
+  await page.goto("/");
+  const readme = page.getByRole("row", { name: /^README\.md,/ });
+
+  await readme.click({ button: "right" });
+  const menu = page.locator("#row-actions-menu");
+  await expect(menu).toHaveAttribute("role", "menu");
+  await expect(page.getByRole("menuitem", { name: "Rename README.md" })).toBeFocused();
+  await expect(readme).toHaveAttribute("aria-selected", "true");
+
+  // Escape closes the menu and hands focus back to where it was opened — for a
+  // right click that is the row, not the `⋮` the pointer never touched. The row
+  // reads Escape as "clear the selection", so a menu that let it through would
+  // drop the selection the menu was acting on.
+  await page.keyboard.press("Escape");
+  await expect(menu).toBeHidden();
+  await expect(readme).toBeFocused();
+  await expect(readme).toHaveAttribute("aria-selected", "true");
+
+  // The same menu, from the keyboard, on the row that has focus.
+  const releases = page.getByRole("row", { name: /^releases,/ });
+  await releases.focus();
+  await page.keyboard.press("Shift+F10");
+  await expect(page.locator("#row-actions-menu")).toHaveAttribute("aria-label", "Actions for releases");
+  await expect(page.getByRole("menuitem", { name: "Rename releases" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(releases).toBeFocused();
+});
+
+test("the actions menu walks its entries with the arrow keys", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("row", { name: /^README\.md,/ }).focus();
+  await page.keyboard.press("Shift+F10");
+
+  const renamed = page.getByRole("menuitem", { name: "Rename README.md" });
+  const download = page.getByRole("menuitem", { name: "Download README.md" });
+  const deleted = page.getByRole("menuitem", { name: "Delete README.md" });
+  await expect(renamed).toBeFocused();
+
+  // Both ends wrap, which is what a menu is expected to do.
+  await page.keyboard.press("ArrowDown");
+  await expect(download).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(deleted).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(renamed).toBeFocused();
+  await page.keyboard.press("ArrowUp");
+  await expect(deleted).toBeFocused();
+  await page.keyboard.press("Home");
+  await expect(renamed).toBeFocused();
+  await page.keyboard.press("End");
+  await expect(deleted).toBeFocused();
+});
+
+/**
+ * The menu leaves through an exit animation, so it stays mounted for a moment
+ * after its row stops being the open one. It must not stay reachable while it
+ * does: a right click on another row opens that row's menu with the previous one
+ * still on screen, and a click where the old entries sat would otherwise act on
+ * the row the user has already moved on from.
+ */
+test("a menu that is leaving cannot be clicked", async ({ page }) => {
+  const files = Array.from({ length: 12 }, (_, index) => ({
+    name: `row-${index}.txt`, path: `/row-${index}.txt`, kind: "file" as const,
+    size: 10, modified: "2026-07-19T12:00:00Z", editable: true,
+  }));
+  await gotoWithBootstrap(page, { files });
+
+  await page.getByRole("row", { name: /^row-0\.txt,/ }).click({ button: "right" });
+  const abandoned = (await page.getByRole("menuitem", { name: "Delete row-0.txt" }).boundingBox())!;
+  expect(abandoned.height).toBeGreaterThan(0);
+
+  await page.getByRole("row", { name: /^row-8\.txt,/ }).click({ button: "right" });
+  await expect(page.locator("#row-actions-menu")).toHaveAttribute("aria-label", "Actions for row-8.txt");
+
+  await page.mouse.click(abandoned.x + abandoned.width / 2, abandoned.y + abandoned.height / 2);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+
+  // The menu that is actually open still answers, so the check above is not
+  // passing because nothing is clickable.
+  await page.getByRole("row", { name: /^row-8\.txt,/ }).click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Delete row-8.txt" }).click();
+  await expect(page.getByRole("dialog", { name: "Delete 1 item?" })).toBeVisible();
+});
+
+/**
+ * The file table is a scroll container, so anything a row draws past its right
+ * edge becomes sideways scroll — and in Gecko, which draws a classic 12px bar for
+ * it, a bar along the bottom of the listing. The row's actions trigger carries a
+ * 40px hit area that is translated 5px at rest, which put 3px of it outside the
+ * row. Chromium reports the overflow but never makes it scrollable, so only the
+ * measurement catches it there.
+ */
+test("the file table has nothing to scroll sideways at rest", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByRole("row", { name: /^README\.md,/ })).toBeVisible();
+  const table = page.locator(".file-table");
+
+  for (const width of [1280, 700, 375]) {
+    await page.setViewportSize({ width, height: 800 });
+    await expect
+      .poll(() => table.evaluate(element => element.scrollWidth - element.clientWidth), { message: `${width}px wide` })
+      .toBe(0);
+  }
+});
+
+/**
+ * A menu entry that opens a dialog closes the menu first: the menu is a transient
+ * overlay and the dialog owns the screen. It used to stay mounted behind the
+ * dialog — only so the dialog's focus trap could hand focus back to an entry —
+ * and was still open after the dialog was cancelled. Focus goes back to what
+ * opened the menu instead, which the dialog's trap restores because it records
+ * whatever has focus when it mounts.
+ */
+test("choosing a row action closes the menu, and cancelling its dialog gives focus back", async ({ page }) => {
+  await page.goto("/");
+  const readme = page.getByRole("row", { name: /^README\.md,/ });
+
+  await readme.click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Rename README.md" }).click();
+  await expect(page.getByRole("dialog", { name: "Rename README.md" })).toBeVisible();
+  await expect(page.getByRole("menu")).toHaveCount(0);
+
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  // A right click opened the menu, so the row is where focus goes back to.
+  await expect(readme).toBeFocused();
+  await expect(page.getByRole("menu")).toHaveCount(0);
+});
+
+/**
+ * The row menu is portalled to <body>, outside `.xw-app` — which is where the shared
+ * focus ring, the row's hover and the trigger's focus-within reveal all live. Each
+ * of them used to quietly stop reaching it.
+ */
+test("the open row menu keeps the app's focus ring", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("row", { name: /^README\.md,/ }).focus();
+  await page.keyboard.press("Shift+F10");
+  const rename = page.getByRole("menuitem", { name: "Rename README.md" });
+  await expect(rename).toBeFocused();
+  await expect(rename).toHaveCSS("outline-style", "solid");
+  await expect(rename).toHaveCSS("outline-color", "rgb(167, 139, 250)");
+});
+
+test("a row whose menu is open stays lit and keeps its trigger in view", async ({ page }) => {
+  await page.goto("/");
+  const readme = page.getByRole("row", { name: /^README\.md,/ });
+  await readme.hover();
+  await page.getByRole("button", { name: "Actions for README.md" }).click();
+  // The pointer moves onto the menu, which is not inside the row, so the row's own
+  // hover and focus-within no longer hold: the open menu has to hold them up.
+  await page.getByRole("menuitem", { name: "Download README.md" }).hover();
+  await expect(readme.locator(".row-actions")).toHaveCSS("opacity", "1");
+  await expect(readme).not.toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+});
+
+test("Tab leaves the row menu, closing it, and carries on from where it was opened", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("row", { name: /^README\.md,/ }).focus();
+  await page.keyboard.press("Shift+F10");
+  await expect(page.getByRole("menuitem", { name: "Rename README.md" })).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(page.getByRole("menu")).toHaveCount(0);
+  // Not the next entry, and not the end of the document where the menu is
+  // portalled: the control after the row it was opened from.
+  await expect(page.getByRole("checkbox", { name: "Select README.md" })).toBeFocused();
+});
+
+test("scrolling the listing closes the row menu instead of leaving it behind", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 520 });
+  const files = Array.from({ length: 40 }, (_, index) => ({
+    name: `row-${index}.txt`, path: `/row-${index}.txt`, kind: "file" as const,
+    size: 10, modified: "2026-07-19T12:00:00Z", editable: true,
+  }));
+  await gotoWithBootstrap(page, { files });
+  await page.getByRole("row", { name: /^row-2\.txt,/ }).click({ button: "right" });
+  await expect(page.getByRole("menu")).toBeVisible();
+  // Away from the menu, so the wheel reaches the listing and not the page.
+  await page.mouse.move(100, 420);
+  await page.mouse.wheel(0, 300);
+  await expect(page.getByRole("menu")).toHaveCount(0);
+});
+
+test("a right click on the row's own trigger opens the menu too", async ({ page }) => {
+  await page.goto("/");
+  const readme = page.getByRole("row", { name: /^README\.md,/ });
+  await readme.hover();
+  await page.getByRole("button", { name: "Actions for README.md" }).click({ button: "right" });
+  await expect(page.getByRole("menu")).toBeVisible();
+  await expect(readme).toHaveAttribute("aria-selected", "true");
+});
+
+/**
+ * Two scrollbar dialects exist and exactly one may be active per engine. Blink
+ * reads `::-webkit-scrollbar`, which is what makes its bar 6px and app-coloured;
+ * merely naming `scrollbar-width` there hands the bar back to the platform, which
+ * draws an overlay that only shows on hover. Gecko ignores `::-webkit-scrollbar`
+ * and needs the standard pair, or it draws the desktop's own bar. This pins which
+ * engine gets which. It cannot see the one failure that shipped: the guard was
+ * `not selector(::-webkit-scrollbar)`, which Playwright's Firefox answers false
+ * for and Waterfox 153 answers true for, so this passed while Waterfox kept the
+ * desktop's bar. Scrollbar changes still need a look in the real browser.
+ */
+test("each engine gets exactly one scrollbar dialect", async ({ page, browserName }) => {
+  await page.setViewportSize({ width: 1280, height: 520 });
+  const files = Array.from({ length: 40 }, (_, index) => ({
+    name: `row-${index}.txt`, path: `/row-${index}.txt`, kind: "file" as const,
+    size: 10, modified: "2026-07-19T12:00:00Z", editable: true,
+  }));
+  await gotoWithBootstrap(page, { files });
+  const table = page.locator(".file-table");
+  await expect(table).toBeVisible();
+  const bar = await table.evaluate(element => {
+    const style = getComputedStyle(element);
+    return {
+      scrolls: element.scrollHeight > element.clientHeight,
+      drawnWidth: element.offsetWidth - element.clientWidth,
+      standardWidth: style.scrollbarWidth,
+      standardColor: style.scrollbarColor,
+    };
+  });
+  expect(bar.scrolls).toBe(true);
+  if (browserName === "firefox") {
+    // Not the width: Playwright's Firefox reports `none` for it whatever the
+    // page says, so the colour pair is what shows the standard properties applied.
+    expect(bar.standardColor).not.toBe("auto");
+  } else {
+    expect(bar.standardWidth).toBe("auto");
+    expect(bar.standardColor).toBe("auto");
+    expect(bar.drawnWidth).toBe(6);
+  }
 });
