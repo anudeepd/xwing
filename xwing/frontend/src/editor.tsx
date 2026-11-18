@@ -21,7 +21,7 @@ import { Tooltip } from "./tooltip";
 
 import { formatBytes, prefersReducedMotion } from "./format";
 import { useModalFocus } from "./keyboard";
-import { AUTH_OVERLAY_COPY, AUTH_REDIRECT_EVENT, beginAuthRedirect, consumeHandover, dismissBootCard, markHandover } from "./shared.js";
+import { AUTH_OVERLAY_COPY, AUTH_REDIRECT_EVENT, beginAuthRedirect, consumeHandover, dismissBootCard, markHandover, noteAuthActivity, startAuthIdleTimer } from "./shared.js";
 import { UploadClient, UploadError, UploadState, uploadFile } from "./upload-engine";
 
 interface EditorBootstrap {
@@ -206,19 +206,10 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
     return true;
   }
 
-  useEffect(() => {
-    if (!boot.authIdleTimeout) return;
-    let deadline = Date.now() + boot.authIdleTimeout * 1000;
-    let timer = window.setTimeout(expire, boot.authIdleTimeout * 1000);
-    function expire(): void {
-      if (Date.now() < deadline) { timer = window.setTimeout(expire, deadline - Date.now()); return; }
-      beginAuthRedirect();
-    }
-    function activity(): void { deadline = Date.now() + boot.authIdleTimeout * 1000; window.clearTimeout(timer); timer = window.setTimeout(expire, boot.authIdleTimeout * 1000); }
-    const events = ["pointerdown", "keydown", "touchstart", "wheel"] as const;
-    events.forEach(name => window.addEventListener(name, activity, { passive: true }));
-    return () => { window.clearTimeout(timer); events.forEach(name => window.removeEventListener(name, activity)); };
-  }, []);
+  useEffect(() => startAuthIdleTimer({
+    idleTimeoutSeconds: boot.authIdleTimeout,
+    onExpire: beginAuthRedirect,
+  }), []);
 
   const requireAuthOk = (response: Response): void => {
     if (response.status === 401 || new URL(response.url || location.href, location.href).pathname === "/_auth/login") {
@@ -243,9 +234,11 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
       chunkSize: saveChunkBytes(boot),
       callbacks: {
         onProgress: (committed: number, total: number) => {
+          noteAuthActivity();
           setStatus(`Saving… ${total > 0 ? Math.round((committed / total) * 100) : 0}%`);
         },
         onState: (state: string) => {
+          noteAuthActivity();
           if (state === UploadState.PROCESSING) setStatus("Saving… waiting for server");
         },
       },
@@ -263,6 +256,7 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
     try {
       if (blob.size <= chunkSize) {
         setStatus("Saving…");
+        noteAuthActivity();
         const response = await fetch(boot.path, { method: "PUT", body: content, headers: { "Content-Type": "text/plain; charset=utf-8" } });
         requireAuthOk(response);
         if (!response.ok) throw new Error(`Save failed (${response.status})`);

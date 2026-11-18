@@ -247,6 +247,7 @@ xwing serve --root /data --ldap-config ldapgate.yaml --users-config users.yaml
 ```
 
 Use `ldapgate.yaml` in this repository as the starting template for X-wing.
+`proxy.session_ttl` is the absolute lifetime of the LDAP cookie and token. `proxy.idle_timeout` is the inactivity limit and must not exceed it. The sample uses 24 hours and 4 hours; the longer cap leaves room for large transfers. Restart and sign in again after changing either value so the browser receives the new cookie lifetime.
 See the [LDAPGate README](https://github.com/anudeepd/ldapgate) for config file documentation.
 
 ### Audit log

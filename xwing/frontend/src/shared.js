@@ -1,6 +1,106 @@
 const DEFAULT_AUTH_REDIRECT_DELAY_MS = 1500;
 const DEFAULT_AUTH_IDLE_GRACE_MS = 1000;
-const DEFAULT_AUTH_ACTIVITY_EVENTS = ["pointerdown", "keydown", "touchstart", "wheel"];
+export const AUTH_ACTIVITY_EVENT = "xwing:auth-activity";
+const DEFAULT_AUTH_ACTIVITY_EVENTS = [
+  "pointerdown",
+  "keydown",
+  "touchstart",
+  "wheel",
+  AUTH_ACTIVITY_EVENT,
+];
+
+let lastAuthActivityAt = Number.NEGATIVE_INFINITY;
+
+/**
+ * Mark a user-started transfer as activity without treating background
+ * polling as activity. Progress can arrive many times a second, so the event
+ * is throttled to one per second.
+ */
+export function noteAuthActivity(windowRef = window) {
+  const now = Date.now();
+  if (now - lastAuthActivityAt < 1000) return;
+  lastAuthActivityAt = now;
+  windowRef.dispatchEvent(new Event(AUTH_ACTIVITY_EVENT));
+}
+
+export function resetAuthActivityForTests() {
+  lastAuthActivityAt = Number.NEGATIVE_INFINITY;
+}
+
+/**
+ * Keep the idle window open while a long request is pending. The request is
+ * authenticated, so the server stays active; this keeps the client timer in
+ * step until the response body is read.
+ */
+export function startAuthActivityHeartbeat(windowRef = window, intervalMs = 30_000) {
+  noteAuthActivity(windowRef);
+  const timer = windowRef.setInterval(() => noteAuthActivity(windowRef), intervalMs);
+  return () => windowRef.clearInterval(timer);
+}
+
+/**
+ * One idle timer for every surface. `onExpire` runs once when the deadline
+ * passes with no activity. Activity is user input plus the explicit transfer
+ * signal that uploads and saves emit.
+ */
+export function startAuthIdleTimer({
+  idleTimeoutSeconds,
+  idleGraceMs = DEFAULT_AUTH_IDLE_GRACE_MS,
+  onExpire,
+  windowRef = window,
+  documentRef = document,
+  activityEvents = DEFAULT_AUTH_ACTIVITY_EVENTS,
+}) {
+  if (idleTimeoutSeconds <= 0) return () => {};
+  const timeoutMs = idleTimeoutSeconds * 1000 + idleGraceMs;
+  let timer = null;
+  let deadline = Date.now() + timeoutMs;
+  let expired = false;
+
+  const expire = () => {
+    if (expired) return;
+    expired = true;
+    if (timer !== null) windowRef.clearTimeout(timer);
+    timer = null;
+    onExpire();
+  };
+  const armTimer = () => {
+    if (timer !== null) windowRef.clearTimeout(timer);
+    timer = windowRef.setTimeout(expire, Math.max(0, deadline - Date.now()));
+  };
+  const recordActivity = () => {
+    if (expired) return;
+    const now = Date.now();
+    if (now >= deadline) {
+      expire();
+      return;
+    }
+    deadline = now + timeoutMs;
+    armTimer();
+  };
+  const checkDeadline = () => {
+    if (!expired && Date.now() >= deadline) expire();
+  };
+  for (const eventName of activityEvents) {
+    windowRef.addEventListener(eventName, recordActivity, { passive: true });
+  }
+  for (const eventName of ["focus", "pageshow"]) {
+    windowRef.addEventListener(eventName, checkDeadline, { passive: true });
+  }
+  documentRef.addEventListener("visibilitychange", checkDeadline, { passive: true });
+  armTimer();
+
+  return () => {
+    if (timer !== null) windowRef.clearTimeout(timer);
+    for (const eventName of activityEvents) {
+      windowRef.removeEventListener(eventName, recordActivity);
+    }
+    for (const eventName of ["focus", "pageshow"]) {
+      windowRef.removeEventListener(eventName, checkDeadline);
+    }
+    documentRef.removeEventListener("visibilitychange", checkDeadline);
+  };
+}
 
 /**
  * One copy of the auth overlay's words for every surface, matching the
@@ -143,55 +243,14 @@ export function createAuthSession({
   }
 
   function wireAuthIdleTimer() {
-    if (idleTimeoutSeconds <= 0) return () => {};
-    const timeoutMs = idleTimeoutSeconds * 1000 + idleGraceMs;
-    let timer = null;
-    let deadline = Date.now() + timeoutMs;
-    let expired = false;
-
-    const expire = () => {
-      if (expired) return;
-      expired = true;
-      if (timer !== null) windowRef.clearTimeout(timer);
-      timer = null;
-      redirectToLogin();
-    };
-    const armTimer = () => {
-      if (timer !== null) windowRef.clearTimeout(timer);
-      timer = windowRef.setTimeout(expire, Math.max(0, deadline - Date.now()));
-    };
-    const recordActivity = () => {
-      if (expired) return;
-      const now = Date.now();
-      if (now >= deadline) {
-        expire();
-        return;
-      }
-      deadline = now + timeoutMs;
-      armTimer();
-    };
-    const checkDeadline = () => {
-      if (!expired && Date.now() >= deadline) expire();
-    };
-    for (const eventName of activityEvents) {
-      windowRef.addEventListener(eventName, recordActivity, { passive: true });
-    }
-    for (const eventName of ["focus", "pageshow"]) {
-      windowRef.addEventListener(eventName, checkDeadline, { passive: true });
-    }
-    documentRef.addEventListener("visibilitychange", checkDeadline, { passive: true });
-    armTimer();
-
-    return () => {
-      if (timer !== null) windowRef.clearTimeout(timer);
-      for (const eventName of activityEvents) {
-        windowRef.removeEventListener(eventName, recordActivity);
-      }
-      for (const eventName of ["focus", "pageshow"]) {
-        windowRef.removeEventListener(eventName, checkDeadline);
-      }
-      documentRef.removeEventListener("visibilitychange", checkDeadline);
-    };
+    return startAuthIdleTimer({
+      idleTimeoutSeconds,
+      idleGraceMs,
+      onExpire: redirectToLogin,
+      windowRef,
+      documentRef,
+      activityEvents,
+    });
   }
 
   async function authFetch(input, init) {
