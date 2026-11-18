@@ -4,6 +4,8 @@ import {
   currentAuthRedirectTarget,
   isLoginResponseUrl,
   loginUrlForCurrentPage,
+  resetAuthActivityForTests,
+  startAuthActivityHeartbeat,
 } from "../../xwing/frontend/src/shared.js";
 
 /** A window stand-in that records redirects and timer scheduling. */
@@ -220,6 +222,23 @@ describe("idle timeout", () => {
     vi.advanceTimersByTime(4000);
 
     expect(session.isRedirecting()).toBe(false);
+    vi.useRealTimers();
+  });
+
+  it("keeps the idle window alive while a long request is pending", () => {
+    vi.useFakeTimers();
+    resetAuthActivityForTests();
+    const dispatch = vi.spyOn(window, "dispatchEvent");
+    const stop = startAuthActivityHeartbeat(window, 1000);
+    const started = dispatch.mock.calls.length;
+
+    vi.advanceTimersByTime(3000);
+    const during = dispatch.mock.calls.length;
+    expect(during).toBeGreaterThan(started);
+
+    stop();
+    vi.advanceTimersByTime(3000);
+    expect(dispatch.mock.calls.length).toBe(during);
     vi.useRealTimers();
   });
 });

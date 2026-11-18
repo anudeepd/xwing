@@ -51,7 +51,7 @@ import { renameDestination } from "./rename";
 import { DIRECTORY_MEDIA_TYPE, encodePath, parseBootstrap } from "./types";
 import type { Parallelism, XwingBootstrapV1, XwingFile } from "./types";
 import { collectDroppedEntries } from "./drop-entries";
-import { AUTH_OVERLAY_COPY, AUTH_REDIRECT_EVENT, beginAuthRedirect, consumeHandover, dismissBootCard, markHandover, startAuthIdleTimer } from "./shared.js";
+import { AUTH_OVERLAY_COPY, AUTH_REDIRECT_EVENT, beginAuthRedirect, consumeHandover, dismissBootCard, markHandover, startAuthActivityHeartbeat, startAuthIdleTimer } from "./shared.js";
 import { UploadManager } from "./upload-manager";
 import type { UploadSnapshot } from "./upload-manager";
 import { uploadItemLabel, uploadSummary, uploadSummaryKind } from "./upload-summary";
@@ -666,11 +666,13 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     // The server builds the archive on demand, so a large selection leaves the
     // toolbar waiting for a while; say so instead of looking inert.
     setZipPending(paths.length);
+    const stopHeartbeat = startAuthActivityHeartbeat();
     try {
       const response = await authFetch("/_bulk/zip", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paths, base: directory.path }) });
       if (!response.ok) { addToast(await responseError(response), "error"); return; }
       downloadBlob(await response.blob(), contentDispositionFilename(response.headers.get("content-disposition")) || "xwing-selection.zip");
     } finally {
+      stopHeartbeat();
       setZipPending(0);
     }
   };

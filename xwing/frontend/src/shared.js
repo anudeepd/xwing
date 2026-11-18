@@ -9,7 +9,7 @@ const DEFAULT_AUTH_ACTIVITY_EVENTS = [
   AUTH_ACTIVITY_EVENT,
 ];
 
-let lastAuthActivityAt = 0;
+let lastAuthActivityAt = Number.NEGATIVE_INFINITY;
 
 /**
  * Mark a user-started transfer as activity without treating background
@@ -24,7 +24,18 @@ export function noteAuthActivity(windowRef = window) {
 }
 
 export function resetAuthActivityForTests() {
-  lastAuthActivityAt = 0;
+  lastAuthActivityAt = Number.NEGATIVE_INFINITY;
+}
+
+/**
+ * Keep the idle window open while a long request is pending. The request is
+ * authenticated, so the server stays active; this keeps the client timer in
+ * step until the response body is read.
+ */
+export function startAuthActivityHeartbeat(windowRef = window, intervalMs = 30_000) {
+  noteAuthActivity(windowRef);
+  const timer = windowRef.setInterval(() => noteAuthActivity(windowRef), intervalMs);
+  return () => windowRef.clearInterval(timer);
 }
 
 /**
