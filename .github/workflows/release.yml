@@ -270,7 +270,7 @@ jobs:
   github-release:
     name: Create GitHub Release
     if: ${{ inputs.publish }}
-    needs: [build-dist, prepare-release, release-version]
+    needs: [build-dist, prepare-release, release-version, pypi-publish]
     runs-on: ubuntu-latest
     permissions:
       contents: write
