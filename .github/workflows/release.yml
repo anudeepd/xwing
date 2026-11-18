@@ -1,0 +1,309 @@
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Create a GitHub Release and publish to PyPI after checks pass
+        type: boolean
+        required: true
+        default: false
+      bump:
+        description: Version increment to apply when publishing
+        type: choice
+        required: true
+        default: patch
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  backend:
+    name: backend (python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install project and test dependencies
+        run: uv sync --frozen --extra dev --extra ldap
+      - name: Check lockfile
+        run: uv lock --check
+      - name: Tests
+        run: uv run --frozen pytest -q
+
+  frontend:
+    name: frontend tests, typecheck, build, and bundle freshness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: scripts/package-lock.json
+      - name: Install test and build tooling
+        run: npm ci --prefix scripts
+      - name: Install frontend dependencies
+        run: npm install --prefix xwing/frontend
+      - name: Lint
+        run: npm --prefix scripts run lint
+      - name: Unit tests
+        run: npm --prefix scripts test
+      - name: Type-check
+        run: npm --prefix scripts run typecheck
+      - name: Build the bundle
+        run: npm --prefix scripts run build
+      - name: The committed bundle matches the source
+        run: |
+          if ! git diff --quiet -- xwing/static/assets; then
+            echo "::error::xwing/static/assets is stale; run 'npm --prefix scripts run build' and commit the result"
+            git --no-pager diff --stat -- xwing/static/assets
+            exit 1
+          fi
+
+  e2e:
+    name: browser end-to-end tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Install X-wing for the Playwright web servers
+        run: uv sync --frozen --extra dev --extra ldap
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: scripts/package-lock.json
+      - name: Install Playwright dependencies
+        run: npm ci --prefix scripts
+      - name: Install Chromium and Firefox
+        working-directory: scripts
+        run: npx playwright install --with-deps chromium firefox
+      - name: Run the Playwright suite
+        run: npm --prefix scripts run test:e2e
+
+  release-version:
+    name: Calculate and validate release version
+    needs: [backend, frontend, e2e]
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Choose release version
+        id: version
+        env:
+          PUBLISH: ${{ inputs.publish }}
+          BUMP: ${{ inputs.bump }}
+        run: |
+          set -euo pipefail
+          if [[ "$PUBLISH" == "true" && ( "$GITHUB_REF_TYPE" != "branch" || "$GITHUB_REF_NAME" != "main" ) ]]; then
+            echo "::error::Publishing must be dispatched from the main branch."
+            exit 1
+          fi
+          if [[ "$PUBLISH" == "true" ]]; then
+            version="$(python3 scripts/release_version.py next --bump "$BUMP")"
+          else
+            version="$(python3 scripts/release_version.py current)"
+          fi
+          tag="v$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [[ "$PUBLISH" == "true" ]]; then
+            set +e
+            git ls-remote --exit-code --refs origin "refs/tags/$tag" >/dev/null
+            status=$?
+            set -e
+            if [[ "$status" -eq 0 ]]; then
+              echo "::error::Release tag $tag already exists."
+              exit 1
+            elif [[ "$status" -ne 2 ]]; then
+              exit "$status"
+            fi
+          fi
+          echo "Selected X-wing $version ($tag)."
+
+  build-dist:
+    name: Build, validate, and smoke-test distributions
+    needs: [backend, frontend, e2e, release-version]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Apply selected release version
+        if: ${{ inputs.publish }}
+        env:
+          RELEASE_VERSION: ${{ needs.release-version.outputs.version }}
+        run: |
+          python3 scripts/release_version.py set "$RELEASE_VERSION"
+          uv lock
+      - name: Verify release manifests and lockfile
+        run: |
+          uv lock --check
+          python3 scripts/release_version.py current
+      - name: Build wheel and source distribution
+        run: uv build
+      - name: Validate distribution names and versions
+        env:
+          VERSION: ${{ needs.release-version.outputs.version }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import tarfile
+          import tomllib
+          import zipfile
+          from email import message_from_bytes
+          from pathlib import Path
+
+          version = os.environ["VERSION"]
+          wheels = list(Path("dist").glob("*.whl"))
+          sdists = list(Path("dist").glob("*.tar.gz"))
+          assert len(wheels) == 1, wheels
+          assert len(sdists) == 1, sdists
+          assert wheels[0].name == f"xwing-{version}-py3-none-any.whl", wheels[0].name
+          assert sdists[0].name == f"xwing-{version}.tar.gz", sdists[0].name
+          with zipfile.ZipFile(wheels[0]) as archive:
+              metadata_name = next(name for name in archive.namelist() if name.endswith(".dist-info/METADATA"))
+              metadata = message_from_bytes(archive.read(metadata_name))
+          assert metadata["Name"] == "xwing" and metadata["Version"] == version
+          with tarfile.open(sdists[0], "r:gz") as archive:
+              pyproject = next(name for name in archive.getnames() if name.endswith("/pyproject.toml"))
+              stream = archive.extractfile(pyproject)
+              assert stream is not None
+              project = tomllib.loads(stream.read().decode())["project"]
+          assert project["name"] == "xwing" and project["version"] == version
+          print(f"Validated {wheels[0].name} and {sdists[0].name}")
+          PY
+      - name: Install the wheel into a clean environment and smoke-test it
+        env:
+          VERSION: ${{ needs.release-version.outputs.version }}
+        run: |
+          uv venv --python 3.12 /tmp/xwing-smoke
+          uv pip install --python /tmp/xwing-smoke/bin/python dist/*.whl
+          /tmp/xwing-smoke/bin/xwing --help
+          /tmp/xwing-smoke/bin/python - <<'PY'
+          import os
+          from importlib.resources import files
+
+          import xwing
+
+          assert xwing.__version__ == os.environ["VERSION"]
+          assert (files("xwing") / "templates" / "index.html").is_file()
+          assert (files("xwing") / "static" / "assets").is_dir()
+          print("Installed wheel smoke test passed")
+          PY
+      - uses: actions/upload-artifact@v7
+        with:
+          name: xwing-dist
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 30
+
+  prepare-release:
+    name: Commit synchronized release versions to main
+    if: ${{ inputs.publish }}
+    needs: [build-dist, release-version]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      commit: ${{ steps.commit.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Synchronize version files and commit to main
+        id: commit
+        env:
+          RELEASE_VERSION: ${{ needs.release-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF_TYPE" != "branch" || "$GITHUB_REF_NAME" != "main" ]]; then
+            echo "::error::Refusing to commit release versions outside main."
+            exit 1
+          fi
+          python3 scripts/release_version.py set "$RELEASE_VERSION"
+          uv lock
+          python3 scripts/release_version.py current
+          uv lock --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add pyproject.toml uv.lock xwing/__init__.py scripts/package.json scripts/package-lock.json
+          git commit -m "chore(release): xwing $RELEASE_VERSION"
+          git push origin HEAD:refs/heads/main
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  github-release:
+    name: Create GitHub Release
+    if: ${{ inputs.publish }}
+    needs: [build-dist, prepare-release, release-version]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: xwing-dist
+          path: dist
+      - name: Create release and attach the tested distributions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.release-version.outputs.tag }}
+          RELEASE_COMMIT: ${{ needs.prepare-release.outputs.commit }}
+        run: >-
+          gh release create "$RELEASE_TAG" dist/*
+          --repo "$GITHUB_REPOSITORY"
+          --target "$RELEASE_COMMIT"
+          --title "X-wing $RELEASE_TAG"
+          --generate-notes
+
+  pypi-publish:
+    name: Publish to PyPI with trusted publishing
+    if: ${{ inputs.publish }}
+    needs: [build-dist, prepare-release, release-version]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/xwing/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: xwing-dist
+          path: dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
