@@ -198,4 +198,28 @@ describe("idle timeout", () => {
     expect(session.isRedirecting()).toBe(false);
     vi.useRealTimers();
   });
+
+  it("resets the idle window when a transfer reports activity", () => {
+    vi.useFakeTimers();
+    const windowRef = fakeWindow();
+    windowRef.setTimeout = ((callback: () => void, delay: number) =>
+      globalThis.setTimeout(callback, delay)) as unknown as typeof windowRef.setTimeout;
+    const session = createAuthSession({
+      windowRef,
+      documentRef: overlayDocument(),
+      idleTimeoutSeconds: 5,
+      idleGraceMs: 0,
+    });
+    session.wireAuthIdleTimer();
+
+    const activity = windowRef.addEventListener.mock.calls.find(
+      call => call[0] === "xwing:auth-activity",
+    )?.[1] as () => void;
+    vi.advanceTimersByTime(4000);
+    activity();
+    vi.advanceTimersByTime(4000);
+
+    expect(session.isRedirecting()).toBe(false);
+    vi.useRealTimers();
+  });
 });

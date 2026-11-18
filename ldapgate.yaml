@@ -13,8 +13,10 @@ ldap:
 proxy:
     backend_url: http://localhost:8989
     secret_key: replace-with-at-least-32-random-characters
-    # Optional browser inactivity timeout in seconds. 0 disables idle expiry.
-    idle_timeout: 0
+    # Absolute LDAP session lifetime in seconds. Must be at least idle_timeout.
+    session_ttl: 86400
+    # Browser inactivity timeout in seconds. 4 hours. 0 disables idle expiry.
+    idle_timeout: 14400
     app_name: X-wing
     secure_cookies: true
     # Largest request the gate lets through. Uploads arrive in --max-chunk-mb

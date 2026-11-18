@@ -1,5 +1,6 @@
 import io
 import json
+import pytest
 import re
 import sqlite3
 import sys
@@ -586,6 +587,17 @@ class TestAuth:
 
         assert directory.status_code == 200
         assert 'data-auth-idle-timeout="900"' in directory.text
+
+    def test_shipped_ldap_config_keeps_idle_timeout_reachable(self):
+        """The sample must not set an idle timeout the cookie lifetime overrides."""
+        pytest.importorskip("ldapgate")
+
+        from ldapgate.config import load_config
+
+        config = load_config(str(Path(__file__).parents[1] / "ldapgate.yaml"))
+
+        assert config.proxy.idle_timeout > 0
+        assert config.proxy.session_ttl >= config.proxy.idle_timeout
 
     def test_pages_use_bundled_frontend_assets(self, client, root, asset_url):
         (root / "notes.txt").write_text("hello")

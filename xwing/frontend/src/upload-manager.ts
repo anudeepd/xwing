@@ -1,5 +1,6 @@
 import type { Parallelism } from "./types";
 import { SpeedTracker, UploadClient, UploadState, uploadFile } from "./upload-engine";
+import { noteAuthActivity } from "./shared.js";
 
 export type UploadStatus =
   | "queued"
@@ -134,6 +135,7 @@ export class UploadManager {
         chunkSize,
       });
     }
+    noteAuthActivity();
     this.flush(true);
     void this.prepareQueued();
   }
@@ -216,8 +218,12 @@ export class UploadManager {
         concurrency: this.concurrencyForFile(),
         signal: item.controller.signal,
         callbacks: {
-          onState: (state: string) => this.applyState(item, state),
+          onState: (state: string) => {
+            noteAuthActivity();
+            this.applyState(item, state);
+          },
           onProgress: (committed: number) => {
+            noteAuthActivity();
             item.uploaded = committed;
             item.tracker.sample(committed);
             item.speed = item.tracker.speed();
@@ -227,6 +233,7 @@ export class UploadManager {
             item.session = session;
           },
           onRetry: () => {
+            noteAuthActivity();
             item.status = "retrying";
             this.flush(true);
           },
@@ -274,6 +281,7 @@ export class UploadManager {
       if (!response.ok && response.status !== 405) {
         throw new Error(`Could not create folder (${response.status})`);
       }
+      noteAuthActivity();
     }
   }
 

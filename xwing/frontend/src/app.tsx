@@ -51,7 +51,7 @@ import { renameDestination } from "./rename";
 import { DIRECTORY_MEDIA_TYPE, encodePath, parseBootstrap } from "./types";
 import type { Parallelism, XwingBootstrapV1, XwingFile } from "./types";
 import { collectDroppedEntries } from "./drop-entries";
-import { AUTH_OVERLAY_COPY, AUTH_REDIRECT_EVENT, beginAuthRedirect, consumeHandover, dismissBootCard, markHandover } from "./shared.js";
+import { AUTH_OVERLAY_COPY, AUTH_REDIRECT_EVENT, beginAuthRedirect, consumeHandover, dismissBootCard, markHandover, startAuthIdleTimer } from "./shared.js";
 import { UploadManager } from "./upload-manager";
 import type { UploadSnapshot } from "./upload-manager";
 import { uploadItemLabel, uploadSummary, uploadSummaryKind } from "./upload-summary";
@@ -449,17 +449,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
 
   useEffect(() => {
     const seconds = Number.parseInt(document.body.dataset.authIdleTimeout || "0", 10);
-    if (!seconds) return;
-    let deadline = Date.now() + seconds * 1000;
-    let timer = window.setTimeout(expire, seconds * 1000);
-    function expire(): void {
-      if (Date.now() < deadline) { timer = window.setTimeout(expire, deadline - Date.now()); return; }
-      beginAuthRedirect();
-    }
-    function activity(): void { deadline = Date.now() + seconds * 1000; window.clearTimeout(timer); timer = window.setTimeout(expire, seconds * 1000); }
-    const events = ["pointerdown", "keydown", "touchstart", "wheel"] as const;
-    events.forEach(name => window.addEventListener(name, activity, { passive: true }));
-    return () => { window.clearTimeout(timer); events.forEach(name => window.removeEventListener(name, activity)); };
+    return startAuthIdleTimer({ idleTimeoutSeconds: seconds, onExpire: beginAuthRedirect });
   }, []);
 
   // Filtering runs over the already-sorted list, so a filter never changes the

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { UploadManager } from "../../xwing/frontend/src/upload-manager";
+import { AUTH_ACTIVITY_EVENT, resetAuthActivityForTests } from "../../xwing/frontend/src/shared.js";
 
 /**
  * The manager owns queueing, item state and the concurrency budget. Transfer
@@ -93,6 +94,7 @@ beforeEach(() => {
     engine.calls.push({ options, resolve: call.resolve, reject: call.reject });
     return call.promise;
   });
+  resetAuthActivityForTests();
 });
 
 afterEach(() => {
@@ -126,6 +128,20 @@ describe("UploadManager scheduling", () => {
       }),
     );
     expect(manager.hasActive()).toBe(false);
+  });
+
+  it("reports upload progress as auth activity", async () => {
+    const dispatch = vi.spyOn(window, "dispatchEvent");
+    const { manager } = managerWith();
+    manager.add([new File(["hello"], "hello.txt")], "/docs", 1024);
+    const call = await pendingCall(0);
+
+    resetAuthActivityForTests();
+    call.options.callbacks.onProgress(3, 5);
+
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ type: AUTH_ACTIVITY_EVENT }),
+    );
   });
 
   it("reports a DLP wait as a processing phase rather than a stall", async () => {
