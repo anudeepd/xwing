@@ -2,6 +2,7 @@
 internals, listing resilience, symlinks, zip, headers, file modes, ...)."""
 
 import asyncio
+import errno
 import io
 import json
 import os
@@ -283,11 +284,21 @@ class TestInternalPathsHidden:
 # ── B04: listing resilience ─────────────────────────────────────────────────
 
 
+def _write_non_utf8(path: bytes) -> None:
+    """Write the file, or skip when the filesystem cannot represent the name."""
+    try:
+        with open(path, "wb") as handle:
+            handle.write(b"latin1")
+    except OSError as exc:
+        if exc.errno in {errno.EILSEQ, errno.EINVAL, errno.ENOTSUP}:
+            pytest.skip(f"filesystem rejects a non-UTF-8 filename: {exc}")
+        raise
+
+
 def _make_bad_entries(root):
     (root / "good.txt").write_text("ok")
     (root / "broken").symlink_to(root / "nowhere")
-    with open(os.fsencode(root) + b"/caf\xe9.txt", "wb") as handle:
-        handle.write(b"latin1")
+    _write_non_utf8(os.fsencode(root) + b"/caf\xe9.txt")
 
 
 class TestListingResilience:
@@ -315,8 +326,7 @@ class TestListingResilience:
         _make_bad_entries(root)
         (root / "sub").mkdir()
         (root / "sub" / "good.txt").write_text("ok")
-        with open(os.fsencode(root) + b"/sub/caf\xe9.txt", "wb") as handle:
-            handle.write(b"latin1")
+        _write_non_utf8(os.fsencode(root) + b"/sub/caf\xe9.txt")
         r = client.get("/sub/?zip")
         assert r.status_code == 200
         assert zipfile.ZipFile(io.BytesIO(r.content)).namelist() == ["good.txt"]
