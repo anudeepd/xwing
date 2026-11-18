@@ -31,7 +31,8 @@ export const UploadState = {
   ERROR: 'error',
 };
 
-export const DEFAULT_MIN_CHUNK_BYTES = 1 * 1024 * 1024;
+// Small enough to retry files rejected by common reverse-proxy body limits.
+export const DEFAULT_MIN_CHUNK_BYTES = 64 * 1024;
 // Matches the server's own ceiling: a window is one request, so the client is
 // allowed to use the largest window the engine will advertise.
 export const DEFAULT_MAX_CHUNK_BYTES = 64 * 1024 * 1024;
@@ -571,7 +572,7 @@ export async function uploadFile({
   setState(UploadState.PREPARING);
   if (!info) await initSession();
   let ranges = Array.isArray(info.ranges) ? info.ranges : [];
-  const windowSize = clampChunkSize(
+  let windowSize = clampChunkSize(
     chunkSize || info.chunkSize || DEFAULT_CHUNK_BYTES,
     minChunkBytes,
     maxChunkBytes,
@@ -582,6 +583,16 @@ export async function uploadFile({
   let queue = planWindows(ranges, size, windowSize);
   let nextIndex = 0;
   const inFlight = new Map();
+
+  const replanPendingWindows = startIndex => {
+    const pending = [];
+    for (const [start, end] of queue.slice(startIndex)) {
+      for (let offset = start; offset < end; offset += windowSize) {
+        pending.push([offset, Math.min(end, offset + windowSize)]);
+      }
+    }
+    queue.splice(startIndex, queue.length - startIndex, ...pending);
+  };
 
   const reportInFlight = () => {
     let total = 0;
@@ -646,6 +657,29 @@ export async function uploadFile({
             : new UploadError(error?.message || 'Upload failed', { retryable: true });
         if (uploadError.code === 'SESSION_LOST' || uploadError.code === 'ABORTED') {
           throw uploadError;
+        }
+        if (uploadError.status === 413) {
+          const requestBytes = windowEnd - windowStart;
+          if (requestBytes <= minChunkBytes) throw uploadError;
+          const previousEnd = windowEnd;
+          const smallerWindow = Math.max(
+            minChunkBytes,
+            Math.min(windowSize, Math.floor(requestBytes / 2)),
+          );
+          if (smallerWindow >= requestBytes) throw uploadError;
+          windowSize = smallerWindow;
+          windowEnd = Math.min(previousEnd, windowStart + windowSize);
+          queue.splice(nextIndex, 0, [windowEnd, previousEnd]);
+          replanPendingWindows(nextIndex + 1);
+          tries = 0;
+          publishSession();
+          callbacks.onRetry?.({
+            attempt: 1,
+            code: uploadError.code,
+            message: uploadError.message,
+          });
+          setState(UploadState.UPLOADING);
+          continue;
         }
         tries += 1;
         if (!uploadError.retryable || tries >= maxAttempts) throw uploadError;
