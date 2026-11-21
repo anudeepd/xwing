@@ -112,6 +112,45 @@ test("the date filter keeps its calendar button at the edge of the field", async
   await expect(page.getByLabel("Show")).toHaveCSS("padding-right", "32px");
 });
 
+// The console's only scroll surface is `.admin-shell`. The visually hidden
+// status line at the end of its content is absolutely positioned; while the
+// shell was static, that line's containing block was the viewport, so long
+// content made the document scroll too. The user got a second scrollbar, and
+// scrolling it walked the 100dvh shell up off screen, leaving black below it.
+test("long activity content scrolls the console, not the document", async ({ page }) => {
+  const events = Array.from({ length: 200 }, (_, index) => ({
+    occurred_at: new Date(Date.UTC(2026, 7, 1, 12, 0, 0) - index * 60_000).toISOString(),
+    username: "alice",
+    method: "move",
+    path: `/fixtures/file-${index}.txt`,
+    details: null,
+    status_code: 200,
+    duration_ms: 1,
+  }));
+  await page.route("**/api/admin/activity*", route => route.fulfill({
+    json: {
+      events,
+      summary: { event_count: events.length, active_users: 1, by_user: [{ username: "alice", event_count: events.length }] },
+    },
+  }));
+  await page.goto("/admin?tab=activity");
+  await expect(page.locator(".activity-action")).toHaveCount(events.length);
+
+  const scroll = await page.evaluate(() => {
+    const shell = document.querySelector<HTMLElement>(".admin-shell")!;
+    const documentScroller = document.scrollingElement!;
+    window.scrollTo(0, 500);
+    return {
+      documentOverflow: documentScroller.scrollHeight - documentScroller.clientHeight,
+      windowScrollY: window.scrollY,
+      shellOverflow: shell.scrollHeight - shell.clientHeight,
+    };
+  });
+  expect(scroll.documentOverflow).toBe(0);
+  expect(scroll.windowScrollY).toBe(0);
+  expect(scroll.shellOverflow).toBeGreaterThan(0);
+});
+
 // The account wrapper was not positioned, so its menu was pinned to the viewport
 // edge and sat on top of the Sign out button instead of under its own trigger.
 test("the account menu opens under its trigger and clear of Sign out", async ({ page }) => {
