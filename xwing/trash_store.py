@@ -107,8 +107,6 @@ def save_transactions(
                 rel_original = "/" + original.relative_to(root).as_posix()
             except ValueError:
                 continue
-            if trash.name != trash.as_posix().split("/")[-1]:
-                continue
             items.append(
                 {
                     "original": rel_original,

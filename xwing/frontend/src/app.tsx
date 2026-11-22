@@ -1175,7 +1175,7 @@ function FileRow({ file, index, selected, loading, arriving, tabStop, onFocusRow
       {menuMounted && createPortal(
         <AnimatePresence onExitComplete={() => setMenuMounted(false)}>
           {actionsOpen && <m.div id="row-actions-menu" ref={actionsMenu} role="menu" aria-label={`Actions for ${file.name}`} className={cn(POPOVER_CHROME, "row-actions-menu fixed top-0 left-0 min-w-[180px]", menuBox?.above ? "origin-bottom-left" : "origin-top-left")}
-            style={{ left: menuBox?.left ?? 0, top: menuBox?.top ?? 0 }}
+            style={{ left: menuBox?.left ?? -9999, top: menuBox?.top ?? -9999 }}
             initial={reduced ? false : { opacity: 0, y: 10, scale: 0.97 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={reduced ? { opacity: 0 } : { opacity: 0, y: 4, scale: 0.98, transition: { duration: presenceDuration(reduced, 0.12), ease: EASE_OUT } }}
@@ -1338,13 +1338,23 @@ async function responseError(response: Response): Promise<string> {
 function downloadBlob(blob: Blob, filename: string): void { const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = filename; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
 function contentDispositionFilename(header: string | null): string | null { const match = header?.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i); return match?.[1] ? decodeURIComponent(match[1]) : null; }
 
+declare global {
+  interface Window {
+    /** The live file-browser root, so tests can unmount the tree and exercise cleanup. */
+    __xwingAppRoot?: ReturnType<typeof createRoot>;
+  }
+}
+
 try {
-  const root = document.getElementById("xwing-root");
-  if (!root) throw new Error("X-wing root is missing");
+  const rootElement = document.getElementById("xwing-root");
+  if (!rootElement) throw new Error("X-wing root is missing");
   // `domMax`, not `domAnimation`: the toast stack and the upload dock use `layout`
   // so their siblings glide when one leaves. Without the layout feature that prop
   // is silently ignored and the neighbours jump a whole toast height instead.
-  createRoot(root).render(
+  window.__xwingAppRoot?.unmount();
+  const root = createRoot(rootElement);
+  window.__xwingAppRoot = root;
+  root.render(
     <LazyMotion features={domMax} strict>
       <MotionConfig reducedMotion="user">
         <App initial={readBootstrap()}/>

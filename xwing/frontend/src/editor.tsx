@@ -352,12 +352,24 @@ function detectLanguage(cm: CodeMirrorApi, extension: string): unknown[] {
   try { return [factory()]; } catch { return []; }
 }
 
+declare global {
+  interface Window {
+    /** The live editor root, so tests can unmount the tree and exercise cleanup. */
+    __xwingEditorRoot?: ReturnType<typeof createRoot>;
+  }
+}
+
 const node = document.getElementById("xwing-editor-bootstrap");
-const root = document.getElementById("xwing-editor-root");
-if (node?.textContent && root) createRoot(root).render(
-  <LazyMotion features={domAnimation} strict>
-    <MotionConfig reducedMotion="user">
-      <EditorApp boot={JSON.parse(node.textContent) as EditorBootstrap}/>
-    </MotionConfig>
-  </LazyMotion>,
-);
+const rootElement = document.getElementById("xwing-editor-root");
+if (node?.textContent && rootElement) {
+  window.__xwingEditorRoot?.unmount();
+  const root = createRoot(rootElement);
+  window.__xwingEditorRoot = root;
+  root.render(
+    <LazyMotion features={domAnimation} strict>
+      <MotionConfig reducedMotion="user">
+        <EditorApp boot={JSON.parse(node.textContent) as EditorBootstrap}/>
+      </MotionConfig>
+    </LazyMotion>,
+  );
+}

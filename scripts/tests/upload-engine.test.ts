@@ -84,6 +84,18 @@ class FakeXHR {
     this.dispatch("load");
   }
 
+  uploadError(): void {
+    this.dispatchUpload("error", { loaded: 0, total: 0 });
+  }
+
+  networkError(): void {
+    this.dispatch("error");
+  }
+
+  timeout(): void {
+    this.dispatch("timeout");
+  }
+
   private dispatch(type: string, event?: unknown): void {
     for (const handler of this.listeners.get(type) ?? []) handler(event);
   }
@@ -228,6 +240,50 @@ describe("UploadClient", () => {
     xhr.finish(200, { ranges: [[7, 8]] });
     await put;
   });
+
+  it("surfaces a JSON and a non-JSON init rejection", async () => {
+    const jsonFetch = vi.fn(async () => ({
+      ok: false,
+      status: 500,
+      json: async () => ({ detail: "init failed" }),
+    }));
+    await expect(new UploadClient({ fetchImpl: jsonFetch as unknown as typeof fetch }).initWithRetry({
+      filename: "a",
+      size: 1,
+      dir: "/",
+    })).rejects.toMatchObject({ status: 500, message: "init failed", retryable: true });
+
+    const textFetch = vi.fn(async () => ({
+      ok: false,
+      status: 418,
+      json: async () => { throw new Error("not json"); },
+    }));
+    await expect(new UploadClient({ fetchImpl: textFetch as unknown as typeof fetch }).initWithRetry({
+      filename: "a",
+      size: 1,
+      dir: "/",
+    })).rejects.toMatchObject({ status: 418, message: "Upload failed (418)" });
+  });
+
+  it("swallows a failed best-effort cancel", async () => {
+    const fetchImpl = vi.fn(async () => { throw new Error("offline"); });
+    await expect(new UploadClient({ fetchImpl: fetchImpl as unknown as typeof fetch }).cancel("abc"))
+      .resolves.toBeUndefined();
+  });
+
+  it("rejects immediately when the caller's signal is already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(client().put("abc", 0, blobOf(1), { signal: controller.signal }))
+      .rejects.toMatchObject({ code: "ABORTED" });
+    expect(FakeXHR.all[0]!.aborted).toBe(true);
+  });
+
+  it("rejects a put when its upload stream errors", async () => {
+    const put = client().put("abc", 0, blobOf(1));
+    FakeXHR.all[0]!.uploadError();
+    await expect(put).rejects.toMatchObject({ code: "NETWORK" });
+  });
 });
 
 describe("uploadFile", () => {
@@ -242,6 +298,41 @@ describe("uploadFile", () => {
 
     FakeXHR.all[1]!.finish(200, { ranges: [[0, 8]], received: 4 });
     await expect(promise).resolves.toMatchObject({ ok: true, bytes: 8 });
+  });
+
+  it("derives a range from received bytes when the server omits ranges", async () => {
+    const fake = {
+      put: vi.fn(async () => ({ received: 8 })),
+      complete: vi.fn(async () => ({ path: "file.bin" })),
+      status: vi.fn(async () => ({ ranges: [[0, 8]] })),
+    };
+    await expect(uploadFile({
+      client: fake as unknown as UploadClient,
+      file: blobOf(8),
+      destDir: "/",
+      session: { uploadId: "s", chunkSize: 8, concurrency: 1, ranges: [], size: 8 },
+    })).resolves.toMatchObject({ ok: true, path: "file.bin" });
+  });
+
+  it("reports both uploading and processing phases", async () => {
+    const states: string[] = [];
+    const fake = {
+      put: vi.fn(async (_id, _offset, _blob, handlers) => {
+        handlers.onPhase(UploadState.UPLOADING);
+        handlers.onPhase(UploadState.PROCESSING);
+        return { ranges: [[0, 8]] };
+      }),
+      complete: vi.fn(async () => ({ path: "file.bin" })),
+      status: vi.fn(async () => ({ ranges: [[0, 8]] })),
+    };
+    await uploadFile({
+      client: fake as unknown as UploadClient,
+      file: blobOf(8),
+      destDir: "/",
+      session: { uploadId: "s", chunkSize: 8, concurrency: 1, ranges: [], size: 8 },
+      callbacks: { onState: (state: string) => states.push(state) },
+    });
+    expect(states).toEqual(expect.arrayContaining([UploadState.UPLOADING, UploadState.PROCESSING]));
   });
 
   it("shrinks a rejected 1 MB upload below the proxy body limit", async () => {
@@ -437,6 +528,143 @@ describe("uploadFile", () => {
     expect(FakeXHR.all[0]!.aborted).toBe(true);
   });
 
+  it("retries an upload connection error", async () => {
+    const { promise } = await startUpload({
+      file: blobOf(4),
+      session: { uploadId: "session", chunkSize: 4, concurrency: 1, ranges: [], size: 4 },
+      backoffMs: [1],
+    });
+    await vi.waitFor(() => expect(FakeXHR.all).toHaveLength(1));
+    FakeXHR.all[0]!.uploadError();
+    await vi.waitFor(() => expect(FakeXHR.all).toHaveLength(2));
+    FakeXHR.all[1]!.finish(200, { ranges: [[0, 4]] });
+    await expect(promise).resolves.toMatchObject({ ok: true });
+  });
+
+  it("retries an XHR network error", async () => {
+    const { promise } = await startUpload({
+      file: blobOf(4),
+      session: { uploadId: "session", chunkSize: 4, concurrency: 1, ranges: [], size: 4 },
+      backoffMs: [1],
+    });
+    await vi.waitFor(() => expect(FakeXHR.all).toHaveLength(1));
+    FakeXHR.all[0]!.networkError();
+    await vi.waitFor(() => expect(FakeXHR.all).toHaveLength(2));
+    FakeXHR.all[1]!.finish(200, { ranges: [[0, 4]] });
+    await expect(promise).resolves.toMatchObject({ ok: true });
+  });
+
+  it("retries a browser timeout", async () => {
+    const { promise } = await startUpload({
+      file: blobOf(4),
+      session: { uploadId: "session", chunkSize: 4, concurrency: 1, ranges: [], size: 4 },
+      backoffMs: [1],
+    });
+    await vi.waitFor(() => expect(FakeXHR.all).toHaveLength(1));
+    FakeXHR.all[0]!.timeout();
+    await vi.waitFor(() => expect(FakeXHR.all).toHaveLength(2));
+    FakeXHR.all[1]!.finish(200, { ranges: [[0, 4]] });
+    await expect(promise).resolves.toMatchObject({ ok: true });
+  });
+
+  it("retries a missing final response", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 429,
+        json: async () => ({ detail: "busy" }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ path: "file.bin" }),
+      });
+    await expect(uploadFile({
+      client: new UploadClient({ fetchImpl: fetchImpl as unknown as typeof fetch }),
+      file: blobOf(8),
+      destDir: "/",
+      session: { uploadId: "s", chunkSize: 8, concurrency: 1, ranges: [[0, 8]], size: 8 },
+      backoffMs: [1],
+    })).resolves.toMatchObject({ ok: true, path: "file.bin" });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("replans after a proxy rejects a window", async () => {
+    const { promise } = await startUpload({
+      file: blobOf(12000),
+      chunkSize: 4000,
+      maxChunkBytes: 4000,
+      minChunkBytes: 100,
+      concurrency: 1,
+      session: { uploadId: "s", chunkSize: 4000, concurrency: 1, ranges: [], size: 12000 },
+    });
+    await vi.waitFor(() => expect(FakeXHR.all).toHaveLength(1));
+    FakeXHR.all[0]!.finish(413);
+    await vi.waitFor(() => expect(FakeXHR.all).toHaveLength(2));
+    expect(FakeXHR.all[1]!.body!.size).toBe(2000);
+
+    for (let index = 1; index < 9; index += 1) {
+      const xhr = FakeXHR.all[index];
+      if (!xhr) break;
+      const start = Number(new URL(xhr.url, "http://xwing.test").searchParams.get("offset"));
+      xhr.finish(200, { ranges: [[0, start + xhr.body!.size]] });
+      await flush();
+    }
+    FakeXHR.all.at(-1)!.finish(200, { ranges: [[0, 12000]] });
+    await expect(promise).resolves.toMatchObject({ ok: true });
+  });
+
+  it("cancels a backoff before it starts", async () => {
+    const controller = new AbortController();
+    const { promise } = await startUpload({ signal: controller.signal, backoffMs: [1000] });
+    await vi.waitFor(() => expect(FakeXHR.all).toHaveLength(1));
+    controller.abort();
+    FakeXHR.all[0]!.finish(500);
+    await expect(promise).rejects.toMatchObject({ code: "ABORTED" });
+  });
+
+  it("aborts a retry when the signal is closed by the retry callback", async () => {
+    const controller = new AbortController();
+    const { promise } = await startUpload({
+      file: blobOf(4),
+      session: { uploadId: "session", chunkSize: 4, concurrency: 1, ranges: [], size: 4 },
+      signal: controller.signal,
+      backoffMs: [1000],
+      callbacks: { onRetry: () => controller.abort() },
+    });
+    await vi.waitFor(() => expect(FakeXHR.all).toHaveLength(1));
+    FakeXHR.all[0]!.finish(500);
+    await expect(promise).rejects.toMatchObject({ code: "ABORTED" });
+  });
+
+  it("cancels a backoff while it is waiting", async () => {
+    const controller = new AbortController();
+    const { promise } = await startUpload({ signal: controller.signal, backoffMs: [1000] });
+    await vi.waitFor(() => expect(FakeXHR.all).toHaveLength(1));
+    FakeXHR.all[0]!.finish(500);
+    await Promise.resolve();
+    controller.abort();
+    await expect(promise).rejects.toMatchObject({ code: "ABORTED" });
+  });
+
+  it("reports incomplete passes and stops when the server never accepts every byte", async () => {
+    const retries: string[] = [];
+    const fake = {
+      put: vi.fn(async () => ({ ranges: [] })),
+      complete: vi.fn(async () => ({ path: "short.bin" })),
+      status: vi.fn(async () => ({ ranges: [] })),
+    };
+    await expect(uploadFile({
+      client: fake as unknown as UploadClient,
+      file: blobOf(1),
+      destDir: "/",
+      session: { uploadId: "s", chunkSize: 1, concurrency: 1, ranges: [], size: 1 },
+      callbacks: { onRetry: (info: { code: string }) => retries.push(info.code) },
+    })).rejects.toMatchObject({ code: "INCOMPLETE" });
+    expect(fake.put).toHaveBeenCalledTimes(4);
+    expect(retries).toContain("INCOMPLETE");
+  });
+
   it("moves to the processing phase once the body is sent", async () => {
     const states: string[] = [];
     await startUpload({ callbacks: { onState: (state: string) => states.push(state) } });
@@ -509,5 +737,22 @@ describe("request deadlines", () => {
     FakeXHR.all[0]!.finish(200, { ranges: [[0, 4]], received: 4 });
     await vi.advanceTimersByTimeAsync(0);
     await expect(promise).resolves.toMatchObject({ ok: true });
+  });
+
+  it("gives up when the server does not answer after the body is sent", async () => {
+    vi.useFakeTimers();
+    const { promise } = await startUpload({
+      file: blobOf(4),
+      session: { uploadId: "session", chunkSize: 4, concurrency: 1, ranges: [], size: 4 },
+      idleTimeoutMs: 1000,
+      responseTimeoutMs: 2000,
+      maxAttempts: 1,
+      backoffMs: [1],
+    });
+    FakeXHR.all[0]!.progress(400, 400);
+    FakeXHR.all[0]!.bodySent();
+    const assertion = expect(promise).rejects.toMatchObject({ code: "RESPONSE_TIMEOUT" });
+    await vi.advanceTimersByTimeAsync(2000);
+    await assertion;
   });
 });

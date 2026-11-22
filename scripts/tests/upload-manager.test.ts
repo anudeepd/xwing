@@ -103,6 +103,18 @@ afterEach(() => {
 });
 
 describe("UploadManager scheduling", () => {
+  it("notifies subscribers until they unsubscribe", () => {
+    const { manager } = managerWith();
+    const listener = vi.fn();
+    const unsubscribe = manager.subscribe(listener);
+    manager.add([new File(["a"], "a.txt")], "/", 1024);
+    expect(listener).toHaveBeenCalled();
+    unsubscribe();
+    listener.mockClear();
+    manager.add([new File(["b"], "b.txt")], "/", 1024);
+    expect(listener).not.toHaveBeenCalled();
+  });
+
   it("moves an item from queued to completed", async () => {
     const { manager } = managerWith();
     manager.add([new File(["hello"], "hello.txt")], "/docs", 1024);
@@ -240,6 +252,37 @@ describe("UploadManager scheduling", () => {
     expect(engine.clientOptions[0]?.signal).toBeInstanceOf(AbortSignal);
   });
 
+  it("marks an aborted transfer cancelled even when the engine rejects it", async () => {
+    const { manager } = managerWith();
+    manager.add([new File(["hello"], "a.txt")], "/", 1024);
+    const call = await pendingCall(0);
+    manager.cancel(manager.getSnapshot().items[0]!.id);
+    call.reject(new Error("cancelled"));
+    await vi.waitFor(() => expect(manager.getSnapshot().items[0]?.status).toBe("cancelled"));
+  });
+
+  it("uses a plain failure message for a non-Error rejection", async () => {
+    const { manager } = managerWith();
+    manager.add([new File(["hello"], "a.txt")], "/", 1024);
+    const call = await pendingCall(0);
+    call.reject("network is down");
+    await vi.waitFor(() => expect(manager.getSnapshot().items[0]).toMatchObject({
+      status: "failed",
+      error: "Upload failed",
+    }));
+  });
+
+  it("ignores cancel and retry requests for missing or ineligible items", async () => {
+    const { manager } = managerWith();
+    manager.cancel("missing");
+    manager.retry("missing");
+    manager.add([new File(["x"], "x.txt")], "/", 1024);
+    await pendingCall(0);
+    manager.cancel("missing");
+    manager.retry(manager.getSnapshot().items[0]!.id);
+    expect(manager.getSnapshot().items[0]?.status).toBe("preparing");
+  });
+
   it("dismisses completed items without hiding failures", async () => {
     const { manager } = managerWith();
     manager.add([new File(["ok"], "ok.txt"), new File(["no"], "no.txt")], "/", 1024);
@@ -255,6 +298,20 @@ describe("UploadManager scheduling", () => {
     );
 
     manager.dismissSuccessful();
+    expect(manager.getSnapshot().items.map(item => item.status)).toEqual(["failed"]);
+  });
+
+  it("dismisses both completed and cancelled items when the dock is cleared", async () => {
+    const { manager } = managerWith();
+    manager.add([new File(["ok"], "ok.txt"), new File(["no"], "no.txt")], "/", 1024);
+    await vi.waitFor(() => expect(engine.calls).toHaveLength(2));
+    engine.calls[0]!.resolve({ ok: true });
+    engine.calls[1]!.reject(new Error("stop"));
+    await vi.waitFor(() => expect(manager.getSnapshot().items.map(item => item.status).sort()).toEqual([
+      "completed",
+      "failed",
+    ]));
+    manager.dismissCompleted();
     expect(manager.getSnapshot().items.map(item => item.status)).toEqual(["failed"]);
   });
 
@@ -299,6 +356,59 @@ describe("UploadManager scheduling", () => {
     const snapshot = manager.getSnapshot();
     expect(snapshot.active).toBe(1);
     expect(snapshot.parallel).toBe(4);
+  });
+
+  it("publishes the finalizing phase", async () => {
+    const { manager } = managerWith();
+    manager.add([new File(["x"], "x.txt")], "/", 1024);
+    const call = await pendingCall(0);
+    call.options.callbacks.onState("finalizing");
+    await vi.waitFor(() => expect(manager.getSnapshot().items[0]).toMatchObject({
+      status: "preparing",
+      phase: "finalizing",
+    }));
+  });
+
+  it("fails the item when an ancestor folder cannot be created", async () => {
+    const fetcher = vi.fn(async () => ({ ok: false, status: 500 }) as unknown as Response);
+    const { manager } = managerWith(fetcher);
+    const file = new File(["x"], "x.txt");
+    Object.defineProperty(file, "webkitRelativePath", { value: "parent/x.txt" });
+    manager.add([file], "/root", 1024);
+    await vi.waitFor(() => expect(manager.getSnapshot().items[0]).toMatchObject({
+      status: "failed",
+      error: "Could not create folder (500)",
+    }));
+  });
+
+  it("accepts an existing ancestor folder as success", async () => {
+    const fetcher = vi.fn(async () => ({ ok: false, status: 405 }) as unknown as Response);
+    const { manager } = managerWith(fetcher);
+    const file = new File(["x"], "x.txt");
+    Object.defineProperty(file, "webkitRelativePath", { value: "parent/x.txt" });
+    manager.add([file], "/root", 1024);
+    await pendingCall(0);
+    expect(manager.getSnapshot().items[0]?.op).toBeUndefined();
+    expect(manager.getSnapshot().items[0]?.status).toBe("preparing");
+  });
+
+  it("cancels a pending animation frame before publishing immediately", async () => {
+    let frame: FrameRequestCallback | null = null;
+    const cancelFrame = vi.fn();
+    const manager = new UploadManager(
+      vi.fn(async () => okResponse()) as unknown as typeof fetch,
+      callback => {
+        frame = callback;
+        return 4;
+      },
+      cancelFrame,
+    );
+    manager.add([new File(["x"], "x.txt")], "/", 1024);
+    const call = await pendingCall(0);
+    call.options.callbacks.onProgress(1, 1);
+    expect(frame).not.toBeNull();
+    manager.setParallel(8);
+    expect(cancelFrame).toHaveBeenCalledWith(4);
   });
 });
 

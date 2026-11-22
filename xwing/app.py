@@ -759,13 +759,6 @@ def create_app(settings: Settings) -> FastAPI:
                 # A displaced destination parked under a temporary name; the
                 # caller already validated the real path it came from.
                 continue
-            if _is_root_path(fspath):
-                raise HTTPException(status_code=403, detail="Cannot delete root")
-            _reject_sensitive_path(fspath)
-            if _is_internal_path(fspath):
-                raise HTTPException(
-                    status_code=403, detail="Cannot delete internal paths"
-                )
         items = []
         try:
             for index, fspath in enumerate(paths_to_delete):
@@ -1102,8 +1095,6 @@ def create_app(settings: Settings) -> FastAPI:
             truncated = True
             preview_bytes = len(head)
         dir_path = rel_path.rsplit("/", 1)[0] + "/"
-        if dir_path == "//":
-            dir_path = "/"
         dir_url_path = _to_url_path(fspath.parent, trailing_slash=True)
         perms = settings.perms_for(user)
         editor_bootstrap = {
@@ -1586,12 +1577,7 @@ def create_app(settings: Settings) -> FastAPI:
                 pass
 
     def _apply_live_ldap_allowlist(document: dict) -> None:
-        if ldap_config is None:
-            return
-        section = document.get("ldap")
-        if not isinstance(section, dict) or "allowed_users" not in section:
-            return
-        ldap_config.ldap.allowed_users = list(section["allowed_users"])
+        ldap_config.ldap.allowed_users = list(document["ldap"]["allowed_users"])
 
     def _revoke_ldap_user_sessions(username: str) -> int:
         if ldap_session_manager is None:
@@ -1769,10 +1755,7 @@ def create_app(settings: Settings) -> FastAPI:
         }
 
     def _ldap_file() -> Path:
-        if _ldap_config_path is None:
-            raise HTTPException(
-                status_code=404, detail="LDAPGate config is not configured"
-            )
+        assert _ldap_config_path is not None
         if not _ldap_config_path.exists():
             raise HTTPException(status_code=404, detail="LDAPGate config not found")
         return _ldap_config_path

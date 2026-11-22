@@ -183,4 +183,107 @@ describe("collectDroppedEntries", () => {
       entries: [{ relativePath: "live.txt" }],
     });
   });
+
+  it("falls back to the file slot when an extension breaks the entry accessor", async () => {
+    const transfer = {
+      items: [{
+        kind: "file",
+        webkitGetAsEntry: () => { throw new Error("blocked"); },
+        getAsFile: () => new File(["x"], "fallback.txt"),
+      }],
+      files: [],
+    } as unknown as DataTransfer;
+
+    await expect(collectDroppedEntries(transfer)).resolves.toMatchObject({
+      entries: [{ relativePath: "fallback.txt" }],
+      skipped: 0,
+    });
+  });
+
+  it("counts an item with no entry and no file", async () => {
+    const transfer = {
+      items: [{ kind: "file", getAsFile: () => null }],
+      files: [],
+    } as unknown as DataTransfer;
+
+    await expect(collectDroppedEntries(transfer)).resolves.toEqual({ entries: [], skipped: 1 });
+  });
+
+  it("drops a malformed file from the fallback FileList", async () => {
+    const transfer = {
+      items: [],
+      files: [null, new File(["x"], "real.txt")],
+    } as unknown as DataTransfer;
+
+    await expect(collectDroppedEntries(transfer)).resolves.toMatchObject({
+      entries: [{ relativePath: "real.txt" }],
+    });
+  });
+
+  it("skips a file whose reader throws or reports an error", async () => {
+    const throws = {
+      isFile: true,
+      isDirectory: false,
+      name: "throws.txt",
+      file: () => { throw new Error("unreadable"); },
+    };
+    const rejects = {
+      isFile: true,
+      isDirectory: false,
+      name: "rejects.txt",
+      file: (_resolve: (file: File) => void, reject: (error: unknown) => void) => reject(new Error("unreadable")),
+    };
+
+    await expect(collectDroppedEntries(dataTransferFrom({ entries: [throws, rejects] }))).resolves.toEqual({
+      entries: [],
+      skipped: 0,
+    });
+  });
+
+  it("reports a directory whose reader cannot be created", async () => {
+    const entry = {
+      isFile: false,
+      isDirectory: true,
+      name: "unreadable",
+      createReader: () => { throw new Error("blocked"); },
+    };
+
+    await expect(collectDroppedEntries(dataTransferFrom({ entries: [entry] }))).resolves.toEqual({
+      entries: [],
+      skipped: 1,
+    });
+  });
+
+  it("keeps the children it already read when a later directory batch fails", async () => {
+    let call = 0;
+    const entry = {
+      isFile: false,
+      isDirectory: true,
+      name: "partly-readable",
+      createReader: () => ({
+        readEntries: (
+          resolve: (entries: FakeEntry[]) => void,
+          reject: (error: unknown) => void,
+        ) => {
+          call += 1;
+          if (call === 1) resolve([fileEntry("one.txt")]);
+          else reject(new Error("failed later"));
+        },
+      }),
+    };
+
+    await expect(collectDroppedEntries(dataTransferFrom({ entries: [entry] }))).resolves.toMatchObject({
+      entries: [{ relativePath: "partly-readable/one.txt" }],
+      skipped: 0,
+    });
+  });
+
+  it("ignores an entry that is neither a file nor a directory", async () => {
+    const entry = { isFile: false, isDirectory: false, name: "other" };
+
+    await expect(collectDroppedEntries(dataTransferFrom({ entries: [entry] }))).resolves.toEqual({
+      entries: [],
+      skipped: 0,
+    });
+  });
 });
