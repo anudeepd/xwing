@@ -1064,7 +1064,8 @@ function FileRow({ file, index, selected, loading, arriving, tabStop, onFocusRow
       }
       return;
     }
-    const menu = leaving!;
+    const menu = leaving;
+    if (!menu) return;
     // First open only: a right click on this row while the menu is already up
     // re-runs the effect with focus inside the menu, which is not where to go back to.
     if (!opener.current) {
@@ -1134,7 +1135,7 @@ function FileRow({ file, index, selected, loading, arriving, tabStop, onFocusRow
       window.removeEventListener("scroll", onScroll, true);
       window.removeEventListener("resize", place);
     };
-  }, [actionsOpen, file.path, actionsAnchor]);
+  }, [actionsOpen, file.path, actionsAnchor, menuMounted]);
   const moveFocus = (row: HTMLElement, direction: "next" | "previous" | "first" | "last"): void => {
     const rows = [...row.parentElement!.querySelectorAll<HTMLElement>(".file-row")];
     const current = rows.indexOf(row);

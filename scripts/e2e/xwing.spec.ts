@@ -1226,6 +1226,7 @@ test("a right click near the bottom flips the menu above the pointer", async ({ 
     size: 10, modified: "2026-07-19T12:00:00Z", editable: true,
   }));
   await gotoWithBootstrap(page, { files });
+  await expect(page.locator(".file-list")).toHaveCSS("opacity", "1");
   const target = await page.evaluate(() => {
     const table = document.querySelector(".file-table")!;
     const box = table.getBoundingClientRect();
@@ -1236,9 +1237,10 @@ test("a right click near the bottom flips the menu above the pointer", async ({ 
     return rows[rows.length - 1]!.getAttribute("data-path")!;
   });
   const box = (await page.locator(`[data-path="${target}"]`).boundingBox())!;
-  await page.mouse.click(box.x + box.width / 2, box.y + box.height - 2, { button: "right" });
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { button: "right" });
   const menu = page.locator("#row-actions-menu");
   await expect(menu).toBeVisible();
+  await expect.poll(async () => menu.evaluate(element => element.getBoundingClientRect().top)).toBeGreaterThanOrEqual(0);
   const state = await menu.evaluate(element => {
     const rect = element.getBoundingClientRect();
     return { top: rect.top, bottom: rect.bottom, height: innerHeight };
