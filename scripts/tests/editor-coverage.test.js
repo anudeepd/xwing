@@ -358,7 +358,27 @@ describe("editor coverage edges", () => {
     vi.stubGlobal("fetch", saveFetch());
     await mount({ canWrite: false, maxChunkBytes: 0 });
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "s", ctrlKey: true, bubbles: true, cancelable: true }));
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "s", metaKey: true, bubbles: true, cancelable: true }));
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true, cancelable: true }));
     expect(document.querySelector('[role="status"]')?.textContent).not.toBe("Saving…");
+  });
+
+  it("uses the handover timing when leaving into the app", async () => {
+    vi.useFakeTimers();
+    const assign = vi.fn();
+    vi.stubGlobal("location", {
+      href: "http://xwing.test/README.md",
+      pathname: "/README.md",
+      search: "",
+      hash: "",
+      assign,
+    });
+    sessionStorage.setItem("xw-handover", String(Date.now()));
+    await mount({}, { reduced: false });
+    click(document.querySelector(".brand"));
+    vi.advanceTimersByTime(200);
+    expect(assign).toHaveBeenCalledWith("/");
+    sessionStorage.clear();
   });
 
   it("saves an empty document through the fallback chunk limit", async () => {

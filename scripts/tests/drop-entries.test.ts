@@ -240,6 +240,29 @@ describe("collectDroppedEntries", () => {
     });
   });
 
+  it("treats a null directory batch as the end of the listing", async () => {
+    const entry = {
+      isFile: false,
+      isDirectory: true,
+      name: "null-batch",
+      createReader: () => ({
+        readEntries: (resolve: (entries: unknown) => void) => resolve(null),
+      }),
+    };
+    await expect(collectDroppedEntries(dataTransferFrom({ entries: [entry] }))).resolves.toEqual({
+      entries: [],
+      skipped: 0,
+    });
+  });
+
+  it("counts an item without a file accessor", async () => {
+    const transfer = {
+      items: [{ kind: "file", webkitGetAsEntry: () => null }],
+      files: [],
+    } as unknown as DataTransfer;
+    await expect(collectDroppedEntries(transfer)).resolves.toEqual({ entries: [], skipped: 1 });
+  });
+
   it("reports a directory whose reader cannot be created", async () => {
     const entry = {
       isFile: false,

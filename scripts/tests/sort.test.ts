@@ -28,4 +28,11 @@ describe("file sorting", () => {
     expect(reversed.at(-1)).toEqual({ key: "name", direction: "desc" });
     expect(nextSort(reversed, "name")).toEqual([...initial]);
   });
+
+  it("sorts missing size and modified values as the smallest", () => {
+    const missing: XwingFile = { ...file("missing", ""), size: null, modified: null };
+    const present = file("present", "2026-01-01", 2);
+    expect(sortFiles([present, missing], [{ key: "size", direction: "asc" }]).map(item => item.name)).toEqual(["missing", "present"]);
+    expect(sortFiles([present, missing], [{ key: "modified", direction: "asc" }]).map(item => item.name)).toEqual(["missing", "present"]);
+  });
 });

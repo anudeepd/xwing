@@ -464,6 +464,15 @@ describe("admin coverage edges", () => {
     expect(table).toContain("4 items: /a, /b, /c, +1 more");
   });
 
+  it("submits the activity filter with every field missing", async () => {
+    await mount("activity");
+    await vi.waitFor(() => expect(document.querySelector("#activity-filter")).not.toBeNull());
+    const form = document.querySelector("#activity-filter");
+    Object.defineProperty(form, "elements", { configurable: true, value: { namedItem: () => null } });
+    submit(form);
+    await vi.waitFor(() => expect(document.querySelector("#admin-status")?.textContent).toContain("Activity loaded"));
+  });
+
   it("renders empty and unrestricted users with the LDAP help copy", async () => {
     await mount("users", {
       ldapConfigured: true,

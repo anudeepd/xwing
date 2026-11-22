@@ -120,6 +120,7 @@ export class SpeedTracker {
     return Math.max(0, (last.b - first.b) / elapsed);
   }
 }
+// coverage probe
 
 /**
  * Gaps in `[0, size)` given server-reported `[[start, end], ...]` ranges.

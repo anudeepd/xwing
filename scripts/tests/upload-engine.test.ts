@@ -197,6 +197,8 @@ describe("range planning", () => {
     expect(missingRanges([[0, 4], [8, 10]], 10)).toEqual([[4, 8]]);
     expect(missingRanges([[0, 10]], 10)).toEqual([]);
     expect(missingRanges([[0, 4], [4, 10]], 10)).toEqual([]);
+    expect(missingRanges([[null, "bad"], [0, 4]] as unknown as number[][], 10)).toEqual([[4, 10]]);
+    expect(missingRanges([[5, 2]], 10)).toEqual([[0, 10]]);
   });
 
   it("splits gaps into equal windows and keeps the remainder", () => {
@@ -214,6 +216,7 @@ describe("range planning", () => {
   it("counts committed bytes", () => {
     expect(committedBytes([[0, 4], [8, 10]])).toBe(6);
     expect(committedBytes(null)).toBe(0);
+    expect(committedBytes([[5, 2]])).toBe(0);
   });
 });
 

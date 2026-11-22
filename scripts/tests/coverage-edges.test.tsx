@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AuthOverlay } from "../../xwing/frontend/src/auth-overlay";
 import { trapFocus } from "../../xwing/frontend/src/focus-trap";
+import { useModalFocus } from "../../xwing/frontend/src/keyboard";
 import { escapeHtml, formatBytes, formatDate, prefersReducedMotion } from "../../xwing/frontend/src/format";
 import { nearestSurvivor, selectionRange } from "../../xwing/frontend/src/selection";
 import {
@@ -244,6 +245,73 @@ describe("modal focus trap", () => {
     expect(shouldRestore).toHaveBeenCalledOnce();
     expect(document.activeElement).not.toBe(opener);
   });
+
+  it("ignores other keys and pulls focus back in from outside", () => {
+    document.body.innerHTML = `
+      <button id="opener">Open</button>
+      <div id="root"><button id="first">First</button><button id="last">Last</button></div>
+    `;
+    const opener = document.getElementById("opener")!;
+    const root = document.getElementById("root")!;
+    const first = document.getElementById("first")!;
+    const last = document.getElementById("last")!;
+    const teardown = trapFocus(root);
+
+    const ignored = new KeyboardEvent("keydown", { key: "a", bubbles: true, cancelable: true });
+    root.dispatchEvent(ignored);
+    expect(ignored.defaultPrevented).toBe(false);
+
+    opener.focus();
+    const forward = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+    root.dispatchEvent(forward);
+    expect(forward.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(first);
+
+    opener.focus();
+    const backward = new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true });
+    root.dispatchEvent(backward);
+    expect(backward.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(last);
+    teardown();
+  });
+
+  it("opens without a previously focused element", () => {
+    document.body.innerHTML = '<div id="root"><button>Only</button></div>';
+    const root = document.getElementById("root")!;
+    Object.defineProperty(document, "activeElement", { configurable: true, get: () => null });
+    try {
+      const teardown = trapFocus(root);
+      teardown();
+    } finally {
+      delete (document as unknown as { activeElement?: unknown }).activeElement;
+    }
+  });
+});
+
+describe("modal focus hook", () => {
+  it("covers a detached root and a non-dismissible Escape", async () => {
+    const onDismiss = vi.fn();
+    function Detached() {
+      useModalFocus(onDismiss);
+      return createElement("span", null, "nothing");
+    }
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => root.render(createElement(Detached)));
+    expect(container.textContent).toBe("nothing");
+
+    function Locked() {
+      const ref = useModalFocus<HTMLDivElement>(onDismiss, false);
+      return createElement("div", { ref }, createElement("button", null, "OK"));
+    }
+    await act(async () => root.render(createElement(Locked)));
+    await act(async () => {
+      container.querySelector("div")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(onDismiss).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+  });
 });
 
 describe("shared session and handover helpers", () => {
@@ -430,6 +498,9 @@ describe("shared session and handover helpers", () => {
     expect(submit).toHaveBeenCalledOnce();
     expect(document.getElementById("auth-overlay")?.hidden).toBe(false);
     expect(document.getElementById("auth-overlay-action")?.hidden).toBe(true);
+    session.showAuthOverlay({ title: "Again", message: "Still here", action: "Sign in" });
+    session.showAuthOverlay({ title: "Again", message: "Still here", action: "Sign in" });
+    expect(document.getElementById("auth-overlay-action")?.hidden).toBe(false);
 
     document.body.innerHTML = "";
     const empty = createAuthSession({ windowRef: windowRef as unknown as Window });
@@ -496,6 +567,22 @@ describe("tooltip and auth overlay", () => {
     await act(async () => root.render(createElement(AuthOverlay, { kind: "logout" })));
     expect(container.textContent).toContain("Signing out");
     expect(container.querySelector("button")).toBeNull();
+    await act(async () => root.unmount());
+  });
+
+  it("snaps tooltip pixels when the device ratio is unavailable", async () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => root.render(createElement(Tooltip, { label: "Hint" }, createElement("button", null, "Open"))));
+    Object.defineProperty(window, "devicePixelRatio", { configurable: true, value: 0 });
+    const anchor = container.querySelector(".inline-flex") as HTMLElement;
+    anchor.getBoundingClientRect = () => ({ left: 10, top: 10, width: 20, height: 20, right: 30, bottom: 30, x: 10, y: 10, toJSON() {} });
+    await act(async () => container.querySelector("button")!.focus());
+    const tip = document.querySelector<HTMLElement>("[role=tooltip]")!;
+    Object.defineProperty(tip, "offsetWidth", { configurable: true, value: 40 });
+    Object.defineProperty(tip, "offsetHeight", { configurable: true, value: 18 });
+    window.dispatchEvent(new Event("resize"));
     await act(async () => root.unmount());
   });
 });
