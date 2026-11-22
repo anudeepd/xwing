@@ -1346,6 +1346,12 @@ test("a menu that is leaving cannot be clicked", async ({ page }) => {
  * row. Chromium reports the overflow but never makes it scrollable, so only the
  * measurement catches it there.
  */
+test("an empty folder keeps the select-all control unchecked", async ({ page }) => {
+  await gotoWithBootstrap(page, { files: [] });
+  await expect(page.getByText("This folder is empty")).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: "Select all" })).not.toBeChecked();
+});
+
 test("the file table has nothing to scroll sideways at rest", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("row", { name: /^README\.md,/ })).toBeVisible();

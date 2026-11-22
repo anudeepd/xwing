@@ -1492,8 +1492,10 @@ describe("file browser coverage edges", () => {
     const input = document.querySelector('input[type="file"]:not([webkitdirectory])');
     Object.defineProperty(input, "files", { configurable: true, value: [new File(["abcdef"], "uploaded.txt")] });
     input.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(50);
+    expect(document.querySelector(".upload-dock")?.textContent).toContain("Upload complete");
     await vi.advanceTimersByTimeAsync(200);
-    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(800);
     vi.useRealTimers();
   });
 
@@ -1518,5 +1520,36 @@ describe("file browser coverage edges", () => {
     window.history.pushState({ path: "/other/" }, "", "/other/");
     window.dispatchEvent(new PopStateEvent("popstate"));
     await waitFor(() => expect(document.querySelector('[data-path="/other/"]')).not.toBeNull());
+  });
+
+  it("shows an upload speed when progress samples span time", async () => {
+    class SpeedXHR extends UploadXHR {
+      send(blob) {
+        this.uploadHandlers.loadstart?.();
+        const start = Number(new URL(this.url, "http://xwing.test").searchParams.get("offset"));
+        const end = start + blob.size;
+        this.uploadHandlers.progress?.({ loaded: blob.size / 2, total: blob.size });
+        setTimeout(() => {
+          this.uploadHandlers.progress?.({ loaded: blob.size, total: blob.size });
+          setTimeout(() => {
+            this.uploadHandlers.load?.();
+            this.status = 200;
+            this.responseText = JSON.stringify({ ranges: [[0, end]], received: blob.size });
+            this.listeners.load?.();
+          }, 200);
+        }, 100);
+      }
+    }
+    vi.stubGlobal("XMLHttpRequest", SpeedXHR);
+    await mount({
+      overrides: {
+        "POST /_upload/init": () => ({ body: { upload_id: "speed", chunk_size: 1024, concurrency: 1, size: 6 } }),
+        "POST /_upload/speed/complete": () => ({ body: { path: "speed.txt", size: 6 } }),
+      },
+    });
+    const input = document.querySelector('input[type="file"]:not([webkitdirectory])');
+    Object.defineProperty(input, "files", { configurable: true, value: [new File(["abcdef"], "speed.txt")] });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    await waitFor(() => expect(document.querySelector(".upload-dock")?.textContent).toContain("/s"), { timeout: 3000 });
   });
 });
