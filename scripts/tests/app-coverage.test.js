@@ -136,6 +136,10 @@ function submit(form) {
   form.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
 }
 
+async function flushFakeTimers() {
+  for (let index = 0; index < 3; index += 1) await vi.advanceTimersByTimeAsync(0);
+}
+
 async function mount({
   overrides = {},
   data = {},
@@ -208,7 +212,7 @@ describe("file browser coverage edges", () => {
     await waitFor(() => expect(document.querySelector("#parallel-menu")).toBeNull());
     click(document.querySelector(".parallel-trigger"));
     await waitFor(() => expect(document.querySelector("#parallel-menu")).not.toBeNull());
-    key(document, "Escape");
+    key(document.activeElement, "Escape");
     await waitFor(() => expect(document.querySelector("#parallel-menu")).toBeNull());
 
     click(document.querySelector(".account-trigger"));
@@ -562,7 +566,7 @@ describe("file browser coverage edges", () => {
     vi.useFakeTimers();
     app.dispatchEvent(new Event("dragenter", { bubbles: true, cancelable: true }));
     await vi.advanceTimersByTimeAsync(1500);
-    await Promise.resolve();
+    await flushFakeTimers();
     expect(document.querySelector(".drop-wait")?.textContent).toContain("Preparing upload");
     app.dispatchEvent(new Event("dragover", { bubbles: true, cancelable: true }));
     await vi.advanceTimersByTimeAsync(1500);
@@ -571,7 +575,7 @@ describe("file browser coverage edges", () => {
     await vi.advanceTimersByTimeAsync(1500);
     await vi.advanceTimersByTimeAsync(15000);
     await vi.advanceTimersByTimeAsync(1);
-    await Promise.resolve();
+    await flushFakeTimers();
     expect(document.querySelector(".drop-wait")?.textContent).toContain("hasn't started");
     click(document.querySelector(".drop-wait .button"));
     expect(fileClick).toHaveBeenCalledTimes(2);
@@ -992,5 +996,81 @@ describe("file browser coverage edges", () => {
     Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
     document.dispatchEvent(new Event("visibilitychange"));
     await waitFor(() => expect(calls.filter(call => call === "GET /").length).toBeGreaterThan(before));
+  });
+
+  it("reopens the same menu, ignores an unmoved scroll and closes on a real one", async () => {
+    await mount();
+    const trigger = document.querySelector('[aria-label="Actions for alpha.txt"]');
+    click(trigger);
+    await waitFor(() => expect(document.querySelector("#row-actions-menu")).not.toBeNull());
+    click(trigger);
+    await waitFor(() => expect(document.querySelector("#row-actions-menu")).toBeNull());
+    click(trigger);
+    await waitFor(() => expect(document.querySelector("#row-actions-menu")).not.toBeNull());
+    document.dispatchEvent(new Event("scroll", { bubbles: true }));
+    expect(document.querySelector("#row-actions-menu")).not.toBeNull();
+    const table = document.querySelector(".file-table");
+    table.scrollTop = 40;
+    table.dispatchEvent(new Event("scroll", { bubbles: true }));
+    await waitFor(() => expect(document.querySelector("#row-actions-menu")).toBeNull());
+  });
+
+  it("right-clicks the same row twice and from inside an open menu", async () => {
+    await mount();
+    const alpha = document.querySelector('[data-path="/alpha.txt"]');
+    const right = () => alpha.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    right();
+    await waitFor(() => expect(document.querySelector("#row-actions-menu")).not.toBeNull());
+    right();
+    await waitFor(() => expect(document.querySelector("#row-actions-menu")).not.toBeNull());
+    key(document.querySelector("#row-actions-menu"), "Escape");
+    await waitFor(() => expect(document.querySelector("#row-actions-menu")).toBeNull());
+    alpha.focus();
+    key(alpha, "F10", { shiftKey: true });
+    await waitFor(() => expect(document.querySelector("#row-actions-menu")).not.toBeNull());
+    right();
+    await waitFor(() => expect(document.querySelector("#row-actions-menu")).not.toBeNull());
+  });
+
+  it("closes a dialog from its backdrop and renders dialogs with motion", async () => {
+    await mount({ reduced: false });
+    click([...document.querySelectorAll("button")].find(button => button.textContent.includes("New folder")));
+    await waitFor(() => expect(document.querySelector(".modal")).not.toBeNull());
+    document.querySelector(".modal-backdrop").dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    await waitFor(() => expect(document.querySelector(".modal")).toBeNull());
+    click(document.querySelector('[aria-label="Actions for alpha.txt"]'));
+    await waitFor(() => expect(document.querySelector("#row-actions-menu")).not.toBeNull());
+  });
+
+  it("routes a zip auth failure to the session overlay", async () => {
+    await mount({ overrides: { "POST /_bulk/zip": { status: 401, body: { detail: "auth" } } } });
+    click(document.querySelector('[data-path="/alpha.txt"]'));
+    await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toBe("1 selected"));
+    click(document.querySelector('[aria-label="Download selected as zip"]'));
+    await waitFor(() => expect(document.querySelector(".auth-overlay")).not.toBeNull());
+
+    await mount({ overrides: { "POST /_bulk/zip": "offline" } });
+    click(document.querySelector('[data-path="/alpha.txt"]'));
+    await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toBe("1 selected"));
+    click(document.querySelector('[aria-label="Download selected as zip"]'));
+    await waitFor(() => expect(document.querySelector(".toast")?.textContent).toContain("Something went wrong"));
+  });
+
+  it("maps folder-create failures through status copy, detail and fallback", async () => {
+    const create = async (overrides) => {
+      await mount({ overrides });
+      click([...document.querySelectorAll("button")].find(button => button.textContent.includes("New folder")));
+      await waitFor(() => expect(document.querySelector(".modal")).not.toBeNull());
+      const form = document.querySelector("form.modal");
+      setInputValue(form.querySelector("input"), "fresh");
+      await waitFor(() => expect(form.querySelector("input").value).toBe("fresh"));
+      submit(form);
+      await waitFor(() => expect(form.textContent).toMatch(/exists|permission|Request failed|no longer|server|exploded|Something went wrong/i));
+      return form.textContent;
+    };
+    expect(await create({ "MKCOL /fresh/": { status: 405, body: { detail: "ignored" } } })).toContain("already exists");
+    expect(await create({ "MKCOL /fresh/": { status: 500, body: { detail: "Server exploded" } } })).toContain("Server exploded");
+    expect(await create({ "MKCOL /fresh/": { status: 500, body: {} } })).toContain("Request failed (500)");
+    expect(await create({ "MKCOL /fresh/": "offline" })).toContain("Something went wrong");
   });
 });

@@ -659,6 +659,8 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
       const response = await authFetch("/_bulk/zip", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paths, base: directory.path }) });
       if (!response.ok) { addToast(await responseError(response), "error"); return; }
       downloadBlob(await response.blob(), contentDispositionFilename(response.headers.get("content-disposition")) || "xwing-selection.zip");
+    } catch (error) {
+      if (!(error instanceof Error && error.message === "authentication required")) addToast(errorMessage(error), "error");
     } finally {
       stopHeartbeat();
       setZipPending(0);
