@@ -1219,6 +1219,34 @@ test("the row actions menu stays inside the viewport at the bottom edge", async 
   expect(state.itemsInside).toEqual([true, true, true]);
 });
 
+test("a right click near the bottom flips the menu above the pointer", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 700 });
+  const files = Array.from({ length: 24 }, (_, index) => ({
+    name: `row-${index}.txt`, path: `/row-${index}.txt`, kind: "file" as const,
+    size: 10, modified: "2026-07-19T12:00:00Z", editable: true,
+  }));
+  await gotoWithBootstrap(page, { files });
+  const target = await page.evaluate(() => {
+    const table = document.querySelector(".file-table")!;
+    const box = table.getBoundingClientRect();
+    const rows = [...document.querySelectorAll<HTMLElement>(".file-row")].filter(row => {
+      const r = row.getBoundingClientRect();
+      return r.top >= box.top && r.bottom <= box.bottom;
+    });
+    return rows[rows.length - 1]!.getAttribute("data-path")!;
+  });
+  const box = (await page.locator(`[data-path="${target}"]`).boundingBox())!;
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height - 2, { button: "right" });
+  const menu = page.locator("#row-actions-menu");
+  await expect(menu).toBeVisible();
+  const state = await menu.evaluate(element => {
+    const rect = element.getBoundingClientRect();
+    return { top: rect.top, bottom: rect.bottom, height: innerHeight };
+  });
+  expect(state.top).toBeGreaterThanOrEqual(0);
+  expect(state.bottom).toBeLessThanOrEqual(state.height);
+});
+
 /**
  * A row is not a link, so the browser's own menu has nothing to say about it;
  * xwing's actions replace it, and `Shift+F10` is the keyboard's right click.

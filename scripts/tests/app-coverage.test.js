@@ -563,6 +563,12 @@ describe("file browser coverage edges", () => {
     await waitFor(() => expect(document.querySelector(".drop-target")).not.toBeNull());
     app.dispatchEvent(new Event("dragleave", { bubbles: true, cancelable: true }));
     await waitFor(() => expect(document.querySelector(".drop-target")).toBeNull());
+    app.dispatchEvent(new Event("dragenter", { bubbles: true }));
+    app.dispatchEvent(new Event("dragenter", { bubbles: true }));
+    app.dispatchEvent(new Event("dragleave", { bubbles: true }));
+    await waitFor(() => expect(document.querySelector(".drop-target")).not.toBeNull());
+    app.dispatchEvent(new Event("dragleave", { bubbles: true }));
+    await waitFor(() => expect(document.querySelector(".drop-target")).toBeNull());
 
     vi.useFakeTimers();
     app.dispatchEvent(new Event("dragenter", { bubbles: true, cancelable: true }));
@@ -865,6 +871,7 @@ describe("file browser coverage edges", () => {
     const form = document.querySelector("form.modal");
     setInputValue(form.querySelector("input"), "fresh");
     submit(form);
+    await waitFor(() => expect(document.querySelector("form.modal input")?.readOnly).toBe(true));
     submit(form);
     release({ body: {}, status: 201 });
     await waitFor(() => expect(document.querySelector(".modal")).toBeNull());
@@ -1226,6 +1233,7 @@ describe("file browser coverage edges", () => {
     const rename = document.querySelector("form.modal");
     setInputValue(rename.querySelector("input"), "renamed.txt");
     submit(rename);
+    await waitFor(() => expect(document.querySelector("form.modal input")?.readOnly).toBe(true));
     submit(rename);
     releaseMove({ body: {}, status: 201 });
     await waitFor(() => expect(document.querySelector(".modal")).toBeNull());
@@ -1236,6 +1244,7 @@ describe("file browser coverage edges", () => {
     await waitFor(() => expect(document.querySelector(".modal")).not.toBeNull());
     const remove = document.querySelector("form.modal");
     submit(remove);
+    await waitFor(() => expect(document.querySelector(".modal-actions button:last-child")?.disabled).toBe(true));
     submit(remove);
     releaseDelete({ body: { transaction_id: "tx-delete" } });
     await waitFor(() => expect(document.querySelector(".modal")).toBeNull());

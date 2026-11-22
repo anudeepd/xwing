@@ -60,7 +60,7 @@ export function startAuthIdleTimer({
   const expire = () => {
     if (expired) return;
     expired = true;
-    if (timer !== null) windowRef.clearTimeout(timer);
+    windowRef.clearTimeout(timer);
     timer = null;
     onExpire();
   };
@@ -91,7 +91,7 @@ export function startAuthIdleTimer({
   armTimer();
 
   return () => {
-    if (timer !== null) windowRef.clearTimeout(timer);
+    windowRef.clearTimeout(timer);
     for (const eventName of activityEvents) {
       windowRef.removeEventListener(eventName, recordActivity);
     }

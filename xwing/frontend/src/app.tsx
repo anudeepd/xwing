@@ -502,7 +502,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
       if (!response.ok) throw new Error(`Request failed (${response.status})`);
       if (!response.headers.get("content-type")?.includes(DIRECTORY_MEDIA_TYPE)) throw new Error("The server returned an unexpected response");
       const next = parseBootstrap(await response.json());
-      if (id !== requestId.current || currentDirectory.current !== path) return;
+      if (id !== requestId.current) return;
       setDirectory(previous => listingFingerprint(previous) === listingFingerprint(next) ? previous : next);
       // Entries can vanish while the user is looking at them; keep the
       // selection and range anchor pointing at rows that still exist.
@@ -516,7 +516,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     } catch {
       // Keep the last listing rather than interrupting the view with an error,
       // but stop pretending the view is current once the failures pile up.
-      if (!controller.signal.aborted && id === requestId.current) setRefreshFailures(count => count + 1);
+      if (!controller.signal.aborted) setRefreshFailures(count => count + 1);
     }
   }, []);
 
@@ -770,10 +770,10 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     if (!afterDialog && document.querySelector("[aria-modal='true']")) return;
     pendingFocus.current = null;
     const rows = [...document.querySelectorAll<HTMLElement>(".file-row")];
-    const target = pending.kind === "name"
-      ? rows.find(row => row.querySelector(".filename")?.getAttribute("title") === pending.name)
-      : (rows.find(row => row.dataset.path === pending.path) ?? (pending.fallbackToFirst ? rows[0] : null));
-    (target ?? document.getElementById("file-list"))?.focus();
+    const named = pending.kind === "name" ? rows.find(row => row.querySelector(".filename")?.getAttribute("title") === pending.name) : undefined;
+    const byPath = pending.kind === "name" ? undefined : rows.find(row => row.dataset.path === pending.path);
+    const fallback = pending.kind === "name" ? undefined : pending.fallbackToFirst ? rows[0] : null;
+    (named ?? byPath ?? fallback ?? document.getElementById("file-list"))?.focus();
   }, []);
   useEffect(() => { servePendingFocus(); }, [directory, directoryState, servePendingFocus]);
   // The empty state is an invitation or an orientation, so it follows the same
@@ -895,7 +895,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
           <Tooltip label="Dismiss upload status"><button className={CONTROL_ICON} type="button" aria-label="Dismiss upload status" onClick={clearDropFeedback}><Icon name="close"/></button></Tooltip>
         </m.div>}</AnimatePresence>
         <div className="toast-stack static flex flex-col items-stretch gap-2 w-[min(420px,calc(100vw-56px))] pointer-events-auto"><AnimatePresence initial={false}>{toasts.map(toast => <ToastView key={toast.id} toast={toast} onDismiss={() => dismissToast(toast.id)}/>)}</AnimatePresence></div>
-        <AnimatePresence initial={false}><UploadDock key="dock" snapshot={upload}/></AnimatePresence>
+        <AnimatePresence initial={false}>{upload.items.length > 0 && <UploadDock key="dock" snapshot={upload}/>}</AnimatePresence>
       </div>
       {zipPending > 0 && <div className="zip-overlay fixed inset-0 z-popover flex items-center justify-center p-4 bg-[rgba(2,6,23,.72)] animate-[zip-overlay-in_150ms_ease-out]" role="status" aria-live="polite"><div className="zip-overlay-card flex items-center gap-3 w-[min(100%,384px)] p-5 border border-solid border-xw-line-hi rounded-lg bg-[rgba(15,23,42,.96)] shadow-[0_24px_70px_rgba(0,0,0,.45)]"><span className="zip-spinner w-7 h-7 flex-none border-[3px] border-solid border-[rgba(124,58,237,.25)] border-t-xw-accent rounded-full animate-[zip-spin_.8s_linear_infinite]" aria-hidden="true"/><span className="zip-overlay-text font-sans text-sm font-semibold text-[#f8fafc]">Zipping {zipPending} file{zipPending === 1 ? "" : "s"}…</span></div></div>}
     </main>
@@ -1223,7 +1223,7 @@ function focusFileRow(path: string | null | undefined, fallbackToFirst = false):
   });
 }
 
-function UploadDock({ snapshot }: { snapshot: UploadSnapshot }): React.JSX.Element | null {
+function UploadDock({ snapshot }: { snapshot: UploadSnapshot }): React.JSX.Element {
   const reduced = prefersReducedMotion();
   useEffect(() => {
     const hasCompleted = snapshot.items.some(item => item.status === "completed");
@@ -1236,7 +1236,6 @@ function UploadDock({ snapshot }: { snapshot: UploadSnapshot }): React.JSX.Eleme
     return () => window.clearTimeout(waitTimer);
   }, [snapshot.items]);
 
-  if (!snapshot.items.length) return null;
   const dismissible = snapshot.items.some(item => item.status === "completed" || item.status === "cancelled");
   // No `backdrop-filter`: the card is 97% opaque, so the blur was invisible, and a
   // blurred backdrop makes the browser re-rasterise everything behind the card on
