@@ -562,7 +562,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
         window.clearTimeout(arrivalTimer.current!);
         arrivalTimer.current = window.setTimeout(
           () => setArrivingNames(new Set()),
-          prefersReducedMotion() ? 0 : 700,
+          700,
         );
       });
     }, prefersReducedMotion() ? 0 : 140);

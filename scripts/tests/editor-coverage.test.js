@@ -372,6 +372,8 @@ describe("editor coverage edges", () => {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "s", ctrlKey: true, bubbles: true, cancelable: true }));
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "s", metaKey: true, bubbles: true, cancelable: true }));
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "s", ctrlKey: true, metaKey: true, bubbles: true, cancelable: true }));
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "a", metaKey: true, bubbles: true, cancelable: true }));
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "a", ctrlKey: true, metaKey: true, bubbles: true, cancelable: true }));
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "a", ctrlKey: true, bubbles: true, cancelable: true }));
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "s", bubbles: true, cancelable: true }));
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true, cancelable: true }));
