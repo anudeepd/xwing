@@ -308,6 +308,9 @@ describe("editor coverage edges", () => {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     window.dispatchEvent(new Event("xwing:auth-redirect"));
     await vi.waitFor(() => expect(document.querySelector(".auth-overlay")?.textContent).toContain("Session expired"));
+    const prevented = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    prevented.preventDefault();
+    document.dispatchEvent(prevented);
     window.__xwingEditorRoot?.unmount();
     expect(view.destroyed).toBe(true);
   });

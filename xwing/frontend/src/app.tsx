@@ -939,7 +939,6 @@ function ToastView({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
  *  a policy-disabled entry is a real `disabled` button and stays out of the walk. */
 function moveMenuFocus(menu: HTMLElement, to: "first" | "last" | "next" | "previous"): void {
   const items = [...menu.querySelectorAll<HTMLElement>("button:not([disabled]), a[href]")];
-  if (!items.length) return;
   if (to === "first") {
     items[0]?.focus();
     return;
@@ -1253,6 +1252,9 @@ function DialogView({ dialog, setDialog, focusHandedOff, onMkdir, onRename, onDe
   // confirm. Delete is the destructive variant.
   const textDialog = kind === "mkdir" || kind === "rename";
   const reduced = prefersReducedMotion();
+  const backdropInitial = reduced ? false : { opacity: 0 };
+  const cardInitial = reduced ? false : { opacity: 0, y: 10, scale: 0.97 };
+  const cardExit = reduced ? { opacity: 1 } : { opacity: 0, y: 7, scale: 0.98 };
   const pending = "pending" in dialog && dialog.pending;
   // Presence belongs to the AnimatePresence around this component: closing only
   // clears the dialog, and the exit runs while it is still mounted.
@@ -1281,8 +1283,8 @@ function DialogView({ dialog, setDialog, focusHandedOff, onMkdir, onRename, onDe
   const description = kind === "mkdir" ? "Create a folder in the current directory." : kind === "rename" ? "Enter a new name. The item stays in this folder." : "The items will move to X-wing’s recoverable trash.";
   const submitLabel = pending ? (kind === "mkdir" ? "Creating…" : kind === "rename" ? "Renaming…" : "Deleting…") : kind === "mkdir" ? "Create folder" : kind === "rename" ? "Rename" : "Delete";
   return <m.div ref={modalRef} className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) close(); }}
-    initial={reduced ? false : { opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: presenceDuration(reduced) }}>
-    <m.form className="modal" initial={reduced ? false : { opacity: 0, y: 10, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={reduced ? { opacity: 1 } : { opacity: 0, y: 7, scale: 0.98 }} transition={{ duration: presenceDuration(reduced) }} role="dialog" aria-modal="true" aria-labelledby="dialog-title" aria-describedby="dialog-description" onSubmit={event => { event.preventDefault(); if (kind === "mkdir") onMkdir(); else if (kind === "rename") onRename(); else onDelete(); }}>
+    initial={backdropInitial} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: presenceDuration(reduced) }}>
+    <m.form className="modal" initial={cardInitial} animate={{ opacity: 1, y: 0, scale: 1 }} exit={cardExit} transition={{ duration: presenceDuration(reduced) }} role="dialog" aria-modal="true" aria-labelledby="dialog-title" aria-describedby="dialog-description" onSubmit={event => { event.preventDefault(); if (kind === "mkdir") onMkdir(); else if (kind === "rename") onRename(); else onDelete(); }}>
     <h2 id="dialog-title">{title}</h2>
     <p id="dialog-description">{description}</p>
     {"value" in dialog && <label>{kind === "mkdir" ? "Folder name" : "New name"}<input data-autofocus value={dialog.value} readOnly={pending} aria-invalid={dialog.error ? "true" : undefined} aria-describedby={dialog.error ? "dialog-error" : undefined} onChange={event => setDialog({ ...dialog, value: event.target.value, error: undefined })}/></label>}

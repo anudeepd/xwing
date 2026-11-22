@@ -288,7 +288,7 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
     if (dirty) setConfirmLeave(href); else navigateAway(href);
   };
 
-  const leave = (): void => { const target = confirmLeave!; allowLeave.current = true; if (target === "__logout__") { setAuthOverlay("logout"); window.setTimeout(() => logoutForm.current?.submit(), AUTH_REDIRECT_DELAY_MS); } else navigateAway(target); };
+  const leave = (): void => { const target = confirmLeave!; allowLeave.current = true; if (target === "__logout__") { setAuthOverlay("logout"); window.setTimeout(() => logoutForm.current!.submit(), AUTH_REDIRECT_DELAY_MS); } else navigateAway(target); };
 
   return <m.div
     className={cn(

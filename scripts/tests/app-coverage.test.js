@@ -1105,6 +1105,28 @@ describe("file browser coverage edges", () => {
     await waitFor(() => expect(document.querySelector(".transition-veil")).toBeNull(), { timeout: 2000 });
   });
 
+  it("labels a two-file archive in the plural", async () => {
+    await mount({ overrides: { "POST /_bulk/zip": () => new Promise(() => {}) } });
+    click(document.querySelector('[data-path="/alpha.txt"]'));
+    document.querySelector('[data-path="/beta.txt"]').dispatchEvent(new MouseEvent("click", { bubbles: true, ctrlKey: true }));
+    await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toBe("2 selected"));
+    click(document.querySelector('[aria-label="Download selected as zip"]'));
+    await waitFor(() => expect(document.querySelector(".zip-overlay")).not.toBeNull());
+    expect(document.querySelector(".zip-overlay")?.textContent).toContain("Zipping 2 files");
+  });
+
+  it("accepts a response without a URL", async () => {
+    await mount({
+      overrides: { "MKCOL /fresh/": { ok: true, status: 200, json: async () => ({}) } },
+    });
+    click([...document.querySelectorAll("button")].find(button => button.textContent.includes("New folder")));
+    await waitFor(() => expect(document.querySelector(".modal")).not.toBeNull());
+    const form = document.querySelector("form.modal");
+    setInputValue(form.querySelector("input"), "fresh");
+    submit(form);
+    await waitFor(() => expect(document.querySelector(".modal")).toBeNull());
+  });
+
   it("opens documents with and without an editor and honors the leave delay", async () => {
     const assign = vi.fn();
     vi.stubGlobal("location", {
