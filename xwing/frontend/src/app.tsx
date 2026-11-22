@@ -238,8 +238,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   // bottom edge is its measured height, not a constant. Publish it as
   // --xw-rail-clearance for .file-row's scroll-margin-block-end.
   useEffect(() => {
-    const rail = railRef.current;
-    if (!rail) return;
+    const rail = railRef.current!;
     const apply = (): void => {
       const rect = rail.getBoundingClientRect();
       const clearance = rect.height ? Math.ceil(window.innerHeight - rect.top + 8) : 0;
@@ -1015,8 +1014,7 @@ function FileRow({ file, index, selected, loading, arriving, tabStop, onFocusRow
       }
       return;
     }
-    const menu = leaving;
-    if (!menu) return;
+    const menu = leaving!;
     // First open only: a right click on this row while the menu is already up
     // re-runs the effect with focus inside the menu, which is not where to go back to.
     if (!opener.current) {
@@ -1038,8 +1036,7 @@ function FileRow({ file, index, selected, loading, arriving, tabStop, onFocusRow
         left = actionsAnchor.x + width + EDGE > viewportWidth ? actionsAnchor.x - width : actionsAnchor.x;
         top = actionsAnchor.y;
       } else {
-        const trigger = actionsTrigger.current?.getBoundingClientRect();
-        if (!trigger) return;
+        const trigger = actionsTrigger.current!.getBoundingClientRect();
         // The keyboard path and the trigger: the box hangs off the trigger's
         // trailing edge, which is where the user is looking.
         left = trigger.right - width;
@@ -1089,7 +1086,7 @@ function FileRow({ file, index, selected, loading, arriving, tabStop, onFocusRow
     };
   }, [actionsOpen, file.path, actionsAnchor]);
   const moveFocus = (row: HTMLElement, direction: "next" | "previous" | "first" | "last"): void => {
-    const rows = [...(row.parentElement?.querySelectorAll<HTMLElement>(".file-row") ?? [])];
+    const rows = [...row.parentElement!.querySelectorAll<HTMLElement>(".file-row")];
     const current = rows.indexOf(row);
     const target = direction === "first" ? rows[0] : direction === "last" ? rows[rows.length - 1] : rows[current + (direction === "next" ? 1 : -1)];
     target?.focus();

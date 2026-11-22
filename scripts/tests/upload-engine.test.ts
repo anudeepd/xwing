@@ -193,6 +193,7 @@ describe("SpeedTracker", () => {
 
 describe("range planning", () => {
   it("reports the gaps the server has not got yet", () => {
+    expect(missingRanges(null, 10)).toEqual([[0, 10]]);
     expect(missingRanges([], 10)).toEqual([[0, 10]]);
     expect(missingRanges([[0, 4], [8, 10]], 10)).toEqual([[4, 8]]);
     expect(missingRanges([[0, 10]], 10)).toEqual([]);
@@ -860,5 +861,110 @@ describe("fallback conditions", () => {
       callbacks: { onRetry: info => retries.push(info.attempt) },
     })).rejects.toMatchObject({ status: 413 });
     expect(retries.length).toBeGreaterThan(0);
+  });
+
+  it("wraps a non-error init failure", async () => {
+    const fake = {
+      initWithRetry: vi.fn(async () => { throw "init down"; }),
+      put: vi.fn(),
+      complete: vi.fn(),
+      status: vi.fn(),
+    };
+    await expect(uploadFile({
+      client: fake as unknown as UploadClient,
+      file: blobOf(8),
+      destDir: "/",
+    })).rejects.toBe("init down");
+  });
+
+  it("wraps a non-error thrown by the state callback", async () => {
+    const fake = {
+      put: vi.fn(async () => ({ ranges: [[0, 8]], received: 8 })),
+      complete: vi.fn(async () => ({ path: "x" })),
+      status: vi.fn(async () => ({ ranges: [[0, 8]] })),
+    };
+    await expect(uploadFile({
+      client: fake as unknown as UploadClient,
+      file: blobOf(8),
+      destDir: "/",
+      session: { uploadId: "s", chunkSize: 8, concurrency: 1, ranges: [], size: 8 },
+      chunkSize: 8,
+      callbacks: {
+        onState: state => {
+          if (state === UploadState.FINALIZING) throw "final callback";
+        },
+      },
+    })).rejects.toMatchObject({ message: "Upload failed" });
+  });
+
+  it("wraps a non-error thrown after completion", async () => {
+    const fake = {
+      put: vi.fn(async () => ({ ranges: [[0, 8]], received: 8 })),
+      complete: vi.fn(async () => ({ path: "x" })),
+      status: vi.fn(async () => ({ ranges: [[0, 8]] })),
+    };
+    await expect(uploadFile({
+      client: fake as unknown as UploadClient,
+      file: blobOf(8),
+      destDir: "/",
+      session: { uploadId: "s", chunkSize: 8, concurrency: 1, ranges: [], size: 8 },
+      chunkSize: 8,
+      callbacks: {
+        onState: state => {
+          if (state === UploadState.DONE) throw "done callback";
+        },
+      },
+    })).rejects.toMatchObject({ message: "Upload failed" });
+  });
+
+  it("keeps a full retry window when the minimum blocks shrinking", async () => {
+    const fake = {
+      put: vi.fn(async () => { throw new UploadError("retry", { retryable: true }); }),
+      complete: vi.fn(async () => ({})),
+      status: vi.fn(async () => ({ ranges: [] })),
+    };
+    await expect(uploadFile({
+      client: fake as unknown as UploadClient,
+      file: blobOf(8),
+      destDir: "/",
+      session: { uploadId: "s", chunkSize: 8, concurrency: 1, ranges: [], size: 8 },
+      chunkSize: 8,
+      minChunkBytes: 8,
+      maxAttempts: 2,
+      backoffMs: [0],
+    })).rejects.toMatchObject({ message: "retry" });
+  });
+
+  it("rejects a 413 window when the computed size cannot shrink", async () => {
+    const floor = vi.spyOn(Math, "floor").mockReturnValueOnce(8);
+    const fake = {
+      put: vi.fn(async () => { throw new UploadError("too large", { status: 413 }); }),
+      complete: vi.fn(async () => ({})),
+      status: vi.fn(async () => ({ ranges: [] })),
+    };
+    await expect(uploadFile({
+      client: fake as unknown as UploadClient,
+      file: blobOf(8),
+      destDir: "/",
+      session: { uploadId: "s", chunkSize: 8, concurrency: 1, ranges: [], size: 8 },
+      chunkSize: 8,
+      minChunkBytes: 4,
+      maxAttempts: 1,
+    })).rejects.toMatchObject({ status: 413 });
+    floor.mockRestore();
+  });
+
+  it("re-arms response deadlines and reads a session without ranges", async () => {
+    const { promise } = await startUpload({
+      session: { uploadId: "no-ranges", chunkSize: 0, concurrency: 1, size: 8 },
+      chunkSize: 0,
+      minChunkBytes: 1,
+    });
+    const xhr = FakeXHR.all[0]!;
+    xhr.progress(8, 8);
+    xhr.bodySent();
+    xhr.bodySent();
+    FakeXHR.all[0]!.finish(200, { ranges: [[0, 8]], received: 8 });
+    await expect(promise).resolves.toMatchObject({ ok: true });
   });
 });

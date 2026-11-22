@@ -169,16 +169,16 @@ export class UploadManager {
   }
 
   dismissCompleted(): void {
-    for (const [id, item] of this.items) {
+    this.items.forEach((item, id) => {
       if (item.status === "completed" || item.status === "cancelled") this.items.delete(id);
-    }
+    });
     this.flush(true);
   }
 
   dismissSuccessful(): void {
-    for (const [id, item] of this.items) {
+    this.items.forEach((item, id) => {
       if (item.status === "completed") this.items.delete(id);
-    }
+    });
     this.flush(true);
   }
 

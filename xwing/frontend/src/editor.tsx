@@ -172,8 +172,8 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
       if (event.key === "Escape" && closeSearchPanelAnimated()) { event.preventDefault(); event.stopPropagation(); }
     };
     const onCloseClickCapture = (event: MouseEvent) => {
-      const target = event.target as Element | null;
-      if (!target?.closest?.(".cm-panel.cm-search [name=close]")) return;
+      const target = event.target as Element;
+      if (!target.closest(".cm-panel.cm-search [name=close]")) return;
       if (closeSearchPanelAnimated()) { event.preventDefault(); event.stopPropagation(); }
     };
     window.addEventListener("beforeunload", beforeUnload); document.addEventListener("keydown", shortcut);
@@ -235,7 +235,7 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
       callbacks: {
         onProgress: (committed: number, total: number) => {
           noteAuthActivity();
-          setStatus(`Saving… ${total > 0 ? Math.round((committed / total) * 100) : 0}%`);
+          setStatus(`Saving… ${Math.round((committed / total) * 100)}%`);
         },
         onState: (state: string) => {
           noteAuthActivity();
@@ -288,7 +288,7 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
     if (dirty) setConfirmLeave(href); else navigateAway(href);
   };
 
-  const leave = (): void => { if (!confirmLeave) return; allowLeave.current = true; if (confirmLeave === "__logout__") { setAuthOverlay("logout"); window.setTimeout(() => logoutForm.current?.submit(), AUTH_REDIRECT_DELAY_MS); } else navigateAway(confirmLeave); };
+  const leave = (): void => { const target = confirmLeave!; allowLeave.current = true; if (target === "__logout__") { setAuthOverlay("logout"); window.setTimeout(() => logoutForm.current?.submit(), AUTH_REDIRECT_DELAY_MS); } else navigateAway(target); };
 
   return <m.div
     className={cn(

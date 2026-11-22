@@ -252,6 +252,15 @@ describe("UploadManager scheduling", () => {
     expect(engine.clientOptions[0]?.signal).toBeInstanceOf(AbortSignal);
   });
 
+  it("dismisses a cancelled item", async () => {
+    const { manager } = managerWith();
+    manager.add([new File(["hello"], "a.txt")], "/", 1024);
+    await pendingCall(0);
+    manager.cancel(manager.getSnapshot().items[0]!.id);
+    manager.dismissCompleted();
+    expect(manager.getSnapshot().items).toEqual([]);
+  });
+
   it("marks an aborted transfer cancelled even when the engine rejects it", async () => {
     const { manager } = managerWith();
     manager.add([new File(["hello"], "a.txt")], "/", 1024);
