@@ -1,0 +1,60 @@
+name: SonarQube Cloud
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+jobs:
+  analyze:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python dependencies
+        run: uv sync --frozen --extra dev --extra ldap
+
+      - name: Run Python tests with coverage
+        run: |
+          mkdir -p coverage
+          uv run --frozen pytest --cov=xwing --cov-report=xml:coverage/python-coverage.xml -q
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: scripts/package-lock.json
+
+      - name: Install frontend test dependencies
+        run: |
+          npm ci --prefix scripts
+          npm install --prefix xwing/frontend
+
+      - name: Run frontend tests with coverage
+        run: npm --prefix scripts run test:coverage
+
+      - name: Normalize frontend coverage paths for SonarQube Cloud
+        run: node scripts/normalize-sonar-lcov.mjs
+
+      - name: Authenticate to SonarQube Cloud
+        uses: SonarSource/sonarqube-auth-action@v1
+
+      - name: SonarQube Cloud scan
+        uses: SonarSource/sonarqube-scan-action@v7
+        with:
+          skipSignatureVerification: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
