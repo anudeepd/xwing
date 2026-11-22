@@ -124,7 +124,6 @@ function readFile(entry) {
     }
   });
 }
-// coverage probe
 
 /**
  * Read a directory to exhaustion: browsers return batches (Chromium caps each

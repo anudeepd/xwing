@@ -1461,4 +1461,60 @@ describe("file browser coverage edges", () => {
     input.dispatchEvent(new Event("change", { bubbles: true }));
     await waitFor(() => expect(document.querySelector(".upload-dock")).not.toBeNull());
   });
+
+  it("renders the delayed drop notice with motion", async () => {
+    await mount({ reduced: false });
+    vi.useFakeTimers();
+    const app = document.querySelector(".xw-app");
+    app.dispatchEvent(new Event("dragenter", { bubbles: true, cancelable: true }));
+    app.dispatchEvent(new Event("dragover", { bubbles: true, cancelable: true }));
+    await vi.advanceTimersByTimeAsync(1500);
+    await flushFakeTimers();
+    expect(document.querySelector(".drop-wait")).not.toBeNull();
+    app.dispatchEvent(new Event("dragleave", { bubbles: true, cancelable: true }));
+    await vi.advanceTimersByTimeAsync(0);
+    vi.useRealTimers();
+  });
+
+  it("clears an arrival highlight with motion", async () => {
+    UploadXHR.all = [];
+    vi.stubGlobal("XMLHttpRequest", UploadXHR);
+    await mount({
+      reduced: false,
+      overrides: {
+        "POST /_upload/init": () => ({ body: { upload_id: "up", chunk_size: 1024, concurrency: 1, size: 6 } }),
+        "POST /_upload/up/complete": () => ({ body: { path: "uploaded.txt", size: 6 } }),
+      },
+    });
+    vi.useFakeTimers();
+    const input = document.querySelector('input[type="file"]:not([webkitdirectory])');
+    Object.defineProperty(input, "files", { configurable: true, value: [new File(["abcdef"], "uploaded.txt")] });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(200);
+    await vi.advanceTimersByTimeAsync(1000);
+    vi.useRealTimers();
+  });
+
+  it("skips a failed refresh after its request is aborted", async () => {
+    UploadXHR.all = [];
+    vi.stubGlobal("XMLHttpRequest", UploadXHR);
+    const abortable = init => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+    });
+    const calls = await mount({
+      overrides: {
+        "GET /": abortable,
+        "GET /other/": () => directoryResponse({ ...bootstrap, path: "/other/", breadcrumbs: [...bootstrap.breadcrumbs, { name: "other", path: "/other/" }], files: [] }),
+        "POST /_upload/init": () => ({ body: { upload_id: "up", chunk_size: 1024, concurrency: 1, size: 6 } }),
+        "POST /_upload/up/complete": () => ({ body: { path: "uploaded.txt", size: 6 } }),
+      },
+    });
+    const input = document.querySelector('input[type="file"]:not([webkitdirectory])');
+    Object.defineProperty(input, "files", { configurable: true, value: [new File(["abcdef"], "uploaded.txt")] });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    await waitFor(() => expect(calls.filter(call => call === "GET /").length).toBeGreaterThan(0), { timeout: 3000 });
+    window.history.pushState({ path: "/other/" }, "", "/other/");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await waitFor(() => expect(document.querySelector('[data-path="/other/"]')).not.toBeNull());
+  });
 });

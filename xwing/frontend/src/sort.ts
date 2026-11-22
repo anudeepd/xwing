@@ -38,8 +38,18 @@ export function sortFiles(files: XwingFile[], entries: SortEntry[]): XwingFile[]
   return [...files].sort((left, right) => {
     if (left.kind !== right.kind) return left.kind === "directory" ? -1 : 1;
     for (const entry of entries) {
-      const a = entry.key === "name" ? left.name : entry.key === "size" ? left.size ?? -1 : left.modified ?? "";
-      const b = entry.key === "name" ? right.name : entry.key === "size" ? right.size ?? -1 : right.modified ?? "";
+      let a: string | number;
+      let b: string | number;
+      if (entry.key === "name") {
+        a = left.name;
+        b = right.name;
+      } else if (entry.key === "size") {
+        a = left.size ?? -1;
+        b = right.size ?? -1;
+      } else {
+        a = left.modified ?? "";
+        b = right.modified ?? "";
+      }
       const result = typeof a === "string" && typeof b === "string" && entry.key === "name"
         ? nameCollator.compare(a, b)
         : a < b ? -1 : a > b ? 1 : 0;
@@ -48,4 +58,3 @@ export function sortFiles(files: XwingFile[], entries: SortEntry[]): XwingFile[]
     return nameCollator.compare(left.name, right.name);
   });
 }
-// coverage probe

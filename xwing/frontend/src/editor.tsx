@@ -155,7 +155,8 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
   useEffect(() => {
     const beforeUnload = (event: BeforeUnloadEvent) => { if (dirty && !allowLeave.current) event.preventDefault(); };
     const shortcut = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void save(); }
+      const wantsSave = (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s";
+      if (wantsSave) { event.preventDefault(); void save(); }
       if (event.key === "Escape" && !event.defaultPrevented && !window.CM.searchPanelOpen(view.current?.state)) {
         if (!confirmLeave) { event.preventDefault(); requestLeave(boot.directory); }
       }

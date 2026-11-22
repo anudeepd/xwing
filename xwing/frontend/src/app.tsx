@@ -1218,7 +1218,9 @@ function SelectionCheckbox({ label, checked, indeterminate = false, rowControl =
 function focusFileRow(path: string | null | undefined, fallbackToFirst = false): void {
   window.requestAnimationFrame(() => {
     const rows = [...document.querySelectorAll<HTMLElement>(".file-row")];
-    (rows.find(row => row.dataset.path === path) ?? (fallbackToFirst ? rows[0] : null) ?? document.getElementById("file-list"))?.focus();
+    const byPath = rows.find(row => row.dataset.path === path);
+    const fallback = fallbackToFirst ? rows[0] : null;
+    (byPath ?? fallback ?? document.getElementById("file-list"))?.focus();
   });
 }
 

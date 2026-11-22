@@ -69,7 +69,6 @@ export function startAuthIdleTimer({
     timer = windowRef.setTimeout(expire, Math.max(0, deadline - Date.now()));
   };
   const recordActivity = () => {
-    if (expired) return;
     const now = Date.now();
     if (now >= deadline) {
       expire();

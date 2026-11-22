@@ -468,4 +468,23 @@ describe("editor coverage edges", () => {
     click(document.querySelector(".modal button"));
     await vi.waitFor(() => expect(document.querySelector(".modal")).toBeNull());
   });
+
+  it("discards changes and leaves for the folder", async () => {
+    vi.useFakeTimers();
+    const assign = vi.fn();
+    vi.stubGlobal("location", {
+      href: "http://xwing.test/README.md",
+      pathname: "/README.md",
+      search: "",
+      hash: "",
+      assign,
+    });
+    await mount({}, { reduced: false });
+    await setDoc("dirty");
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(document.querySelector(".modal")).not.toBeNull());
+    click(document.querySelector(".modal .button.danger"));
+    vi.advanceTimersByTime(200);
+    expect(assign).toHaveBeenCalledWith("/");
+  });
 });
