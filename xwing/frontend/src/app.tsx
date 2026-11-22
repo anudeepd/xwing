@@ -512,6 +512,14 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     });
   };
 
+  const toggleAll = (): void => {
+    let next: Set<string>;
+    if (selected.size === files.length) next = new Set();
+    else next = new Set(files.map(file => file.path));
+    setSelected(next);
+    setLastSelected(null);
+  };
+
   const toggleSelection = (file: XwingFile, index: number, gesture: { range: boolean; additive: boolean }): void => {
     setSelected(current => {
       if (!gesture.range && !gesture.additive) {
@@ -908,7 +916,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
         else if (event.key === "Escape" && selected.size) { event.preventDefault(); setSelected(new Set()); setLastSelected(null); }
       }}>
         <div className={cn("file-table grid grid-rows-[36px_minmax(0,1fr)] min-h-0 overflow-auto [scrollbar-gutter:stable]", dialog && "modal-open")} role="table" aria-label="Files" aria-rowcount={files.length + 1} aria-describedby={policyHint}>
-        <TableHeader files={files} selected={selected} sort={sort} onSort={updateSort} onSelectAll={() => { setSelected(selected.size === files.length ? new Set() : new Set(files.map(file => file.path))); setLastSelected(null); }}/>
+        <TableHeader files={files} selected={selected} sort={sort} onSort={updateSort} onSelectAll={toggleAll}/>
         <m.div id="file-list" key={directory.path} className="file-list min-h-0 overflow-x-clip" role="rowgroup" tabIndex={-1}
           initial={listEntrance.current && !reduced ? { opacity: 0, y: 6 } : false}
           animate={listLeaving ? { opacity: 0, y: -4 } : { opacity: 1, y: 0 }}

@@ -1360,6 +1360,10 @@ describe("file browser coverage edges", () => {
 
     click(document.querySelector('[aria-label="Select all"]'));
     await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toBe("4 selected"));
+    click(document.querySelector('[aria-label="Deselect all"]'));
+    await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toBe("0 selected"));
+    click(document.querySelector('[aria-label="Select all"]'));
+    await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toBe("4 selected"));
     click([...document.querySelectorAll("button")].find(button => button.textContent === "Clear"));
     await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toBe("0 selected"));
   });
