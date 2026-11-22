@@ -546,7 +546,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
       const topLevelName = item.relativePath.split("/").find(Boolean);
       if (topLevelName) pendingArrivalNames.current.add(topLevelName);
     }
-    if (autoRefreshTimer.current !== null) window.clearTimeout(autoRefreshTimer.current);
+    window.clearTimeout(autoRefreshTimer.current!);
     const refreshPath = directory.path;
     autoRefreshTimer.current = window.setTimeout(() => {
       autoRefreshTimer.current = null;
@@ -561,7 +561,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
       // re-read without a loading state, without clearing the selection and
       // without taking focus from whatever the user is typing into.
       void refreshListing().finally(() => {
-        if (arrivalTimer.current !== null) window.clearTimeout(arrivalTimer.current);
+        window.clearTimeout(arrivalTimer.current!);
         arrivalTimer.current = window.setTimeout(
           () => setArrivingNames(new Set()),
           prefersReducedMotion() ? 0 : 700,
@@ -571,8 +571,8 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   }, [directory.path, upload.items]);
 
   useEffect(() => () => {
-    if (autoRefreshTimer.current !== null) window.clearTimeout(autoRefreshTimer.current);
-    if (arrivalTimer.current !== null) window.clearTimeout(arrivalTimer.current);
+    window.clearTimeout(autoRefreshTimer.current!);
+    window.clearTimeout(arrivalTimer.current!);
   }, []);
 
   const createFolder = async (): Promise<void> => {
@@ -667,14 +667,10 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   };
 
   const clearDropFeedback = useCallback((): void => {
-    if (dragOverlayTimer.current !== null) {
-      window.clearTimeout(dragOverlayTimer.current);
-      dragOverlayTimer.current = null;
-    }
-    if (dropDelayTimer.current !== null) {
-      window.clearTimeout(dropDelayTimer.current);
-      dropDelayTimer.current = null;
-    }
+    window.clearTimeout(dragOverlayTimer.current!);
+    window.clearTimeout(dropDelayTimer.current!);
+    dragOverlayTimer.current = null;
+    dropDelayTimer.current = null;
     dragDepth.current = 0;
     setDragging(false);
     setDropWaitState(null);
@@ -683,11 +679,9 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   const refreshDropFeedback = useCallback((): void => {
     setDragging(true);
     setDropWaitState(null);
-    if (dragOverlayTimer.current !== null) window.clearTimeout(dragOverlayTimer.current);
-    if (dropDelayTimer.current !== null) {
-      window.clearTimeout(dropDelayTimer.current);
-      dropDelayTimer.current = null;
-    }
+    window.clearTimeout(dragOverlayTimer.current!);
+    window.clearTimeout(dropDelayTimer.current!);
+    dropDelayTimer.current = null;
     dragOverlayTimer.current = window.setTimeout(() => {
       dragOverlayTimer.current = null;
       setDragging(false);
@@ -712,8 +706,8 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
       window.removeEventListener("dragend", clearDropFeedback);
       window.removeEventListener("blur", clearDropFeedback);
       document.removeEventListener("visibilitychange", clearWhenHidden);
-      if (dragOverlayTimer.current !== null) window.clearTimeout(dragOverlayTimer.current);
-      if (dropDelayTimer.current !== null) window.clearTimeout(dropDelayTimer.current);
+      window.clearTimeout(dragOverlayTimer.current!);
+      window.clearTimeout(dropDelayTimer.current!);
     };
   }, [clearDropFeedback]);
 

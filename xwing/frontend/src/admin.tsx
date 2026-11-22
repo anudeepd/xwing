@@ -287,8 +287,7 @@ function LoadingCard(): React.JSX.Element {
   </div>;
 }
 
-function OverviewView({ metrics }: { metrics: Metrics | null }): React.JSX.Element {
-  if (!metrics) return <LoadingCard/>;
+function OverviewView({ metrics }: { metrics: Metrics }): React.JSX.Element {
   const cards = [
     { label: "Configured users", value: String(metrics.configured_users), hint: "Explicit entries in users.yaml" },
     { label: "Active users", value: String(metrics.active_users), hint: `Seen in audit log, last ${metrics.active_window_minutes} minutes` },
@@ -713,10 +712,13 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
   }, [showError]);
 
   const loadActiveTab = useCallback((next: string): void => {
-    if (next === "users") void loadUsers();
-    else if (next === "activity") void loadActivity();
-    else if (next === "trash") void loadTrash();
-    else void loadMetrics();
+    const loaders: Record<string, () => void> = {
+      overview: () => void loadMetrics(),
+      users: () => void loadUsers(),
+      activity: () => void loadActivity(),
+      trash: () => void loadTrash(),
+    };
+    loaders[next]!();
   }, [loadActivity, loadMetrics, loadTrash, loadUsers]);
 
   /** The console paints its shell straight away, the way the editor hydrates
@@ -991,7 +993,7 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
           : tab === "users" ? <UsersView users={users} defaultPermissions={defaultPermissions} ldapConfigured={bootstrap.ldapConfigured} formError={userFormError} formTitle={userFormTitle} formRef={userFormRef} onSave={form => void saveUser(form)} onDraftChange={() => { if (userFormError) setUserFormError(null); }} onEdit={editUser} onDelete={username => void confirmDeleteUser(username)} onClear={clearUserForm}/>
             : tab === "activity" ? <ActivityView events={events} summary={activitySummary} filters={filters} filterRef={filterRef} onFilterChange={patch => setFilters(current => ({ ...current, ...patch }))} onFilterSubmit={form => void loadActivity(form)} onPurge={form => void confirmPurge(form)}/>
               : tab === "trash" ? <TrashView trash={trash} selected={selectedTrash} allSelected={allSelected} onToggle={toggleTrash} onToggleAll={toggleAllTrash} onRestore={id => void restoreTrash(id)} onDelete={id => void confirmDeleteTrash(id)} onRestoreSelected={() => void confirmRestoreSelected()} onEmpty={() => void confirmEmptyTrash()} onRefresh={() => void loadTrash()}/>
-                : <OverviewView metrics={metrics}/>}
+                : metrics ? <OverviewView metrics={metrics}/> : <LoadingCard/>}
       </m.section>
       <p id="admin-status" className="sr-only" role="status">{status}</p>
     </main>

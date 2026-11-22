@@ -454,4 +454,15 @@ describe("editor coverage edges", () => {
     click(panel.querySelector("[name=close]"));
     expect(closeCount).toBe(0);
   });
+
+  it("keeps the discard dialog when Escape is pressed again", async () => {
+    await mount();
+    await setDoc("dirty");
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(document.querySelector(".modal")).not.toBeNull());
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    expect(document.querySelector(".modal")).not.toBeNull();
+    click(document.querySelector(".modal button"));
+    await vi.waitFor(() => expect(document.querySelector(".modal")).toBeNull());
+  });
 });

@@ -86,6 +86,13 @@ test("the console hands back to the file browser", async ({ page }) => {
   await expect(page.getByRole("table", { name: "Files" })).toBeVisible();
 });
 
+test("the console hands back with reduced motion", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/admin");
+  await page.locator(".brand").click();
+  await expect(page).toHaveURL(/\/$/);
+});
+
 test("a destructive confirmation opens on Cancel", async ({ page }) => {
   await page.goto("/admin?tab=activity");
   // A retention no event can fall outside, so the purge deletes nothing: this is
