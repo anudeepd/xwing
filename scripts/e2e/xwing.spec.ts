@@ -335,6 +335,7 @@ test("a completed browser upload refreshes the folder automatically", async ({ p
   await expect(page.getByText("1 selected", { exact: true })).toBeVisible();
   await expect.poll(() => directoryRefreshes).toBe(1);
   await expect(page.getByRole("button", { name: "Refresh folder" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Clear finished uploads" }).click();
   await expect(upload).not.toBeVisible({ timeout: 6000 });
 });
 

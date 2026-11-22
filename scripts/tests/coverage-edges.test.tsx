@@ -585,4 +585,16 @@ describe("tooltip and auth overlay", () => {
     window.dispatchEvent(new Event("resize"));
     await act(async () => root.unmount());
   });
+
+  it("skips positioning when the anchor has no box", async () => {
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => root.render(createElement(Tooltip, { label: "Hint" }, createElement("button", null, "Open"))));
+    const anchor = container.querySelector(".inline-flex") as HTMLElement;
+    anchor.getBoundingClientRect = () => null as unknown as DOMRect;
+    await act(async () => container.querySelector("button")!.focus());
+    expect(document.querySelector("[role=tooltip]")).not.toBeNull();
+    await act(async () => root.unmount());
+  });
 });

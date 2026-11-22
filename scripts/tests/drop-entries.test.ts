@@ -255,6 +255,24 @@ describe("collectDroppedEntries", () => {
     });
   });
 
+  it("skips a null child that survives the batch filter", async () => {
+    const batch = [null];
+    Object.defineProperty(batch, "filter", { value: () => [null] });
+    let call = 0;
+    const entry = {
+      isFile: false,
+      isDirectory: true,
+      name: "hollow",
+      createReader: () => ({
+        readEntries: (resolve: (entries: unknown) => void) => resolve(call++ === 0 ? batch : []),
+      }),
+    };
+    await expect(collectDroppedEntries(dataTransferFrom({ entries: [entry] }))).resolves.toEqual({
+      entries: [],
+      skipped: 0,
+    });
+  });
+
   it("counts an item without a file accessor", async () => {
     const transfer = {
       items: [{ kind: "file", webkitGetAsEntry: () => null }],

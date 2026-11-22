@@ -68,6 +68,24 @@ test("the console opens from the file browser without a loading card", async ({ 
   expect(await page.locator(".boot-loading").count()).toBe(0);
 });
 
+test("the overview paints its skeleton while metrics are pending", async ({ page }) => {
+  await page.route("**/api/admin/metrics", async route => {
+    const response = await route.fetch();
+    await new Promise(resolve => setTimeout(resolve, 300));
+    await route.fulfill({ response });
+  });
+  await page.goto("/admin");
+  await expect(page.locator(".loading-card")).toBeVisible();
+  await expect(page.locator(".metric-card").first()).toBeVisible();
+});
+
+test("the console hands back to the file browser", async ({ page }) => {
+  await page.goto("/admin");
+  await page.locator(".brand").click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByRole("table", { name: "Files" })).toBeVisible();
+});
+
 test("a destructive confirmation opens on Cancel", async ({ page }) => {
   await page.goto("/admin?tab=activity");
   // A retention no event can fall outside, so the purge deletes nothing: this is
