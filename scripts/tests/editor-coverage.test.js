@@ -371,6 +371,8 @@ describe("editor coverage edges", () => {
     await mount({ canWrite: false, maxChunkBytes: 0 });
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "s", ctrlKey: true, bubbles: true, cancelable: true }));
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "s", metaKey: true, bubbles: true, cancelable: true }));
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "s", ctrlKey: true, metaKey: true, bubbles: true, cancelable: true }));
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "a", ctrlKey: true, bubbles: true, cancelable: true }));
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true, cancelable: true }));
     expect(document.querySelector('[role="status"]')?.textContent).not.toBe("Saving…");
   });

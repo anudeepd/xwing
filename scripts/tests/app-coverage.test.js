@@ -1415,6 +1415,8 @@ describe("file browser coverage edges", () => {
     beta.focus();
     key(beta, "Home");
     expect(document.activeElement).toBe(document.querySelector('[data-path="/other/"]'));
+    key(document.activeElement, "End");
+    expect(document.activeElement).toBe(document.querySelector('[data-path="/beta.txt"]'));
 
     await mount({ bootstrapData: { ...bootstrap, permissions: { read: true, write: false, delete: false } } });
     const drag = new Event("dragover", { bubbles: true, cancelable: true });

@@ -381,7 +381,6 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
         if (!response.ok) throw new Error(await responseError(response));
         if (!response.headers.get("content-type")?.includes(DIRECTORY_MEDIA_TYPE)) throw new Error("The server returned an unexpected response");
         const next = parseBootstrap(await response.json());
-        if (id !== requestId.current) return;
         setDirectory(next);
         setSelected(new Set());
         setLastSelected(null);
@@ -492,7 +491,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   const refreshListing = useCallback(async (): Promise<void> => {
     if (navigationInFlight.current) return;
     const path = currentDirectory.current;
-    const id = ++requestId.current;
+    requestId.current += 1;
     const controller = new AbortController();
     abort.current = controller;
     try {
@@ -502,7 +501,6 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
       if (!response.ok) throw new Error(`Request failed (${response.status})`);
       if (!response.headers.get("content-type")?.includes(DIRECTORY_MEDIA_TYPE)) throw new Error("The server returned an unexpected response");
       const next = parseBootstrap(await response.json());
-      if (id !== requestId.current) return;
       setDirectory(previous => listingFingerprint(previous) === listingFingerprint(next) ? previous : next);
       // Entries can vanish while the user is looking at them; keep the
       // selection and range anchor pointing at rows that still exist.
@@ -1219,8 +1217,15 @@ function focusFileRow(path: string | null | undefined, fallbackToFirst = false):
   window.requestAnimationFrame(() => {
     const rows = [...document.querySelectorAll<HTMLElement>(".file-row")];
     const byPath = rows.find(row => row.dataset.path === path);
-    const fallback = fallbackToFirst ? rows[0] : null;
-    (byPath ?? fallback ?? document.getElementById("file-list"))?.focus();
+    if (byPath) {
+      byPath.focus();
+      return;
+    }
+    if (fallbackToFirst) {
+      rows[0]?.focus();
+      return;
+    }
+    document.getElementById("file-list")?.focus();
   });
 }
 

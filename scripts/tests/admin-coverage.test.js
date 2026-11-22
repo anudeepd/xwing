@@ -135,12 +135,12 @@ const activityEvents = [
   },
 ];
 
-function mount(tab = "overview", { ldapConfigured = false, overrides = {}, idle = 0 } = {}) {
+function mount(tab = "overview", { ldapConfigured = false, overrides = {}, idle = 0, reduced = true } = {}) {
   vi.resetModules();
   window.history.replaceState(null, "", `?tab=${tab}`);
   if (idle === null) delete document.body.dataset.authIdleTimeout;
   else document.body.dataset.authIdleTimeout = String(idle);
-  window.matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} });
+  window.matchMedia = () => ({ matches: reduced, addEventListener() {}, removeEventListener() {} });
   window.__xwingAdminRoot?.unmount();
   window.__xwingAdminRoot = undefined;
   document.body.innerHTML = `
@@ -581,8 +581,7 @@ describe("admin coverage edges", () => {
       search: window.location.search,
       hash: window.location.hash,
     });
-    window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
-    await mount("overview");
+    await mount("overview", { reduced: false });
     const brand = document.querySelector(".brand");
     click(brand);
     await new Promise(resolve => setTimeout(resolve, 20));
@@ -591,8 +590,7 @@ describe("admin coverage edges", () => {
     expect(location.assign).toHaveBeenCalledTimes(1);
 
     location.assign.mockClear();
-    window.matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} });
-    await mount("overview");
+    await mount("overview", { reduced: true });
     click(document.querySelector(".brand"));
     await vi.waitFor(() => expect(location.assign).toHaveBeenCalledTimes(1));
   });
