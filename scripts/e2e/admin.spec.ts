@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./coverage-fixture";
 
 /**
  * The admin console only answers behind LDAPGate, so these specs run against the
@@ -66,6 +66,31 @@ test("the console opens from the file browser without a loading card", async ({ 
   await expect(page.locator(".admin-shell")).toBeVisible();
   // The handover marker keeps the cold-load card off the arriving console.
   expect(await page.locator(".boot-loading").count()).toBe(0);
+});
+
+test("the overview paints its skeleton while metrics are pending", async ({ page }) => {
+  await page.route("**/api/admin/metrics", async route => {
+    const response = await route.fetch();
+    await new Promise(resolve => setTimeout(resolve, 300));
+    await route.fulfill({ response });
+  });
+  await page.goto("/admin");
+  await expect(page.locator(".loading-card")).toBeVisible();
+  await expect(page.locator(".metric-card").first()).toBeVisible();
+});
+
+test("the console hands back to the file browser", async ({ page }) => {
+  await page.goto("/admin");
+  await page.locator(".brand").click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByRole("table", { name: "Files" })).toBeVisible();
+});
+
+test("the console hands back with reduced motion", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/admin");
+  await page.locator(".brand").click();
+  await expect(page).toHaveURL(/\/$/);
 });
 
 test("a destructive confirmation opens on Cancel", async ({ page }) => {

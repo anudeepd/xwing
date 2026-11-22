@@ -156,6 +156,27 @@ async def _dispose_backup(backup: Path | None, dispose) -> None:
         await anyio.to_thread.run_sync(_cleanup_path, backup)  # type: ignore[reportAttributeAccessIssue]
 
 
+def _temporary_copy_path(dest: Path, source_is_dir: bool) -> Path:
+    if source_is_dir:
+        temp_dest = Path(
+            tempfile.mkdtemp(
+                prefix=f".{dest.name}.", suffix=".tmp", dir=dest.parent
+            )
+        )
+        shutil.rmtree(temp_dest)
+        return temp_dest
+    handle = tempfile.NamedTemporaryFile(
+        prefix=f".{dest.name}.",
+        suffix=".tmp",
+        dir=dest.parent,
+        delete=False,
+    )
+    try:
+        return Path(handle.name)
+    finally:
+        handle.close()
+
+
 async def copy_response(
     src: Path, dest: Path, overwrite: bool, dispose=None
 ) -> Response:
@@ -173,22 +194,9 @@ async def copy_response(
 
     # Copy to a unique temp path first, then rename into place.
     try:
-        if src.is_symlink() or src.is_dir():
-            temp_dest = Path(
-                tempfile.mkdtemp(
-                    prefix=f".{dest.name}.", suffix=".tmp", dir=dest.parent
-                )
-            )
-            shutil.rmtree(temp_dest)
-        else:
-            temp_handle = tempfile.NamedTemporaryFile(
-                prefix=f".{dest.name}.",
-                suffix=".tmp",
-                dir=dest.parent,
-                delete=False,
-            )
-            temp_dest = Path(temp_handle.name)
-            temp_handle.close()
+        temp_dest = await anyio.to_thread.run_sync(
+            _temporary_copy_path, dest, src.is_symlink() or src.is_dir()
+        )
     except (FileNotFoundError, NotADirectoryError):
         return Response(status_code=409, content="Destination parent does not exist")
     except OSError:

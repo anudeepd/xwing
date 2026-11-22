@@ -28,6 +28,7 @@ import {
   TOAST_TIMER,
   TOPBAR,
 } from "./ui";
+import { Logo } from "./logo";
 
 const BTN = `${CONTROL} ${CONTROL_ADMIN}`;
 const BTN_PRIMARY = CONTROL_PRIMARY;
@@ -263,18 +264,6 @@ function PermissionBadges({ permissions }: { permissions: PermissionSet }): Reac
   </span>;
 }
 
-function Logo(): React.JSX.Element {
-  return <svg className="brand-mark" viewBox="0 0 200 200" role="img" aria-label="X-wing logo">
-    <rect x="6" y="6" width="188" height="188" rx="36"/>
-    <g fill="none" strokeLinecap="round" strokeLinejoin="round">
-      <polygon points="71,78 23,48 15,100 23,152 71,122"/><polyline points="71,78 30,100 71,122"/>
-      <polygon points="129,78 177,48 185,100 177,152 129,122"/><polyline points="129,78 170,100 129,122"/>
-      <path d="m71 78 15 8m-15 36 15-8m43-36-15 8m15 36-15-8"/>
-      <circle cx="100" cy="100" r="20"/><circle cx="100" cy="100" r="13"/>
-    </g><circle className="brand-core" cx="100" cy="100" r="4.5"/>
-  </svg>;
-}
-
 const Chevron = (): React.JSX.Element => <svg className="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>;
 
 /** Same glyphs the app's toasts use: a check for success, an alert for an error.
@@ -298,8 +287,7 @@ function LoadingCard(): React.JSX.Element {
   </div>;
 }
 
-function OverviewView({ metrics }: { metrics: Metrics | null }): React.JSX.Element {
-  if (!metrics) return <LoadingCard/>;
+function OverviewView({ metrics }: { metrics: Metrics }): React.JSX.Element {
   const cards = [
     { label: "Configured users", value: String(metrics.configured_users), hint: "Explicit entries in users.yaml" },
     { label: "Active users", value: String(metrics.active_users), hint: `Seen in audit log, last ${metrics.active_window_minutes} minutes` },
@@ -480,7 +468,7 @@ function ActivityRow({ event }: { event: ActivityEvent }): React.JSX.Element {
       <span className="activity-action block">{activityLabel(event.method)}</span>
       {detail.paths.length
         ? <details className="activity-detail-list mt-1 block font-mono text-[11px] leading-tight text-admin-faint">
-          <summary className="cursor-pointer break-words marker:text-admin-accent">{detail.summary || count(detail.paths.length, "selected item")}</summary>
+          <summary className="cursor-pointer break-words marker:text-admin-accent">{detail.summary}</summary>
           <ul className="max-h-44 list-none overflow-y-auto border-0 border-l border-solid border-admin-line py-0 pr-2 pl-5">{detail.paths.map(path => <li key={path} className="mt-1 first:mt-0"><code className="break-words text-admin-text">{path}</code></li>)}</ul>
         </details>
         : detail.summary ? <small className="activity-detail mt-1 block font-mono text-[11px] leading-tight text-admin-faint">{detail.summary}</small> : null}
@@ -724,10 +712,13 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
   }, [showError]);
 
   const loadActiveTab = useCallback((next: string): void => {
-    if (next === "users") void loadUsers();
-    else if (next === "activity") void loadActivity();
-    else if (next === "trash") void loadTrash();
-    else void loadMetrics();
+    const loaders: Record<string, () => void> = {
+      overview: () => void loadMetrics(),
+      users: () => void loadUsers(),
+      activity: () => void loadActivity(),
+      trash: () => void loadTrash(),
+    };
+    loaders[next]!();
   }, [loadActivity, loadMetrics, loadTrash, loadUsers]);
 
   /** The console paints its shell straight away, the way the editor hydrates
@@ -846,15 +837,14 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
 
   const editUser = useCallback((username: string) => {
     const form = userFormRef.current;
-    const user = users.find(item => item.username === username);
-    if (!user || !form) return;
+    const found = users.find(item => item.username === username)!;
     const usernameField = formField<HTMLInputElement>(form, "username");
-    if (usernameField) usernameField.value = user.username;
+    if (usernameField) usernameField.value = found.username;
     const originalField = formField<HTMLInputElement>(form, "original-username");
-    if (originalField) originalField.value = user.username;
+    if (originalField) originalField.value = found.username;
     for (const permission of ["read", "write", "delete"] as const) {
       const field = formField<HTMLInputElement>(form, `user-${permission}`);
-      if (field) field.checked = user.permissions[permission];
+      if (field) field.checked = found.permissions[permission];
     }
     setUserFormTitle(`Edit ${username}`);
     setUserFormError(null);
@@ -1003,7 +993,7 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
           : tab === "users" ? <UsersView users={users} defaultPermissions={defaultPermissions} ldapConfigured={bootstrap.ldapConfigured} formError={userFormError} formTitle={userFormTitle} formRef={userFormRef} onSave={form => void saveUser(form)} onDraftChange={() => { if (userFormError) setUserFormError(null); }} onEdit={editUser} onDelete={username => void confirmDeleteUser(username)} onClear={clearUserForm}/>
             : tab === "activity" ? <ActivityView events={events} summary={activitySummary} filters={filters} filterRef={filterRef} onFilterChange={patch => setFilters(current => ({ ...current, ...patch }))} onFilterSubmit={form => void loadActivity(form)} onPurge={form => void confirmPurge(form)}/>
               : tab === "trash" ? <TrashView trash={trash} selected={selectedTrash} allSelected={allSelected} onToggle={toggleTrash} onToggleAll={toggleAllTrash} onRestore={id => void restoreTrash(id)} onDelete={id => void confirmDeleteTrash(id)} onRestoreSelected={() => void confirmRestoreSelected()} onEmpty={() => void confirmEmptyTrash()} onRefresh={() => void loadTrash()}/>
-                : <OverviewView metrics={metrics}/>}
+                : <OverviewView metrics={metrics!}/>}
       </m.section>
       <p id="admin-status" className="sr-only" role="status">{status}</p>
     </main>

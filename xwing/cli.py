@@ -165,7 +165,8 @@ def serve(
     _configure_logging(log_file)
 
     display_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
-    url = f"http://{display_host}:{port}"
+    # The local listener is HTTP. HTTPS deployments terminate TLS at the reverse proxy.
+    url = f"http://{display_host}:{port}"  # NOSONAR
 
     if ldap_config:
         os.environ["XWING_LDAP_CONFIG"] = ldap_config

@@ -1471,6 +1471,42 @@ class TestAdminConsole:
             loaded_config,
         )
 
+    def test_failed_ldap_write_rolls_back_users(
+        self, root, tmp_dir, tmp_path, monkeypatch
+    ):
+        settings, users, _ = self._settings(root, tmp_dir, tmp_path, monkeypatch)
+        original_users = users.read_text()
+        ldap_path = tmp_path / "ldapgate.yaml"
+        original_ldap = ldap_path.read_text()
+        calls = 0
+        real_safe_dump = yaml.safe_dump
+
+        def failing_safe_dump(value, *args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 3:
+                raise yaml.YAMLError("simulated LDAP write failure")
+            return real_safe_dump(value, *args, **kwargs)
+
+        monkeypatch.setattr("xwing.app.yaml.safe_dump", failing_safe_dump)
+        with TestClient(create_app(settings)) as client:
+            response = client.post(
+                "/api/admin/users",
+                headers={"X-Forwarded-User": "admin"},
+                json={
+                    "username": "bob",
+                    "permissions": {
+                        "read": True,
+                        "write": False,
+                        "delete": False,
+                    },
+                },
+            )
+
+        assert response.status_code == 500
+        assert users.read_text() == original_users
+        assert ldap_path.read_text() == original_ldap
+
     def test_admin_page_and_user_management(self, root, tmp_dir, tmp_path, monkeypatch, asset_url):
         settings, users, loaded_config = self._settings(
             root, tmp_dir, tmp_path, monkeypatch

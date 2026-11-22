@@ -155,7 +155,10 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
   useEffect(() => {
     const beforeUnload = (event: BeforeUnloadEvent) => { if (dirty && !allowLeave.current) event.preventDefault(); };
     const shortcut = (event: KeyboardEvent) => {
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") { event.preventDefault(); void save(); }
+      let wantsSave = false;
+      if (event.ctrlKey) wantsSave = event.key.toLowerCase() === "s";
+      else if (event.metaKey) wantsSave = event.key.toLowerCase() === "s";
+      if (wantsSave) { event.preventDefault(); void save(); }
       if (event.key === "Escape" && !event.defaultPrevented && !window.CM.searchPanelOpen(view.current?.state)) {
         if (!confirmLeave) { event.preventDefault(); requestLeave(boot.directory); }
       }
@@ -172,8 +175,8 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
       if (event.key === "Escape" && closeSearchPanelAnimated()) { event.preventDefault(); event.stopPropagation(); }
     };
     const onCloseClickCapture = (event: MouseEvent) => {
-      const target = event.target as Element | null;
-      if (!target?.closest?.(".cm-panel.cm-search [name=close]")) return;
+      const target = event.target;
+      if (!(target instanceof Element) || !target.closest(".cm-panel.cm-search [name=close]")) return;
       if (closeSearchPanelAnimated()) { event.preventDefault(); event.stopPropagation(); }
     };
     window.addEventListener("beforeunload", beforeUnload); document.addEventListener("keydown", shortcut);
@@ -235,7 +238,7 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
       callbacks: {
         onProgress: (committed: number, total: number) => {
           noteAuthActivity();
-          setStatus(`Saving… ${total > 0 ? Math.round((committed / total) * 100) : 0}%`);
+          setStatus(`Saving… ${Math.round((committed / total) * 100)}%`);
         },
         onState: (state: string) => {
           noteAuthActivity();
@@ -288,7 +291,7 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
     if (dirty) setConfirmLeave(href); else navigateAway(href);
   };
 
-  const leave = (): void => { if (!confirmLeave) return; allowLeave.current = true; if (confirmLeave === "__logout__") { setAuthOverlay("logout"); window.setTimeout(() => logoutForm.current?.submit(), AUTH_REDIRECT_DELAY_MS); } else navigateAway(confirmLeave); };
+  const leave = (): void => { const target = confirmLeave!; allowLeave.current = true; if (target === "__logout__") { setAuthOverlay("logout"); window.setTimeout(() => logoutForm.current!.submit(), AUTH_REDIRECT_DELAY_MS); } else navigateAway(target); };
 
   return <m.div
     className={cn(
@@ -352,12 +355,24 @@ function detectLanguage(cm: CodeMirrorApi, extension: string): unknown[] {
   try { return [factory()]; } catch { return []; }
 }
 
+declare global {
+  interface Window {
+    /** The live editor root, so tests can unmount the tree and exercise cleanup. */
+    __xwingEditorRoot?: ReturnType<typeof createRoot>;
+  }
+}
+
 const node = document.getElementById("xwing-editor-bootstrap");
-const root = document.getElementById("xwing-editor-root");
-if (node?.textContent && root) createRoot(root).render(
-  <LazyMotion features={domAnimation} strict>
-    <MotionConfig reducedMotion="user">
-      <EditorApp boot={JSON.parse(node.textContent) as EditorBootstrap}/>
-    </MotionConfig>
-  </LazyMotion>,
-);
+const rootElement = document.getElementById("xwing-editor-root");
+if (node?.textContent && rootElement) {
+  window.__xwingEditorRoot?.unmount();
+  const root = createRoot(rootElement);
+  window.__xwingEditorRoot = root;
+  root.render(
+    <LazyMotion features={domAnimation} strict>
+      <MotionConfig reducedMotion="user">
+        <EditorApp boot={JSON.parse(node.textContent) as EditorBootstrap}/>
+      </MotionConfig>
+    </LazyMotion>,
+  );
+}

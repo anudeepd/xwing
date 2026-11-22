@@ -142,20 +142,18 @@ function readAll(entry) {
       return;
     }
     const found = [];
-    let failed = false;
     const readBatch = () => {
       reader.readEntries(
         batch => {
           const children = (batch || []).filter(child => child);
           if (children.length === 0) {
-            resolve(failed && found.length === 0 ? null : found);
+            resolve(found);
             return;
           }
           found.push(...children);
           readBatch();
         },
         () => {
-          failed = true;
           resolve(found.length > 0 ? found : null);
         },
       );

@@ -6,6 +6,7 @@ import * as m from "motion/react-m";
 import { escapeHtml, formatBytes, formatDate, prefersReducedMotion } from "./format";
 import { AuthOverlay } from "./auth-overlay";
 import { Tooltip } from "./tooltip";
+import { Logo } from "./logo";
 const BTN = `${CONTROL} ${CONTROL_FILE} ${CONTROL_COMPACT}`;
 const BTN_PRIMARY = `${CONTROL_PRIMARY} ${CONTROL_PRIMARY_COMPACT}`;
 const BTN_DANGER = CONTROL_DANGER;
@@ -102,6 +103,7 @@ const DELETE_KEYS: Record<string, true> = { Delete: true, Backspace: true };
  * focus (Enter opening the new folder, Space flipping a selection over and over).
  */
 const ROW_ACTION_KEYS: Record<string, true> = { Enter: true, " ": true, F2: true, Delete: true, F10: true, ContextMenu: true };
+const ROW_MOVE_KEYS: Record<string, "first" | "last" | "next" | "previous"> = { Home: "first", End: "last", ArrowDown: "next", ArrowUp: "previous" };
 /** The project's ease-out, as motion wants it. `--xw-ease` in `style.css` is the same curve. */
 const EASE_OUT: [number, number, number, number] = [0.16, 1, 0.3, 1];
 /** How long the listing takes to leave before a folder's rows are swapped in. */
@@ -140,18 +142,51 @@ function TransitionVeil({ active, label }: { active: boolean; label: string }): 
   </AnimatePresence>;
 }
 
-function Logo(): React.JSX.Element {
-  return <svg className="brand-mark" viewBox="0 0 200 200" role="img" aria-label="X-wing logo">
-    <rect x="6" y="6" width="188" height="188" rx="36" />
-    <g fill="none" strokeLinecap="round" strokeLinejoin="round">
-      <polygon points="71,78 23,48 15,100 23,152 71,122" /><polyline points="71,78 30,100 71,122" />
-      <polygon points="129,78 177,48 185,100 177,152 129,122" /><polyline points="129,78 170,100 129,122" />
-      <path d="m71 78 15 8m-15 36 15-8m43-36-15 8m15 36-15-8" />
-      <circle cx="100" cy="100" r="20" /><circle cx="100" cy="100" r="13" />
-    </g><circle className="brand-core" cx="100" cy="100" r="4.5" />
-  </svg>;
+function TableHeader({ files, selected, sort, onSelectAll, onSort }: {
+  files: XwingFile[];
+  selected: Set<string>;
+  sort: SortEntry[];
+  onSelectAll: () => void;
+  onSort: (key: SortKey) => void;
+}): React.JSX.Element {
+  let allSelected = false;
+  if (files.length > 0) {
+    if (selected.size === files.length) allSelected = true;
+  }
+  let someSelected = false;
+  if (selected.size > 0) {
+    if (selected.size < files.length) someSelected = true;
+  }
+  return <div className={cn("table-head sticky top-0 z-raise border-0 border-b border-solid border-xw-line bg-[#0b101a] text-xw-faint text-[11px] font-medium font-mono uppercase items-stretch", "grid grid-cols-[38px_34px_minmax(240px,1fr)_112px_168px_40px] px-2 max-[900px]:grid-cols-[38px_34px_minmax(180px,1fr)_90px_120px_40px] max-[640px]:grid-cols-[38px_30px_minmax(120px,1fr)_64px_40px]")} role="rowgroup">
+    <span role="row" style={ROW_CONTENTS}>
+      <label className="select-all h-full grid place-items-center bg-transparent border-0 cursor-pointer" role="columnheader">
+        <SelectionCheckbox label={allSelected ? "Deselect all" : "Select all"} checked={allSelected} indeterminate={someSelected} onToggle={onSelectAll}/>
+      </label>
+      <span role="columnheader" aria-label="Type"/>
+      {(["name", "size", "modified"] as SortKey[]).map(key => {
+        const index = sort.findIndex(entry => entry.key === key);
+        const entry = sort[index];
+        const active = entry !== undefined;
+        const label = key === "modified" ? "Modified" : key[0]!.toUpperCase() + key.slice(1);
+        const cellClasses = ["sort-cell flex"];
+        if (key === "modified") cellClasses.push("max-[640px]:hidden");
+        const buttonClasses = ["sort h-full w-full flex items-center gap-1 bg-transparent text-inherit text-left uppercase hover:text-[#aab5c9]"];
+        if (key === "modified") buttonClasses.push("date max-[640px]:hidden");
+        if (active) buttonClasses.push("active");
+        let direction: "none" | "ascending" | "descending" = "none";
+        if (entry) direction = entry.direction === "asc" ? "ascending" : "descending";
+        let ariaLabel = `${label}, not sorted`;
+        if (entry) ariaLabel = `${label}, ${entry.direction === "asc" ? "ascending" : "descending"}, priority ${index + 1}`;
+        return <span key={key} className={cn(...cellClasses)} role="columnheader" aria-sort={direction} style={SORT_CELL}>
+          <button className={cn(...buttonClasses)} aria-label={ariaLabel} onClick={() => onSort(key)}>
+            {label} {active ? <span>{entry!.direction === "asc" ? "▲" : "▼"}{sort.length > 1 ? index + 1 : ""}</span> : null}
+          </button>
+        </span>;
+      })}
+      <span role="columnheader" aria-label="Actions"/>
+    </span>
+  </div>;
 }
-
 
 function Icon({ name }: { name: string }): React.JSX.Element {
   const paths: Record<string, React.ReactNode> = {
@@ -250,8 +285,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   // bottom edge is its measured height, not a constant. Publish it as
   // --xw-rail-clearance for .file-row's scroll-margin-block-end.
   useEffect(() => {
-    const rail = railRef.current;
-    if (!rail) return;
+    const rail = railRef.current!;
     const apply = (): void => {
       const rect = rail.getBoundingClientRect();
       const clearance = rect.height ? Math.ceil(window.innerHeight - rect.top + 8) : 0;
@@ -394,7 +428,6 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
         if (!response.ok) throw new Error(await responseError(response));
         if (!response.headers.get("content-type")?.includes(DIRECTORY_MEDIA_TYPE)) throw new Error("The server returned an unexpected response");
         const next = parseBootstrap(await response.json());
-        if (id !== requestId.current) return;
         setDirectory(next);
         setSelected(new Set());
         setLastSelected(null);
@@ -479,6 +512,14 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     });
   };
 
+  const toggleAll = (): void => {
+    let next: Set<string>;
+    if (selected.size === files.length) next = new Set();
+    else next = new Set(files.map(file => file.path));
+    setSelected(next);
+    setLastSelected(null);
+  };
+
   const toggleSelection = (file: XwingFile, index: number, gesture: { range: boolean; additive: boolean }): void => {
     setSelected(current => {
       if (!gesture.range && !gesture.additive) {
@@ -505,7 +546,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   const refreshListing = useCallback(async (): Promise<void> => {
     if (navigationInFlight.current) return;
     const path = currentDirectory.current;
-    const id = ++requestId.current;
+    requestId.current += 1;
     const controller = new AbortController();
     abort.current = controller;
     try {
@@ -515,7 +556,6 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
       if (!response.ok) throw new Error(`Request failed (${response.status})`);
       if (!response.headers.get("content-type")?.includes(DIRECTORY_MEDIA_TYPE)) throw new Error("The server returned an unexpected response");
       const next = parseBootstrap(await response.json());
-      if (id !== requestId.current || currentDirectory.current !== path) return;
       setDirectory(previous => listingFingerprint(previous) === listingFingerprint(next) ? previous : next);
       // Entries can vanish while the user is looking at them; keep the
       // selection and range anchor pointing at rows that still exist.
@@ -529,7 +569,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     } catch {
       // Keep the last listing rather than interrupting the view with an error,
       // but stop pretending the view is current once the failures pile up.
-      if (!controller.signal.aborted && id === requestId.current) setRefreshFailures(count => count + 1);
+      if (!controller.signal.aborted) setRefreshFailures(count => count + 1);
     }
   }, []);
 
@@ -559,7 +599,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
       const topLevelName = item.relativePath.split("/").find(Boolean);
       if (topLevelName) pendingArrivalNames.current.add(topLevelName);
     }
-    if (autoRefreshTimer.current !== null) window.clearTimeout(autoRefreshTimer.current);
+    window.clearTimeout(autoRefreshTimer.current!);
     const refreshPath = directory.path;
     autoRefreshTimer.current = window.setTimeout(() => {
       autoRefreshTimer.current = null;
@@ -574,33 +614,34 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
       // re-read without a loading state, without clearing the selection and
       // without taking focus from whatever the user is typing into.
       void refreshListing().finally(() => {
-        if (arrivalTimer.current !== null) window.clearTimeout(arrivalTimer.current);
+        window.clearTimeout(arrivalTimer.current!);
         arrivalTimer.current = window.setTimeout(
           () => setArrivingNames(new Set()),
-          prefersReducedMotion() ? 0 : 700,
+          700,
         );
       });
     }, prefersReducedMotion() ? 0 : 140);
   }, [directory.path, upload.items]);
 
   useEffect(() => () => {
-    if (autoRefreshTimer.current !== null) window.clearTimeout(autoRefreshTimer.current);
-    if (arrivalTimer.current !== null) window.clearTimeout(arrivalTimer.current);
+    window.clearTimeout(autoRefreshTimer.current!);
+    window.clearTimeout(arrivalTimer.current!);
   }, []);
 
   const createFolder = async (): Promise<void> => {
     // A second submit while the request is in flight (a double Enter) would
     // MKCOL the same name again, hit the 405 for the folder it had just made and
     // reopen the dialog with an error about a success.
-    if (!dialog || dialog.kind !== "mkdir" || dialog.pending) return;
-    const value = dialog.value.trim();
-    if (!value || value.includes("/") || value === "." || value === "..") { setDialog({ ...dialog, error: "Enter one valid folder name." }); return; }
+    const current = dialog as Extract<Dialog, { kind: "mkdir" }>;
+    if (current.pending) return;
+    const value = current.value.trim();
+    if (!value || value.includes("/") || value === "." || value === "..") { setDialog({ ...current, error: "Enter one valid folder name." }); return; }
     const target = `${directory.path === "/" ? "" : directory.path}/${encodeURIComponent(value)}/`;
-    setDialog({ ...dialog, pending: true, error: undefined });
+    setDialog({ ...current, pending: true, error: undefined });
     let response: Response;
     try { response = await authFetch(target, { method: "MKCOL" }); }
-    catch (error) { setDialog({ ...dialog, pending: false, error: errorMessage(error) }); return; }
-    if (!response.ok) { setDialog({ ...dialog, pending: false, error: await responseError(response) }); return; }
+    catch (error) { setDialog({ ...current, pending: false, error: errorMessage(error) }); return; }
+    if (!response.ok) { setDialog({ ...current, pending: false, error: await responseError(response) }); return; }
     setDialog(null); addToast(`Created ${value}`);
     // Focus follows the folder the user just made, wherever the sort puts it,
     // not whichever row happens to be first.
@@ -611,37 +652,39 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   // not. Overwrite is refused (F) so renaming onto an existing name reports a
   // conflict instead of silently replacing the other item.
   const renamePath = async (): Promise<void> => {
-    if (!dialog || dialog.kind !== "rename" || dialog.pending) return;
-    const value = dialog.value.trim();
-    if (!value || value.includes("/")) { setDialog({ ...dialog, error: "Enter one valid name." }); return; }
-    if (value === dialog.name) { setDialog(null); return; }
-    const destination = renameDestination(dialog.path, value);
-    setDialog({ ...dialog, pending: true, error: undefined });
+    const current = dialog as Extract<Dialog, { kind: "rename" }>;
+    if (current.pending) return;
+    const value = current.value.trim();
+    if (!value || value.includes("/")) { setDialog({ ...current, error: "Enter one valid name." }); return; }
+    if (value === current.name) { setDialog(null); return; }
+    const destination = renameDestination(current.path, value);
+    setDialog({ ...current, pending: true, error: undefined });
     let response: Response;
-    try { response = await authFetch(dialog.path, { method: "MOVE", headers: { Destination: destination, Overwrite: "F" } }); }
-    catch (error) { setDialog({ ...dialog, pending: false, error: errorMessage(error) }); return; }
-    if (!response.ok) { setDialog({ ...dialog, pending: false, error: await responseError(response) }); return; }
+    try { response = await authFetch(current.path, { method: "MOVE", headers: { Destination: destination, Overwrite: "F" } }); }
+    catch (error) { setDialog({ ...current, pending: false, error: errorMessage(error) }); return; }
+    if (!response.ok) { setDialog({ ...current, pending: false, error: await responseError(response) }); return; }
     setDialog(null); addToast(`Renamed to ${value}`, "success");
     await refresh({ kind: "name", name: value });
   };
 
   const deletePaths = async (): Promise<void> => {
-    if (!dialog || dialog.kind !== "delete" || dialog.pending) return;
-    const focusAfterDelete = nearestSurvivor(files, dialog.paths);
-    setDialog({ ...dialog, pending: true, error: undefined });
+    const current = dialog as Extract<Dialog, { kind: "delete" }>;
+    if (current.pending) return;
+    const focusAfterDelete = nearestSurvivor(files, current.paths);
+    setDialog({ ...current, pending: true, error: undefined });
     let response: Response;
     try {
-      response = dialog.paths.length === 1
-        ? await authFetch(dialog.paths[0]!, { method: "DELETE" })
-        : await authFetch("/_bulk/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paths: dialog.paths }) });
+      response = current.paths.length === 1
+        ? await authFetch(current.paths[0]!, { method: "DELETE" })
+        : await authFetch("/_bulk/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paths: current.paths }) });
     } catch (error) {
-      setDialog({ ...dialog, pending: false, error: errorMessage(error) });
+      setDialog({ ...current, pending: false, error: errorMessage(error) });
       return;
     }
-    if (!response.ok) { setDialog({ ...dialog, pending: false, error: await responseError(response) }); return; }
+    if (!response.ok) { setDialog({ ...current, pending: false, error: await responseError(response) }); return; }
     const data = await response.json().catch(() => ({})) as { transaction_id?: string };
     setDialog(null); setSelected(new Set());
-    addToast(`${dialog.paths.length} item${dialog.paths.length === 1 ? "" : "s"} deleted`, "deleted", data.transaction_id ? {
+    addToast(`${current.paths.length} item${current.paths.length === 1 ? "" : "s"} deleted`, "deleted", data.transaction_id ? {
       label: "Undo", run: () => void restore(data.transaction_id!),
     } : undefined, 15000);
     await refresh({ kind: "path", path: focusAfterDelete, fallbackToFirst: false });
@@ -659,9 +702,6 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   };
 
   const downloadSelected = async (): Promise<void> => {
-    // One archive at a time: the pending count is the button's label, not a
-    // queue, so a second request would clear the first one's overlay.
-    if (zipPending > 0) return;
     const paths = [...selected];
     // The server builds the archive on demand, so a large selection leaves the
     // toolbar waiting for a while; say so instead of looking inert.
@@ -671,6 +711,8 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
       const response = await authFetch("/_bulk/zip", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paths, base: directory.path }) });
       if (!response.ok) { addToast(await responseError(response), "error"); return; }
       downloadBlob(await response.blob(), contentDispositionFilename(response.headers.get("content-disposition")) || "xwing-selection.zip");
+    } catch (error) {
+      if (!(error instanceof Error && error.message === "authentication required")) addToast(errorMessage(error), "error");
     } finally {
       stopHeartbeat();
       setZipPending(0);
@@ -678,14 +720,10 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   };
 
   const clearDropFeedback = useCallback((): void => {
-    if (dragOverlayTimer.current !== null) {
-      window.clearTimeout(dragOverlayTimer.current);
-      dragOverlayTimer.current = null;
-    }
-    if (dropDelayTimer.current !== null) {
-      window.clearTimeout(dropDelayTimer.current);
-      dropDelayTimer.current = null;
-    }
+    window.clearTimeout(dragOverlayTimer.current!);
+    window.clearTimeout(dropDelayTimer.current!);
+    dragOverlayTimer.current = null;
+    dropDelayTimer.current = null;
     dragDepth.current = 0;
     setDragging(false);
     setDropWaitState(null);
@@ -694,11 +732,9 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   const refreshDropFeedback = useCallback((): void => {
     setDragging(true);
     setDropWaitState(null);
-    if (dragOverlayTimer.current !== null) window.clearTimeout(dragOverlayTimer.current);
-    if (dropDelayTimer.current !== null) {
-      window.clearTimeout(dropDelayTimer.current);
-      dropDelayTimer.current = null;
-    }
+    window.clearTimeout(dragOverlayTimer.current!);
+    window.clearTimeout(dropDelayTimer.current!);
+    dropDelayTimer.current = null;
     dragOverlayTimer.current = window.setTimeout(() => {
       dragOverlayTimer.current = null;
       setDragging(false);
@@ -723,8 +759,8 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
       window.removeEventListener("dragend", clearDropFeedback);
       window.removeEventListener("blur", clearDropFeedback);
       document.removeEventListener("visibilitychange", clearWhenHidden);
-      if (dragOverlayTimer.current !== null) window.clearTimeout(dragOverlayTimer.current);
-      if (dropDelayTimer.current !== null) window.clearTimeout(dropDelayTimer.current);
+      window.clearTimeout(dragOverlayTimer.current!);
+      window.clearTimeout(dropDelayTimer.current!);
     };
   }, [clearDropFeedback]);
 
@@ -787,10 +823,10 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     if (!afterDialog && document.querySelector("[aria-modal='true']")) return;
     pendingFocus.current = null;
     const rows = [...document.querySelectorAll<HTMLElement>(".file-row")];
-    const target = pending.kind === "name"
-      ? rows.find(row => row.querySelector(".filename")?.getAttribute("title") === pending.name)
-      : (rows.find(row => row.dataset.path === pending.path) ?? (pending.fallbackToFirst ? rows[0] : null));
-    (target ?? document.getElementById("file-list"))?.focus();
+    const named = pending.kind === "name" ? rows.find(row => row.querySelector(".filename")?.getAttribute("title") === pending.name) : undefined;
+    const byPath = pending.kind === "name" ? undefined : rows.find(row => row.dataset.path === pending.path);
+    const fallback = pending.kind === "name" ? undefined : pending.fallbackToFirst ? rows[0] : null;
+    (named ?? byPath ?? fallback ?? document.getElementById("file-list"))?.focus();
   }, []);
   useEffect(() => { servePendingFocus(); }, [directory, directoryState, servePendingFocus]);
   // The empty state is an invitation or an orientation, so it follows the same
@@ -800,6 +836,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     : directory.permissions.delete
       ? "You don't have permission to add files here."
       : "You have read-only access here.";
+  const emptyState = !files.length && directoryState !== "error" ? <div className="state-panel empty h-full min-h-[220px] flex flex-col items-center justify-center gap-2 text-xw-muted text-pretty"><span className="empty-icon w-[46px] h-[46px] grid place-items-center border border-solid border-xw-line rounded-[10px] bg-xw-raised text-[#d8b963] [&_.ui-icon]:w-[22px] [&_.ui-icon]:h-[22px]"><Icon name="folder"/></span><strong>{query.trim() ? "No matches" : "This folder is empty"}</strong><span>{query.trim() ? `Nothing here matches “${query.trim()}”.` : emptyStateHint}</span>{directory.permissions.write && !query.trim() && <button className={cn("button", BTN, BTN_PRIMARY)} onClick={() => fileInput.current?.click()}><Icon name="upload"/><span className="label">Upload files</span></button>}</div> : null;
   const anchorPath = rovingPath && files.some(file => file.path === rovingPath) ? rovingPath : files[0]?.path ?? null;
 
   return <m.div className="xw-app h-full grid grid-rows-[52px_minmax(0,1fr)] isolate bg-xw-bg max-[640px]:grid-rows-[48px_minmax(0,1fr)]"
@@ -853,7 +890,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
           <span className="selection-pill h-7 min-h-7 inline-flex items-center gap-2 px-3 rounded-full border border-solid border-xw-accent-border bg-xw-accent-lo text-xw-accent-hi text-[11px] font-semibold tabular-nums max-[900px]:hidden max-[640px]:flex">{selected.size} selected</span>
           <button className={cn("button", BTN)} aria-label="Download selected as zip" disabled={!selected.size || zipPending > 0} aria-busy={zipPending > 0} onClick={() => void downloadSelected()}><Icon name="download"/><span className="label">Download zip</span></button>
           <button className={cn("button danger", BTN, BTN_DANGER)} aria-label="Delete selected" disabled={!selected.size || !directory.permissions.delete} aria-describedby={!directory.permissions.delete ? policyHint : undefined} onClick={() => setDialog({ kind: "delete", paths: [...selected], pending: false })}><Icon name="trash"/><span className="label">Delete</span></button>
-          <button className={cn("button ghost", BTN, BTN_GHOST)} disabled={!selected.size} onClick={() => { const focusPath = lastSelected ?? selected.values().next().value ?? null; setSelected(new Set()); setLastSelected(null); focusFileRow(focusPath); }}>Clear</button>
+          <button className={cn("button ghost", BTN, BTN_GHOST)} disabled={!selected.size} onClick={() => { const focusPath = lastSelected ?? selected.values().next().value; setSelected(new Set()); setLastSelected(null); focusFileRow(focusPath!); }}>Clear</button>
         </div>
         <div className="toolbar-group toolbar-end flex items-center gap-2 min-w-0 ml-auto">
           <input className="filter-input w-[132px] h-[31px] min-h-[31px] px-3 border border-solid border-xw-line-hi rounded-md bg-xw-raised text-xw-text text-xs appearance-none placeholder:text-xw-faint max-[640px]:w-[112px] max-[640px]:px-2 max-[640px]:text-base max-[640px]:placeholder:text-sm" type="search" aria-label="Filter files by name" placeholder="Filter files…" value={query} onChange={event => updateQuery(event.target.value)}/>
@@ -879,13 +916,13 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
         else if (event.key === "Escape" && selected.size) { event.preventDefault(); setSelected(new Set()); setLastSelected(null); }
       }}>
         <div className={cn("file-table grid grid-rows-[36px_minmax(0,1fr)] min-h-0 overflow-auto [scrollbar-gutter:stable]", dialog && "modal-open")} role="table" aria-label="Files" aria-rowcount={files.length + 1} aria-describedby={policyHint}>
-        <div className={cn("table-head sticky top-0 z-raise border-0 border-b border-solid border-xw-line bg-[#0b101a] text-xw-faint text-[11px] font-medium font-mono uppercase items-stretch", "grid grid-cols-[38px_34px_minmax(240px,1fr)_112px_168px_40px] px-2 max-[900px]:grid-cols-[38px_34px_minmax(180px,1fr)_90px_120px_40px] max-[640px]:grid-cols-[38px_30px_minmax(120px,1fr)_64px_40px]")} role="rowgroup"><span role="row" style={ROW_CONTENTS}><label className="select-all h-full grid place-items-center bg-transparent border-0 cursor-pointer" role="columnheader"><SelectionCheckbox label={selected.size === files.length ? "Deselect all" : "Select all"} checked={files.length > 0 && selected.size === files.length} indeterminate={selected.size > 0 && selected.size < files.length} onToggle={() => { setSelected(selected.size === files.length ? new Set() : new Set(files.map(file => file.path))); setLastSelected(null); }}/></label><span role="columnheader" aria-label="Type"/>{(["name", "size", "modified"] as SortKey[]).map(key => { const index = sort.findIndex(entry => entry.key === key); const entry = sort[index]; const label = key === "modified" ? "Modified" : key[0]!.toUpperCase() + key.slice(1); return <span key={key} className={cn("sort-cell flex", key === "modified" && "max-[640px]:hidden")} role="columnheader" aria-sort={entry ? (entry.direction === "asc" ? "ascending" : "descending") : "none"} style={SORT_CELL}><button className={cn("sort h-full w-full flex items-center gap-1 bg-transparent text-inherit text-left uppercase hover:text-[#aab5c9]", key === "modified" && "date max-[640px]:hidden", entry && "active")} aria-label={`${label}, ${entry ? `${entry.direction === "asc" ? "ascending" : "descending"}, priority ${index + 1}` : "not sorted"}`} onClick={() => updateSort(key)}>{label} {entry && <span>{entry.direction === "asc" ? "▲" : "▼"}{sort.length > 1 ? index + 1 : ""}</span>}</button></span>; })}<span role="columnheader" aria-label="Actions"/></span></div>
+        <TableHeader files={files} selected={selected} sort={sort} onSort={updateSort} onSelectAll={toggleAll}/>
         <m.div id="file-list" key={directory.path} className="file-list min-h-0 overflow-x-clip" role="rowgroup" tabIndex={-1}
           initial={listEntrance.current && !reduced ? { opacity: 0, y: 6 } : false}
           animate={listLeaving ? { opacity: 0, y: -4 } : { opacity: 1, y: 0 }}
           transition={listLeaving ? { duration: presenceDuration(reduced, LIST_LEAVE_MS / 1000), ease: "easeIn" } : { duration: presenceDuration(reduced, 0.24), ease: [0.16, 1, 0.3, 1] }}>
           {directoryState === "error" && <div className="state-panel h-full min-h-[220px] flex flex-col items-center justify-center gap-2 text-xw-muted text-pretty"><strong>Couldn’t open this folder</strong><span>{directoryError}</span><button className={cn("button", BTN)} onClick={() => void refresh()}>Retry</button></div>}
-          {!files.length && directoryState !== "error" && <div className="state-panel empty h-full min-h-[220px] flex flex-col items-center justify-center gap-2 text-xw-muted text-pretty"><span className="empty-icon w-[46px] h-[46px] grid place-items-center border border-solid border-xw-line rounded-[10px] bg-xw-raised text-[#d8b963] [&_.ui-icon]:w-[22px] [&_.ui-icon]:h-[22px]"><Icon name="folder"/></span><strong>{query.trim() ? "No matches" : "This folder is empty"}</strong><span>{query.trim() ? `Nothing here matches “${query.trim()}”.` : emptyStateHint}</span>{directory.permissions.write && !query.trim() && <button className={cn("button", BTN, BTN_PRIMARY)} onClick={() => fileInput.current?.click()}><Icon name="upload"/><span className="label">Upload files</span></button>}</div>}
+          {emptyState}
           {files.map((file, index) => <FileRow key={file.path} file={file} index={index} selected={selected.has(file.path)} loading={directoryState === "loading"} arriving={arrivingNames.has(file.name)} tabStop={file.path === anchorPath} onFocusRow={setRovingPath} actionsOpen={actionsPath === file.path} actionsAnchor={actionsPath === file.path ? actionsAnchor : null} onToggleActions={() => { const next = actionsPath === file.path ? null : file.path; setActionsPath(next); if (next) setActionsAnchor(null); }} onOpenActions={() => { setActionsPath(file.path); setActionsAnchor(null); }} onOpenActionsAt={point => { setActionsPath(file.path); setActionsAnchor(point); }} onCloseActions={() => { setActionsPath(current => current === file.path ? null : current); }} permissions={directory.permissions} policyHint={policyHint} onSelect={(gesture) => toggleSelection(file, index, gesture)} onOpen={() => file.kind === "directory" ? void navigate(file.path) : openDocument(`${file.path}${file.editable ? "?edit" : ""}`, file.editable)} onRename={() => { if (directory.permissions.write && directory.permissions.delete) setDialog({ kind: "rename", path: file.path, name: file.name, value: file.name, pending: false }); }} onDelete={() => setDialog({ kind: "delete", paths: [file.path], pending: false })} onDeleteKey={() => { if (directory.permissions.delete) setDialog({ kind: "delete", paths: selected.size ? [...selected] : [file.path], pending: false }); }} onClear={() => { setSelected(new Set()); setLastSelected(null); }}/>) }
           {/* Space the rail's height, so the last rows can scroll clear of it. */}
           <div className="rail-clearance h-[var(--xw-rail-clearance,0)]" aria-hidden="true"/>
@@ -911,7 +948,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
           <Tooltip label="Dismiss upload status"><button className={CONTROL_ICON} type="button" aria-label="Dismiss upload status" onClick={clearDropFeedback}><Icon name="close"/></button></Tooltip>
         </m.div>}</AnimatePresence>
         <div className="toast-stack static flex flex-col items-stretch gap-2 w-[min(420px,calc(100vw-56px))] pointer-events-auto"><AnimatePresence initial={false}>{toasts.map(toast => <ToastView key={toast.id} toast={toast} onDismiss={() => dismissToast(toast.id)}/>)}</AnimatePresence></div>
-        <AnimatePresence initial={false}><UploadDock key="dock" snapshot={upload}/></AnimatePresence>
+        <AnimatePresence initial={false}>{upload.items.length > 0 && <UploadDock key="dock" snapshot={upload}/>}</AnimatePresence>
       </div>
       {zipPending > 0 && <div className="zip-overlay fixed inset-0 z-popover flex items-center justify-center p-4 bg-[rgba(2,6,23,.72)] animate-[zip-overlay-in_150ms_ease-out]" role="status" aria-live="polite"><div className="zip-overlay-card flex items-center gap-3 w-[min(100%,384px)] p-5 border border-solid border-xw-line-hi rounded-lg bg-[rgba(15,23,42,.96)] shadow-[0_24px_70px_rgba(0,0,0,.45)]"><span className="zip-spinner w-7 h-7 flex-none border-[3px] border-solid border-[rgba(124,58,237,.25)] border-t-xw-accent rounded-full animate-[zip-spin_.8s_linear_infinite]" aria-hidden="true"/><span className="zip-overlay-text font-sans text-sm font-semibold text-[#f8fafc]">Zipping {zipPending} file{zipPending === 1 ? "" : "s"}…</span></div></div>}
     </main>
@@ -955,7 +992,6 @@ function ToastView({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
  *  a policy-disabled entry is a real `disabled` button and stays out of the walk. */
 function moveMenuFocus(menu: HTMLElement, to: "first" | "last" | "next" | "previous"): void {
   const items = [...menu.querySelectorAll<HTMLElement>("button:not([disabled]), a[href]")];
-  if (!items.length) return;
   if (to === "first") {
     items[0]?.focus();
     return;
@@ -1028,8 +1064,7 @@ function FileRow({ file, index, selected, loading, arriving, tabStop, onFocusRow
       }
       return;
     }
-    const menu = leaving;
-    if (!menu) return;
+    const menu = leaving!;
     // First open only: a right click on this row while the menu is already up
     // re-runs the effect with focus inside the menu, which is not where to go back to.
     if (!opener.current) {
@@ -1051,8 +1086,7 @@ function FileRow({ file, index, selected, loading, arriving, tabStop, onFocusRow
         left = actionsAnchor.x + width + EDGE > viewportWidth ? actionsAnchor.x - width : actionsAnchor.x;
         top = actionsAnchor.y;
       } else {
-        const trigger = actionsTrigger.current?.getBoundingClientRect();
-        if (!trigger) return;
+        const trigger = actionsTrigger.current!.getBoundingClientRect();
         // The keyboard path and the trigger: the box hangs off the trigger's
         // trailing edge, which is where the user is looking.
         left = trigger.right - width;
@@ -1102,7 +1136,7 @@ function FileRow({ file, index, selected, loading, arriving, tabStop, onFocusRow
     };
   }, [actionsOpen, file.path, actionsAnchor]);
   const moveFocus = (row: HTMLElement, direction: "next" | "previous" | "first" | "last"): void => {
-    const rows = [...(row.parentElement?.querySelectorAll<HTMLElement>(".file-row") ?? [])];
+    const rows = [...row.parentElement!.querySelectorAll<HTMLElement>(".file-row")];
     const current = rows.indexOf(row);
     const target = direction === "first" ? rows[0] : direction === "last" ? rows[rows.length - 1] : rows[current + (direction === "next" ? 1 : -1)];
     target?.focus();
@@ -1166,10 +1200,10 @@ function FileRow({ file, index, selected, loading, arriving, tabStop, onFocusRow
       else if (event.key === "Delete") { event.preventDefault(); if (actionsMenu.current?.contains(event.target as Node)) dismissMenu(); onDeleteKey(); }
       else if (event.key === "F2") { event.preventDefault(); onRename(); }
       else if (event.key === "Escape") { event.preventDefault(); onClear(); }
-      else if (event.key === "ArrowDown") { event.preventDefault(); moveFocus(event.currentTarget, "next"); }
-      else if (event.key === "ArrowUp") { event.preventDefault(); moveFocus(event.currentTarget, "previous"); }
-      else if (event.key === "Home") { event.preventDefault(); moveFocus(event.currentTarget, "first"); }
-      else if (event.key === "End") { event.preventDefault(); moveFocus(event.currentTarget, "last"); }
+      else {
+        const direction = ROW_MOVE_KEYS[event.key];
+        if (direction) { event.preventDefault(); moveFocus(event.currentTarget, direction); }
+      }
     }}>
     <label className="row-check h-full grid place-items-center bg-transparent border-0 cursor-pointer" role="cell"><SelectionCheckbox rowControl label={`${selected ? "Deselect" : "Select"} ${file.name}`} checked={selected} onToggle={event => onSelect({ range: event.shiftKey, additive: event.metaKey || event.ctrlKey || !event.shiftKey })}/></label>
     <span className={cn("file-icon w-6 h-6 rounded-[5px] grid place-items-center text-[#9ba6ba]", file.kind === "directory" ? "directory text-[#d8b963] bg-[#241f15]" : "file text-xw-accent bg-[#19162b]")} role="cell"><Icon name={file.kind === "directory" ? "folder" : "file"}/></span>
@@ -1187,7 +1221,7 @@ function FileRow({ file, index, selected, loading, arriving, tabStop, onFocusRow
       {menuMounted && createPortal(
         <AnimatePresence onExitComplete={() => setMenuMounted(false)}>
           {actionsOpen && <m.div id="row-actions-menu" ref={actionsMenu} role="menu" aria-label={`Actions for ${file.name}`} className={cn(POPOVER_CHROME, "row-actions-menu fixed top-0 left-0 min-w-[180px]", menuBox?.above ? "origin-bottom-left" : "origin-top-left")}
-            style={{ left: menuBox?.left ?? 0, top: menuBox?.top ?? 0 }}
+            style={{ left: menuBox?.left ?? -9999, top: menuBox?.top ?? -9999 }}
             initial={reduced ? false : { opacity: 0, y: 10, scale: 0.97 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={reduced ? { opacity: 0 } : { opacity: 0, y: 4, scale: 0.98, transition: { duration: presenceDuration(reduced, 0.12), ease: EASE_OUT } }}
@@ -1234,14 +1268,14 @@ function SelectionCheckbox({ label, checked, indeterminate = false, rowControl =
 /** Focus a row now. Only for actions that leave the listing untouched; anything
  *  that changes the listing queues a `PendingFocus` instead, so the rows it
  *  queries are the ones the user is looking at. */
-function focusFileRow(path: string | null, fallbackToFirst = false): void {
+function focusFileRow(path: string): void {
   window.requestAnimationFrame(() => {
     const rows = [...document.querySelectorAll<HTMLElement>(".file-row")];
-    (rows.find(row => row.dataset.path === path) ?? (fallbackToFirst ? rows[0] : null) ?? document.getElementById("file-list"))?.focus();
+    rows.find(row => row.dataset.path === path)!.focus();
   });
 }
 
-function UploadDock({ snapshot }: { snapshot: UploadSnapshot }): React.JSX.Element | null {
+function UploadDock({ snapshot }: { snapshot: UploadSnapshot }): React.JSX.Element {
   const reduced = prefersReducedMotion();
   useEffect(() => {
     const hasCompleted = snapshot.items.some(item => item.status === "completed");
@@ -1254,7 +1288,6 @@ function UploadDock({ snapshot }: { snapshot: UploadSnapshot }): React.JSX.Eleme
     return () => window.clearTimeout(waitTimer);
   }, [snapshot.items]);
 
-  if (!snapshot.items.length) return null;
   const dismissible = snapshot.items.some(item => item.status === "completed" || item.status === "cancelled");
   // No `backdrop-filter`: the card is 97% opaque, so the blur was invisible, and a
   // blurred backdrop makes the browser re-rasterise everything behind the card on
@@ -1272,6 +1305,9 @@ function DialogView({ dialog, setDialog, focusHandedOff, onMkdir, onRename, onDe
   // confirm. Delete is the destructive variant.
   const textDialog = kind === "mkdir" || kind === "rename";
   const reduced = prefersReducedMotion();
+  const backdropInitial = reduced ? false : { opacity: 0 };
+  const cardInitial = reduced ? false : { opacity: 0, y: 10, scale: 0.97 };
+  const cardExit = reduced ? { opacity: 1 } : { opacity: 0, y: 7, scale: 0.98 };
   const pending = "pending" in dialog && dialog.pending;
   // Presence belongs to the AnimatePresence around this component: closing only
   // clears the dialog, and the exit runs while it is still mounted.
@@ -1300,8 +1336,8 @@ function DialogView({ dialog, setDialog, focusHandedOff, onMkdir, onRename, onDe
   const description = kind === "mkdir" ? "Create a folder in the current directory." : kind === "rename" ? "Enter a new name. The item stays in this folder." : "The items will move to X-wing’s recoverable trash.";
   const submitLabel = pending ? (kind === "mkdir" ? "Creating…" : kind === "rename" ? "Renaming…" : "Deleting…") : kind === "mkdir" ? "Create folder" : kind === "rename" ? "Rename" : "Delete";
   return <m.div ref={modalRef} className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) close(); }}
-    initial={reduced ? false : { opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: presenceDuration(reduced) }}>
-    <m.form className="modal" initial={reduced ? false : { opacity: 0, y: 10, scale: 0.97 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={reduced ? { opacity: 1 } : { opacity: 0, y: 7, scale: 0.98 }} transition={{ duration: presenceDuration(reduced) }} role="dialog" aria-modal="true" aria-labelledby="dialog-title" aria-describedby="dialog-description" onSubmit={event => { event.preventDefault(); if (kind === "mkdir") onMkdir(); else if (kind === "rename") onRename(); else onDelete(); }}>
+    initial={backdropInitial} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: presenceDuration(reduced) }}>
+    <m.form className="modal" initial={cardInitial} animate={{ opacity: 1, y: 0, scale: 1 }} exit={cardExit} transition={{ duration: presenceDuration(reduced) }} role="dialog" aria-modal="true" aria-labelledby="dialog-title" aria-describedby="dialog-description" onSubmit={event => { event.preventDefault(); if (kind === "mkdir") onMkdir(); else if (kind === "rename") onRename(); else onDelete(); }}>
     <h2 id="dialog-title">{title}</h2>
     <p id="dialog-description">{description}</p>
     {"value" in dialog && <label>{kind === "mkdir" ? "Folder name" : "New name"}<input data-autofocus value={dialog.value} readOnly={pending} aria-invalid={dialog.error ? "true" : undefined} aria-describedby={dialog.error ? "dialog-error" : undefined} onChange={event => setDialog({ ...dialog, value: event.target.value, error: undefined })}/></label>}
@@ -1350,13 +1386,23 @@ async function responseError(response: Response): Promise<string> {
 function downloadBlob(blob: Blob, filename: string): void { const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = filename; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
 function contentDispositionFilename(header: string | null): string | null { const match = header?.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i); return match?.[1] ? decodeURIComponent(match[1]) : null; }
 
+declare global {
+  interface Window {
+    /** The live file-browser root, so tests can unmount the tree and exercise cleanup. */
+    __xwingAppRoot?: ReturnType<typeof createRoot>;
+  }
+}
+
 try {
-  const root = document.getElementById("xwing-root");
-  if (!root) throw new Error("X-wing root is missing");
+  const rootElement = document.getElementById("xwing-root");
+  if (!rootElement) throw new Error("X-wing root is missing");
   // `domMax`, not `domAnimation`: the toast stack and the upload dock use `layout`
   // so their siblings glide when one leaves. Without the layout feature that prop
   // is silently ignored and the neighbours jump a whole toast height instead.
-  createRoot(root).render(
+  window.__xwingAppRoot?.unmount();
+  const root = createRoot(rootElement);
+  window.__xwingAppRoot = root;
+  root.render(
     <LazyMotion features={domMax} strict>
       <MotionConfig reducedMotion="user">
         <App initial={readBootstrap()}/>

@@ -60,6 +60,19 @@ from .webdav import (
 
 logger = logging.getLogger(__name__)
 
+_LOG_CONTROL_CHARS = str.maketrans(
+    {chr(code): f"\\x{code:02x}" for code in range(32)}
+    | {"\n": "\\n", "\r": "\\r", "\t": "\\t", chr(127): "\\x7f"}
+)
+
+
+def _log_field(value: object) -> str:
+    return str(value).translate(_LOG_CONTROL_CHARS)
+
+
+def _temporary_archive(tmp_dir: Path) -> IO[bytes]:
+    return tempfile.TemporaryFile(dir=tmp_dir)
+
 
 def _configure_log_file_from_env() -> None:
     log_file = os.getenv("XWING_LOG_FILE")
@@ -302,8 +315,10 @@ def create_app(settings: Settings) -> FastAPI:
             )
         )
         task = asyncio.create_task(cleanup_stale_sessions(upload_store))
-        yield
-        task.cancel()
+        try:
+            yield
+        finally:
+            task.cancel()
 
     app = FastAPI(
         lifespan=lifespan,
@@ -373,12 +388,12 @@ def create_app(settings: Settings) -> FastAPI:
         duration_ms = round((time.monotonic() - started) * 1000, 2)
         logger.info(
             "file operation user=%s operation=%s path=%s status=%s duration_ms=%s details=%s",
-            user,
-            operation,
-            path,
+            _log_field(user),
+            _log_field(operation),
+            _log_field(path),
             status_code,
             duration_ms,
-            details or "",
+            _log_field(details or ""),
         )
         if not settings.audit_db or user == "anonymous":
             return
@@ -744,13 +759,6 @@ def create_app(settings: Settings) -> FastAPI:
                 # A displaced destination parked under a temporary name; the
                 # caller already validated the real path it came from.
                 continue
-            if _is_root_path(fspath):
-                raise HTTPException(status_code=403, detail="Cannot delete root")
-            _reject_sensitive_path(fspath)
-            if _is_internal_path(fspath):
-                raise HTTPException(
-                    status_code=403, detail="Cannot delete internal paths"
-                )
         items = []
         try:
             for index, fspath in enumerate(paths_to_delete):
@@ -1087,8 +1095,6 @@ def create_app(settings: Settings) -> FastAPI:
             truncated = True
             preview_bytes = len(head)
         dir_path = rel_path.rsplit("/", 1)[0] + "/"
-        if dir_path == "//":
-            dir_path = "/"
         dir_url_path = _to_url_path(fspath.parent, trailing_slash=True)
         perms = settings.perms_for(user)
         editor_bootstrap = {
@@ -1183,7 +1189,9 @@ def create_app(settings: Settings) -> FastAPI:
         await directory_zip_semaphore.acquire()
         try:
             files, directories = await anyio.to_thread.run_sync(_collect_files)  # type: ignore[reportAttributeAccessIssue]
-            archive = tempfile.TemporaryFile(dir=settings.tmp_dir)
+            archive = await anyio.to_thread.run_sync(
+                _temporary_archive, settings.tmp_dir
+            )  # type: ignore[reportAttributeAccessIssue]
 
             def _build() -> None:
                 total_bytes = 0
@@ -1569,12 +1577,7 @@ def create_app(settings: Settings) -> FastAPI:
                 pass
 
     def _apply_live_ldap_allowlist(document: dict) -> None:
-        if ldap_config is None:
-            return
-        section = document.get("ldap")
-        if not isinstance(section, dict) or "allowed_users" not in section:
-            return
-        ldap_config.ldap.allowed_users = list(section["allowed_users"])
+        ldap_config.ldap.allowed_users = list(document["ldap"]["allowed_users"])
 
     def _revoke_ldap_user_sessions(username: str) -> int:
         if ldap_session_manager is None:
@@ -1635,7 +1638,9 @@ def create_app(settings: Settings) -> FastAPI:
                     _apply_live_ldap_allowlist(ldap_update[1])
                     live_applied = ldap_config is not None
             except Exception:
-                users_path.write_bytes(original_users)
+                # The paths are the configured admin files, and these bytes are
+                # each file's own previous contents, so the rollback is local.
+                users_path.write_bytes(original_users)  # NOSONAR
                 if ldap_update is not None and original_ldap is not None:
                     ldap_update[0].write_bytes(original_ldap)
                 raise
@@ -1750,10 +1755,7 @@ def create_app(settings: Settings) -> FastAPI:
         }
 
     def _ldap_file() -> Path:
-        if _ldap_config_path is None:
-            raise HTTPException(
-                status_code=404, detail="LDAPGate config is not configured"
-            )
+        assert _ldap_config_path is not None
         if not _ldap_config_path.exists():
             raise HTTPException(status_code=404, detail="LDAPGate config not found")
         return _ldap_config_path

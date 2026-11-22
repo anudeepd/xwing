@@ -25,7 +25,7 @@ export default defineConfig({
     emptyOutDir: true,
     target: 'es2020',
     minify: 'esbuild',
-    sourcemap: false,
+    sourcemap: process.env.XWING_COVERAGE === "1",
     // The post-build step reads this to write xwing's own manifest, which is
     // what `asset()` in app.py resolves.
     manifest: true,

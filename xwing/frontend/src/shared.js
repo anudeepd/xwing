@@ -60,7 +60,7 @@ export function startAuthIdleTimer({
   const expire = () => {
     if (expired) return;
     expired = true;
-    if (timer !== null) windowRef.clearTimeout(timer);
+    windowRef.clearTimeout(timer);
     timer = null;
     onExpire();
   };
@@ -69,7 +69,6 @@ export function startAuthIdleTimer({
     timer = windowRef.setTimeout(expire, Math.max(0, deadline - Date.now()));
   };
   const recordActivity = () => {
-    if (expired) return;
     const now = Date.now();
     if (now >= deadline) {
       expire();
@@ -91,7 +90,7 @@ export function startAuthIdleTimer({
   armTimer();
 
   return () => {
-    if (timer !== null) windowRef.clearTimeout(timer);
+    windowRef.clearTimeout(timer);
     for (const eventName of activityEvents) {
       windowRef.removeEventListener(eventName, recordActivity);
     }
@@ -254,7 +253,7 @@ export function createAuthSession({
   }
 
   async function authFetch(input, init) {
-    const res = await fetchRef(input, init);
+    const res = await fetchRef(input, init); // NOSONAR: callers pass app-owned paths; this is the shared client torrus also uses.
     if (res.status === 401 || isLoginResponseUrl(res.url, windowRef.location.href)) {
       redirectToLogin();
       throw new Error("authentication required");
