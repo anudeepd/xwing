@@ -930,13 +930,14 @@ describe("fallback conditions", () => {
       session: { uploadId: "s", chunkSize: 8, concurrency: 1, ranges: [], size: 8 },
       chunkSize: 8,
       minChunkBytes: 8,
-      maxAttempts: 2,
+      maxAttempts: 3,
       backoffMs: [0],
     })).rejects.toMatchObject({ message: "retry" });
   });
 
   it("rejects a 413 window when the computed size cannot shrink", async () => {
-    const floor = vi.spyOn(Math, "floor").mockReturnValueOnce(8);
+    const realFloor = Math.floor;
+    const floor = vi.spyOn(Math, "floor").mockImplementation(value => value === 4 ? 8 : realFloor(value));
     const fake = {
       put: vi.fn(async () => { throw new UploadError("too large", { status: 413 }); }),
       complete: vi.fn(async () => ({})),
@@ -952,6 +953,36 @@ describe("fallback conditions", () => {
       maxAttempts: 1,
     })).rejects.toMatchObject({ status: 413 });
     floor.mockRestore();
+  });
+
+  it("falls back to the default chunk size for a non-finite value", async () => {
+    const fake = {
+      put: vi.fn(async () => ({ ranges: [[0, 8]], received: 8 })),
+      complete: vi.fn(async () => ({ path: "x" })),
+      status: vi.fn(async () => ({ ranges: [[0, 8]] })),
+    };
+    await expect(uploadFile({
+      client: fake as unknown as UploadClient,
+      file: blobOf(8),
+      destDir: "/",
+      session: { uploadId: "s", chunkSize: 8, concurrency: 1, ranges: [], size: 8 },
+      chunkSize: Number.POSITIVE_INFINITY,
+    })).resolves.toMatchObject({ ok: true });
+  });
+
+  it("removes the abort listener after a retry backoff with a live signal", async () => {
+    const controller = new AbortController();
+    const { promise } = await startUpload({
+      session: { uploadId: "session", chunkSize: 8, concurrency: 1, ranges: [], size: 8 },
+      chunkSize: 8,
+      signal: controller.signal,
+      maxAttempts: 2,
+      backoffMs: [0],
+    });
+    FakeXHR.all[0]!.networkError();
+    await vi.waitFor(() => expect(FakeXHR.all).toHaveLength(2));
+    FakeXHR.all[1]!.finish(200, { ranges: [[0, 8]], received: 8 });
+    await expect(promise).resolves.toMatchObject({ ok: true });
   });
 
   it("re-arms response deadlines and reads a session without ranges", async () => {
