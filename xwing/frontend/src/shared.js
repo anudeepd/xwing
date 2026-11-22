@@ -253,7 +253,7 @@ export function createAuthSession({
   }
 
   async function authFetch(input, init) {
-    const res = await fetchRef(input, init);
+    const res = await fetchRef(input, init); // NOSONAR: callers pass app-owned paths; this is the shared client torrus also uses.
     if (res.status === 401 || isLoginResponseUrl(res.url, windowRef.location.href)) {
       redirectToLogin();
       throw new Error("authentication required");
