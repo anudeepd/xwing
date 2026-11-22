@@ -692,6 +692,32 @@ test("dropping files queues them, and an unreadable drop explains itself", async
   await expect(upload).toContainText("1 complete");
 });
 
+test("a cancelled upload can be cleared from the dock", async ({ page }) => {
+  await page.goto("/");
+  await page.route("**/_upload/**", async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/_upload/init") {
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ upload_id: "slow", chunk_size: 8 * 1024 * 1024, concurrency: 1, size: 12 }) });
+    }
+    if (path.endsWith("/complete")) {
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ path: "slow.txt", size: 12 }) });
+    }
+    return new Promise(() => {});
+  });
+
+  await page.locator("input[type=file]").first().setInputFiles({
+    name: "slow.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("slow upload"),
+  });
+  const upload = page.getByRole("complementary", { name: "Uploads" });
+  await expect(upload).toContainText("slow.txt");
+  await upload.getByRole("button", { name: "Cancel" }).click();
+  await expect(upload).toContainText("Upload cancelled");
+  await page.getByRole("button", { name: "Clear finished uploads" }).click();
+  await expect(upload).not.toBeVisible();
+});
+
 test("shows an in-flight overlay while the archive is built", async ({ page }) => {
   await page.goto("/");
 

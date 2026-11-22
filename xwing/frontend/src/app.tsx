@@ -843,7 +843,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
           <span className="selection-pill h-7 min-h-7 inline-flex items-center gap-2 px-3 rounded-full border border-solid border-xw-accent-border bg-xw-accent-lo text-xw-accent-hi text-[11px] font-semibold tabular-nums max-[900px]:hidden max-[640px]:flex">{selected.size} selected</span>
           <button className={cn("button", BTN)} aria-label="Download selected as zip" disabled={!selected.size || zipPending > 0} aria-busy={zipPending > 0} onClick={() => void downloadSelected()}><Icon name="download"/><span className="label">Download zip</span></button>
           <button className={cn("button danger", BTN, BTN_DANGER)} aria-label="Delete selected" disabled={!selected.size || !directory.permissions.delete} aria-describedby={!directory.permissions.delete ? policyHint : undefined} onClick={() => setDialog({ kind: "delete", paths: [...selected], pending: false })}><Icon name="trash"/><span className="label">Delete</span></button>
-          <button className={cn("button ghost", BTN, BTN_GHOST)} disabled={!selected.size} onClick={() => { const focusPath = lastSelected ?? selected.values().next().value ?? null; setSelected(new Set()); setLastSelected(null); focusFileRow(focusPath); }}>Clear</button>
+          <button className={cn("button ghost", BTN, BTN_GHOST)} disabled={!selected.size} onClick={() => { const focusPath = lastSelected ?? selected.values().next().value; setSelected(new Set()); setLastSelected(null); focusFileRow(focusPath); }}>Clear</button>
         </div>
         <div className="toolbar-group toolbar-end flex items-center gap-2 min-w-0 ml-auto">
           <input className="filter-input w-[132px] h-[31px] min-h-[31px] px-3 border border-solid border-xw-line-hi rounded-md bg-xw-raised text-xw-text text-xs appearance-none placeholder:text-xw-faint max-[640px]:w-[112px] max-[640px]:px-2 max-[640px]:text-base max-[640px]:placeholder:text-sm" type="search" aria-label="Filter files by name" placeholder="Filter files…" value={query} onChange={event => updateQuery(event.target.value)}/>
@@ -1222,7 +1222,7 @@ function SelectionCheckbox({ label, checked, indeterminate = false, rowControl =
 /** Focus a row now. Only for actions that leave the listing untouched; anything
  *  that changes the listing queues a `PendingFocus` instead, so the rows it
  *  queries are the ones the user is looking at. */
-function focusFileRow(path: string | null, fallbackToFirst = false): void {
+function focusFileRow(path: string | null | undefined, fallbackToFirst = false): void {
   window.requestAnimationFrame(() => {
     const rows = [...document.querySelectorAll<HTMLElement>(".file-row")];
     (rows.find(row => row.dataset.path === path) ?? (fallbackToFirst ? rows[0] : null) ?? document.getElementById("file-list"))?.focus();

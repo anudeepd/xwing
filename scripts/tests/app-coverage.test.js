@@ -1260,6 +1260,47 @@ describe("file browser coverage edges", () => {
     await waitFor(() => expect(callsSeen.filter(call => call === "GET /").length).toBeGreaterThan(0), { timeout: 3000 });
   });
 
+  it("rejects a quiet refresh with the wrong content type", async () => {
+    UploadXHR.all = [];
+    vi.stubGlobal("XMLHttpRequest", UploadXHR);
+    const callsSeen = await mount({
+      overrides: {
+        "GET /": () => response(bootstrap),
+        "POST /_upload/init": () => ({ body: { upload_id: "up", chunk_size: 1024, concurrency: 1, size: 6 } }),
+        "POST /_upload/up/complete": () => ({ body: { path: "uploaded.txt", size: 6 } }),
+      },
+    });
+    const input = document.querySelector('input[type="file"]:not([webkitdirectory])');
+    Object.defineProperty(input, "files", { configurable: true, value: [new File(["abcdef"], "uploaded.txt")] });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    await waitFor(() => expect(document.querySelector(".upload-dock")?.textContent).toContain("Upload complete"), { timeout: 3000 });
+    await waitFor(() => expect(callsSeen.filter(call => call === "GET /").length).toBeGreaterThan(0), { timeout: 3000 });
+  });
+
+  it("skips a quiet refresh while a folder navigation is in flight", async () => {
+    UploadXHR.all = [];
+    vi.stubGlobal("XMLHttpRequest", UploadXHR);
+    let releaseDocs;
+    const docsPending = new Promise(resolve => { releaseDocs = resolve; });
+    const calls = await mount({
+      overrides: {
+        "GET /docs/": () => docsPending,
+        "POST /_upload/init": () => ({ body: { upload_id: "up", chunk_size: 1024, concurrency: 1, size: 6 } }),
+        "POST /_upload/up/complete": () => ({ body: { path: "uploaded.txt", size: 6 } }),
+      },
+    });
+    vi.useFakeTimers();
+    document.querySelector('[data-path="/docs/"]').dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+    const input = document.querySelector('input[type="file"]:not([webkitdirectory])');
+    Object.defineProperty(input, "files", { configurable: true, value: [new File(["abcdef"], "uploaded.txt")] });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.advanceTimersByTimeAsync(20);
+    expect(calls.filter(call => call === "GET /")).toHaveLength(0);
+    releaseDocs(directoryResponse({ ...bootstrap, path: "/docs/", breadcrumbs: [...bootstrap.breadcrumbs, { name: "docs", path: "/docs/" }], files: [] }));
+    await vi.advanceTimersByTimeAsync(20);
+    vi.useRealTimers();
+  });
+
   it("allows unload when no upload is active and accepts a missing idle attribute", async () => {
     await mount({ idle: null });
     const unload = new Event("beforeunload", { cancelable: true });
