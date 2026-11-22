@@ -15,6 +15,7 @@ scripts/node_modules/
 !scripts/package-lock.json
 # Test coverage reports.
 coverage/
+coverage-e2e/
 .scannerwork/
 # Playwright's outputDir, wherever it is run from.
 test-results/

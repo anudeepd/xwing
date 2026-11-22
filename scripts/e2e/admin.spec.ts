@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./coverage-fixture";
 
 /**
  * The admin console only answers behind LDAPGate, so these specs run against the

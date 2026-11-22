@@ -49,6 +49,23 @@ jobs:
       - name: Normalize frontend coverage paths for SonarQube Cloud
         run: node scripts/normalize-sonar-lcov.mjs
 
+      - name: Build frontend with source maps for browser coverage
+        run: npm --prefix scripts run build
+        env:
+          XWING_COVERAGE: "1"
+
+      - name: Install Chromium for browser coverage
+        working-directory: scripts
+        run: npx playwright install --with-deps chromium
+
+      - name: Run browser tests with coverage
+        run: npm --prefix scripts run test:e2e:coverage
+        env:
+          XWING_E2E_COVERAGE: "1"
+
+      - name: Convert browser coverage for SonarQube Cloud
+        run: node scripts/e2e/coverage-to-lcov.mjs
+
       - name: Authenticate to SonarQube Cloud
         uses: SonarSource/sonarqube-auth-action@v1
 
