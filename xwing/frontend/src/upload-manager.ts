@@ -63,13 +63,21 @@ export interface UploadSnapshot {
 
 type Fetch = typeof fetch;
 
+let fallbackUploadId = 0;
+
 function uploadId(): string {
   const timestamp = Date.now().toString(36);
-  const randomUUID = globalThis.crypto?.randomUUID;
-  if (typeof randomUUID === "function") {
-    return `${timestamp}-${randomUUID.call(globalThis.crypto)}`;
+  const crypto = globalThis.crypto as Crypto | undefined;
+  if (crypto && typeof crypto.randomUUID === "function") {
+    return `${timestamp}-${crypto.randomUUID()}`;
   }
-  return `${timestamp}-${Math.random().toString(36).slice(2)}`;
+  if (crypto && typeof crypto.getRandomValues === "function") {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    const suffix = Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("");
+    return `${timestamp}-${suffix}`;
+  }
+  fallbackUploadId += 1;
+  return `${timestamp}-${fallbackUploadId.toString(36)}`;
 }
 
 /**
@@ -205,6 +213,8 @@ export class UploadManager {
         : item.destination;
       await this.ensureDirectories(destination, item.destination, item.controller.signal);
 
+      // The client only builds paths under the app's own /_upload route. The
+      // server's upload id is URL-encoded before it is appended.
       const client = new UploadClient({
         fetchImpl: this.fetcher,
         signal: item.controller.signal,

@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 def _read_umask() -> int:
     # Round trip once at import (startup, before any request threads exist):
     # os.umask can only be read by setting it, which is not thread safe later.
-    mask = os.umask(0o022)
+    mask = os.umask(0o022)  # NOSONAR: temporary read; the original mask is restored immediately.
     os.umask(mask)
     return mask
 

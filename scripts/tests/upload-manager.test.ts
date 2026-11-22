@@ -99,6 +99,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("UploadManager scheduling", () => {
@@ -298,5 +299,21 @@ describe("UploadManager scheduling", () => {
     const snapshot = manager.getSnapshot();
     expect(snapshot.active).toBe(1);
     expect(snapshot.parallel).toBe(4);
+  });
+});
+
+describe("upload ids", () => {
+  it("does not use Math.random when randomUUID is unavailable", () => {
+    const random = vi.spyOn(Math, "random");
+    vi.stubGlobal("crypto", {
+      getRandomValues: (bytes: Uint8Array) => bytes.fill(7),
+    });
+
+    const { manager } = managerWith();
+    manager.add([new File(["a"], "a.txt")], "/", 1024);
+
+    const [item] = manager.getSnapshot().items;
+    expect(item?.id).toContain("07070707070707070707070707070707");
+    expect(random).not.toHaveBeenCalled();
   });
 });

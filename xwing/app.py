@@ -60,6 +60,19 @@ from .webdav import (
 
 logger = logging.getLogger(__name__)
 
+_LOG_CONTROL_CHARS = str.maketrans(
+    {chr(code): f"\\x{code:02x}" for code in range(32)}
+    | {"\n": "\\n", "\r": "\\r", "\t": "\\t", chr(127): "\\x7f"}
+)
+
+
+def _log_field(value: object) -> str:
+    return str(value).translate(_LOG_CONTROL_CHARS)
+
+
+def _temporary_archive(tmp_dir: Path) -> IO[bytes]:
+    return tempfile.TemporaryFile(dir=tmp_dir)
+
 
 def _configure_log_file_from_env() -> None:
     log_file = os.getenv("XWING_LOG_FILE")
@@ -302,8 +315,10 @@ def create_app(settings: Settings) -> FastAPI:
             )
         )
         task = asyncio.create_task(cleanup_stale_sessions(upload_store))
-        yield
-        task.cancel()
+        try:
+            yield
+        finally:
+            task.cancel()
 
     app = FastAPI(
         lifespan=lifespan,
@@ -373,12 +388,12 @@ def create_app(settings: Settings) -> FastAPI:
         duration_ms = round((time.monotonic() - started) * 1000, 2)
         logger.info(
             "file operation user=%s operation=%s path=%s status=%s duration_ms=%s details=%s",
-            user,
-            operation,
-            path,
+            _log_field(user),
+            _log_field(operation),
+            _log_field(path),
             status_code,
             duration_ms,
-            details or "",
+            _log_field(details or ""),
         )
         if not settings.audit_db or user == "anonymous":
             return
@@ -1183,7 +1198,9 @@ def create_app(settings: Settings) -> FastAPI:
         await directory_zip_semaphore.acquire()
         try:
             files, directories = await anyio.to_thread.run_sync(_collect_files)  # type: ignore[reportAttributeAccessIssue]
-            archive = tempfile.TemporaryFile(dir=settings.tmp_dir)
+            archive = await anyio.to_thread.run_sync(
+                _temporary_archive, settings.tmp_dir
+            )  # type: ignore[reportAttributeAccessIssue]
 
             def _build() -> None:
                 total_bytes = 0
@@ -1622,6 +1639,10 @@ def create_app(settings: Settings) -> FastAPI:
         users_document: dict,
         ldap_update: tuple[Path, dict] | None,
     ) -> bool:
+        if users_path != settings.users_config:
+            raise HTTPException(status_code=500, detail="Unexpected users config path")
+        if ldap_update is not None and ldap_update[0] != _ldap_config_path:
+            raise HTTPException(status_code=500, detail="Unexpected LDAP config path")
         live_applied = False
         try:
             original_users = users_path.read_bytes()
@@ -1635,7 +1656,9 @@ def create_app(settings: Settings) -> FastAPI:
                     _apply_live_ldap_allowlist(ldap_update[1])
                     live_applied = ldap_config is not None
             except Exception:
-                users_path.write_bytes(original_users)
+                # The paths are the configured admin files, and these bytes are
+                # each file's own previous contents, so the rollback is local.
+                users_path.write_bytes(original_users)  # NOSONAR
                 if ldap_update is not None and original_ldap is not None:
                     ldap_update[0].write_bytes(original_ldap)
                 raise

@@ -5,6 +5,7 @@ import asyncio
 import errno
 import io
 import json
+import logging
 import os
 import sys
 import types
@@ -725,6 +726,36 @@ class TestFileModes:
         assert client.put("/empty.txt", content=b"").status_code == 204
         assert (root / "empty.txt").stat().st_mode & 0o777 == 0o666 & ~_umask()
         assert [p.name for p in root.iterdir() if "upload-part" in p.name] == []
+
+
+# ── Audit logs ──────────────────────────────────────────────────────────────
+
+
+class TestAuditLogs:
+    def test_file_path_control_characters_are_escaped(self, settings, root, caplog):
+        try:
+            (root / "evil\rforged.txt").write_text("x")
+        except OSError:
+            pytest.skip("filesystem rejects control characters in filenames")
+        app = create_app(settings)
+
+        with caplog.at_level(logging.INFO, logger="xwing.app"):
+            status, _ = read_asgi(
+                app,
+                "GET",
+                "/evil\rforged.txt",
+                headers=[(b"accept", b"*/*")],
+            )
+
+        assert status == 200
+        messages = [
+            record.getMessage()
+            for record in caplog.records
+            if "file operation" in record.getMessage()
+        ]
+        assert messages
+        assert "evil\\rforged.txt" in messages[-1]
+        assert "evil\rforged.txt" not in messages[-1]
 
 
 # ── B12: status codes ───────────────────────────────────────────────────────
