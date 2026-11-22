@@ -103,6 +103,7 @@ const DELETE_KEYS: Record<string, true> = { Delete: true, Backspace: true };
  * focus (Enter opening the new folder, Space flipping a selection over and over).
  */
 const ROW_ACTION_KEYS: Record<string, true> = { Enter: true, " ": true, F2: true, Delete: true, F10: true, ContextMenu: true };
+const ROW_MOVE_KEYS: Record<string, "first" | "last" | "next" | "previous"> = { Home: "first", End: "last", ArrowDown: "next", ArrowUp: "previous" };
 /** The project's ease-out, as motion wants it. `--xw-ease` in `style.css` is the same curve. */
 const EASE_OUT: [number, number, number, number] = [0.16, 1, 0.3, 1];
 /** How long the listing takes to leave before a folder's rows are swapped in. */
@@ -139,6 +140,52 @@ function TransitionVeil({ active, label }: { active: boolean; label: string }): 
       </m.div>
     </m.div>}
   </AnimatePresence>;
+}
+
+function TableHeader({ files, selected, sort, onSelectAll, onSort }: {
+  files: XwingFile[];
+  selected: Set<string>;
+  sort: SortEntry[];
+  onSelectAll: () => void;
+  onSort: (key: SortKey) => void;
+}): React.JSX.Element {
+  let allSelected = false;
+  if (files.length > 0) {
+    if (selected.size === files.length) allSelected = true;
+  }
+  let someSelected = false;
+  if (selected.size > 0) {
+    if (selected.size < files.length) someSelected = true;
+  }
+  return <div className={cn("table-head sticky top-0 z-raise border-0 border-b border-solid border-xw-line bg-[#0b101a] text-xw-faint text-[11px] font-medium font-mono uppercase items-stretch", "grid grid-cols-[38px_34px_minmax(240px,1fr)_112px_168px_40px] px-2 max-[900px]:grid-cols-[38px_34px_minmax(180px,1fr)_90px_120px_40px] max-[640px]:grid-cols-[38px_30px_minmax(120px,1fr)_64px_40px]")} role="rowgroup">
+    <span role="row" style={ROW_CONTENTS}>
+      <label className="select-all h-full grid place-items-center bg-transparent border-0 cursor-pointer" role="columnheader">
+        <SelectionCheckbox label={allSelected ? "Deselect all" : "Select all"} checked={allSelected} indeterminate={someSelected} onToggle={onSelectAll}/>
+      </label>
+      <span role="columnheader" aria-label="Type"/>
+      {(["name", "size", "modified"] as SortKey[]).map(key => {
+        const index = sort.findIndex(entry => entry.key === key);
+        const entry = sort[index];
+        const active = entry !== undefined;
+        const label = key === "modified" ? "Modified" : key[0]!.toUpperCase() + key.slice(1);
+        const cellClasses = ["sort-cell flex"];
+        if (key === "modified") cellClasses.push("max-[640px]:hidden");
+        const buttonClasses = ["sort h-full w-full flex items-center gap-1 bg-transparent text-inherit text-left uppercase hover:text-[#aab5c9]"];
+        if (key === "modified") buttonClasses.push("date max-[640px]:hidden");
+        if (active) buttonClasses.push("active");
+        let direction: "none" | "ascending" | "descending" = "none";
+        if (entry) direction = entry.direction === "asc" ? "ascending" : "descending";
+        let ariaLabel = `${label}, not sorted`;
+        if (entry) ariaLabel = `${label}, ${entry.direction === "asc" ? "ascending" : "descending"}, priority ${index + 1}`;
+        return <span key={key} className={cn(...cellClasses)} role="columnheader" aria-sort={direction} style={SORT_CELL}>
+          <button className={cn(...buttonClasses)} aria-label={ariaLabel} onClick={() => onSort(key)}>
+            {label} {active ? <span>{entry!.direction === "asc" ? "▲" : "▼"}{sort.length > 1 ? index + 1 : ""}</span> : null}
+          </button>
+        </span>;
+      })}
+      <span role="columnheader" aria-label="Actions"/>
+    </span>
+  </div>;
 }
 
 function Icon({ name }: { name: string }): React.JSX.Element {
@@ -861,7 +908,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
         else if (event.key === "Escape" && selected.size) { event.preventDefault(); setSelected(new Set()); setLastSelected(null); }
       }}>
         <div className={cn("file-table grid grid-rows-[36px_minmax(0,1fr)] min-h-0 overflow-auto [scrollbar-gutter:stable]", dialog && "modal-open")} role="table" aria-label="Files" aria-rowcount={files.length + 1} aria-describedby={policyHint}>
-        <div className={cn("table-head sticky top-0 z-raise border-0 border-b border-solid border-xw-line bg-[#0b101a] text-xw-faint text-[11px] font-medium font-mono uppercase items-stretch", "grid grid-cols-[38px_34px_minmax(240px,1fr)_112px_168px_40px] px-2 max-[900px]:grid-cols-[38px_34px_minmax(180px,1fr)_90px_120px_40px] max-[640px]:grid-cols-[38px_30px_minmax(120px,1fr)_64px_40px]")} role="rowgroup"><span role="row" style={ROW_CONTENTS}><label className="select-all h-full grid place-items-center bg-transparent border-0 cursor-pointer" role="columnheader"><SelectionCheckbox label={selected.size === files.length ? "Deselect all" : "Select all"} checked={files.length > 0 && selected.size === files.length} indeterminate={selected.size > 0 && selected.size < files.length} onToggle={() => { setSelected(selected.size === files.length ? new Set() : new Set(files.map(file => file.path))); setLastSelected(null); }}/></label><span role="columnheader" aria-label="Type"/>{(["name", "size", "modified"] as SortKey[]).map(key => { const index = sort.findIndex(entry => entry.key === key); const entry = sort[index]; const label = key === "modified" ? "Modified" : key[0]!.toUpperCase() + key.slice(1); return <span key={key} className={cn("sort-cell flex", key === "modified" && "max-[640px]:hidden")} role="columnheader" aria-sort={entry ? (entry.direction === "asc" ? "ascending" : "descending") : "none"} style={SORT_CELL}><button className={cn("sort h-full w-full flex items-center gap-1 bg-transparent text-inherit text-left uppercase hover:text-[#aab5c9]", key === "modified" && "date max-[640px]:hidden", entry && "active")} aria-label={`${label}, ${entry ? `${entry.direction === "asc" ? "ascending" : "descending"}, priority ${index + 1}` : "not sorted"}`} onClick={() => updateSort(key)}>{label} {entry && <span>{entry.direction === "asc" ? "▲" : "▼"}{sort.length > 1 ? index + 1 : ""}</span>}</button></span>; })}<span role="columnheader" aria-label="Actions"/></span></div>
+        <TableHeader files={files} selected={selected} sort={sort} onSort={updateSort} onSelectAll={() => { setSelected(selected.size === files.length ? new Set() : new Set(files.map(file => file.path))); setLastSelected(null); }}/>
         <m.div id="file-list" key={directory.path} className="file-list min-h-0 overflow-x-clip" role="rowgroup" tabIndex={-1}
           initial={listEntrance.current && !reduced ? { opacity: 0, y: 6 } : false}
           animate={listLeaving ? { opacity: 0, y: -4 } : { opacity: 1, y: 0 }}
@@ -1145,10 +1192,10 @@ function FileRow({ file, index, selected, loading, arriving, tabStop, onFocusRow
       else if (event.key === "Delete") { event.preventDefault(); if (actionsMenu.current?.contains(event.target as Node)) dismissMenu(); onDeleteKey(); }
       else if (event.key === "F2") { event.preventDefault(); onRename(); }
       else if (event.key === "Escape") { event.preventDefault(); onClear(); }
-      else if (event.key === "ArrowDown") { event.preventDefault(); moveFocus(event.currentTarget, "next"); }
-      else if (event.key === "ArrowUp") { event.preventDefault(); moveFocus(event.currentTarget, "previous"); }
-      else if (event.key === "Home") { event.preventDefault(); moveFocus(event.currentTarget, "first"); }
-      else if (event.key === "End") { event.preventDefault(); moveFocus(event.currentTarget, "last"); }
+      else {
+        const direction = ROW_MOVE_KEYS[event.key];
+        if (direction) { event.preventDefault(); moveFocus(event.currentTarget, direction); }
+      }
     }}>
     <label className="row-check h-full grid place-items-center bg-transparent border-0 cursor-pointer" role="cell"><SelectionCheckbox rowControl label={`${selected ? "Deselect" : "Select"} ${file.name}`} checked={selected} onToggle={event => onSelect({ range: event.shiftKey, additive: event.metaKey || event.ctrlKey || !event.shiftKey })}/></label>
     <span className={cn("file-icon w-6 h-6 rounded-[5px] grid place-items-center text-[#9ba6ba]", file.kind === "directory" ? "directory text-[#d8b963] bg-[#241f15]" : "file text-xw-accent bg-[#19162b]")} role="cell"><Icon name={file.kind === "directory" ? "folder" : "file"}/></span>
