@@ -163,4 +163,3 @@ function readAll(entry) {
     readBatch();
   });
 }
-// coverage probe

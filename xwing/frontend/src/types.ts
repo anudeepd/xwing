@@ -64,4 +64,3 @@ export function encodePath(path: string): string {
     .join("/");
   return `/${encoded}${trailing && encoded ? "/" : ""}`;
 }
-// coverage probe

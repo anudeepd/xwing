@@ -48,4 +48,3 @@ export function sortFiles(files: XwingFile[], entries: SortEntry[]): XwingFile[]
     return nameCollator.compare(left.name, right.name);
   });
 }
-// coverage probe

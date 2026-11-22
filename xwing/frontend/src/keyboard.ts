@@ -30,4 +30,3 @@ export function useModalFocus<T extends HTMLElement>(onDismiss: () => void, dism
 
   return root;
 }
-// coverage probe

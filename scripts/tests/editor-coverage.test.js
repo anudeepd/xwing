@@ -381,6 +381,38 @@ describe("editor coverage edges", () => {
     sessionStorage.clear();
   });
 
+  it("renders the anonymous shell with the fallback rail label", async () => {
+    await mount({ extension: "", user: { name: "guest", authenticated: false } }, { reduced: false });
+    expect(document.body.textContent).toContain("anonymous");
+    expect(document.querySelector(".editor-rail")?.textContent).toContain("TXT");
+    const brand = document.querySelector('a[aria-label="X-wing EDITOR, home"]');
+    for (const key of ["ctrlKey", "metaKey", "shiftKey", "altKey"]) {
+      brand.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, [key]: true }));
+    }
+    brand.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, button: 1 }));
+    expect(document.querySelector(".modal")).toBeNull();
+  });
+
+  it("treats a non-envelope upload response as an auth failure", async () => {
+    class BadEnvelopeXHR extends SaveXHR {
+      send() {
+        this.uploadHandlers.loadstart?.();
+        queueMicrotask(() => {
+          this.uploadHandlers.load?.();
+          this.status = 200;
+          this.responseText = "not json";
+          this.listeners.load?.();
+        });
+      }
+    }
+    vi.stubGlobal("XMLHttpRequest", BadEnvelopeXHR);
+    vi.stubGlobal("fetch", saveFetch());
+    await mount({ maxChunkBytes: 4 });
+    await setDoc("abcdefghij");
+    click(document.querySelector(".button.primary"));
+    await vi.waitFor(() => expect(document.querySelector(".auth-overlay")).not.toBeNull());
+  });
+
   it("saves an empty document through the fallback chunk limit", async () => {
     const fetchMock = saveFetch();
     vi.stubGlobal("fetch", fetchMock);

@@ -1073,4 +1073,179 @@ describe("file browser coverage edges", () => {
     expect(await create({ "MKCOL /fresh/": { status: 500, body: {} } })).toContain("Request failed (500)");
     expect(await create({ "MKCOL /fresh/": "offline" })).toContain("Something went wrong");
   });
+
+  it("shows the transition veil for a slow folder load", async () => {
+    const slow = new Promise(resolve => setTimeout(() => resolve(directoryResponse({
+      ...bootstrap,
+      path: "/docs/",
+      breadcrumbs: [...bootstrap.breadcrumbs, { name: "docs", path: "/docs/" }],
+      files: [],
+    })), 700));
+    await mount({ reduced: false, overrides: { "GET /docs/": () => slow } });
+    document.querySelector('[data-path="/docs/"]').dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+    await waitFor(() => expect(document.querySelector(".transition-veil")).not.toBeNull(), { timeout: 2000 });
+    await waitFor(() => expect(document.querySelector(".transition-veil")).toBeNull(), { timeout: 2000 });
+  });
+
+  it("opens documents with and without an editor and honors the leave delay", async () => {
+    const assign = vi.fn();
+    vi.stubGlobal("location", {
+      ...window.location,
+      assign,
+      href: window.location.href,
+      pathname: window.location.pathname,
+      search: window.location.search,
+      hash: window.location.hash,
+    });
+    await mount({ reduced: false });
+    vi.useFakeTimers();
+    const alpha = document.querySelector('[data-path="/alpha.txt"]');
+    alpha.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+    vi.advanceTimersByTime(170);
+    expect(assign).toHaveBeenCalledWith("/alpha.txt?edit");
+    vi.useRealTimers();
+    await mount();
+    const beta = document.querySelector('[data-path="/beta.txt"]');
+    beta.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+    await waitFor(() => expect(assign).toHaveBeenLastCalledWith("/beta.txt"));
+  });
+
+  it("opens the parallel menu without a radio and toggles it from the trigger", async () => {
+    await mount();
+    const original = Element.prototype.querySelector;
+    vi.spyOn(Element.prototype, "querySelector").mockImplementation(function (selector) {
+      if (this.id === "parallel-menu" && selector === "input[type='radio']") return null;
+      return original.call(this, selector);
+    });
+    const trigger = document.querySelector(".parallel-trigger");
+    click(trigger);
+    await waitFor(() => expect(document.querySelector("#parallel-menu")).not.toBeNull());
+    vi.restoreAllMocks();
+    click(trigger);
+    await waitFor(() => expect(document.querySelector("#parallel-menu")).toBeNull());
+    click(trigger);
+    await waitFor(() => expect(document.querySelector("#parallel-menu")).not.toBeNull());
+    click(document.querySelector('#parallel-menu input[value="2"]'));
+    await waitFor(() => expect(document.querySelector("#parallel-menu")).toBeNull());
+    expect(document.querySelector(".parallel-trigger")?.getAttribute("aria-label")).toContain("2");
+  });
+
+  it("places a menu without a column header or a scroll container", async () => {
+    await mount();
+    const query = vi.spyOn(document, "querySelector").mockImplementation(selector =>
+      selector === ".file-table .table-head" ? null : Document.prototype.querySelector.call(document, selector));
+    click(document.querySelector('[aria-label="Actions for alpha.txt"]'));
+    await waitFor(() => expect(document.querySelector("#row-actions-menu")).not.toBeNull());
+    query.mockRestore();
+    key(document.querySelector("#row-actions-menu"), "Escape");
+    await waitFor(() => expect(document.querySelector("#row-actions-menu")).toBeNull());
+
+    const originalClosest = Element.prototype.closest;
+    const closest = vi.spyOn(Element.prototype, "closest").mockImplementation(function (selector) {
+      return selector === ".file-table" ? null : originalClosest.call(this, selector);
+    });
+    click(document.querySelector('[aria-label="Actions for alpha.txt"]'));
+    await waitFor(() => expect(document.querySelector("#row-actions-menu")).not.toBeNull());
+    closest.mockRestore();
+    key(document.querySelector("#row-actions-menu"), "Escape");
+  });
+
+  it("handles Shift and a detached row without a parent", async () => {
+    await mount();
+    const alpha = document.querySelector('[data-path="/alpha.txt"]');
+    const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true, shiftKey: true });
+    alpha.dispatchEvent(down);
+    expect(down.defaultPrevented).toBe(true);
+    alpha.remove();
+    key(alpha, "ArrowDown");
+    expect(document.querySelector("#row-actions-menu")).toBeNull();
+  });
+
+  it("coalesces two finished uploads into one quiet refresh", async () => {
+    UploadXHR.all = [];
+    vi.stubGlobal("XMLHttpRequest", UploadXHR);
+    await mount({
+      overrides: {
+        "POST /_upload/init": () => ({ body: { upload_id: "up", chunk_size: 1024, concurrency: 2, size: 6 } }),
+        "POST /_upload/up/complete": () => ({ body: { path: "uploaded.txt", size: 6 } }),
+      },
+    });
+    const input = document.querySelector('input[type="file"]:not([webkitdirectory])');
+    Object.defineProperty(input, "files", {
+      configurable: true,
+      value: [new File(["abcdef"], "one.txt"), new File(["abcdef"], "two.txt")],
+    });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    await waitFor(() => expect(document.querySelectorAll(".upload-item").length).toBe(2));
+    await waitFor(() => expect(document.querySelector(".upload-dock")?.textContent).toContain("Upload complete"), { timeout: 3000 });
+  });
+
+  it("creates a folder under a nested path", async () => {
+    await mount({
+      bootstrapData: {
+        ...bootstrap,
+        path: "/docs",
+        breadcrumbs: [...bootstrap.breadcrumbs, { name: "docs", path: "/docs/" }],
+      },
+      overrides: { "MKCOL /docs/fresh/": { body: {}, status: 201 } },
+    });
+    click([...document.querySelectorAll("button")].find(button => button.textContent.includes("New folder")));
+    await waitFor(() => expect(document.querySelector(".modal")).not.toBeNull());
+    const form = document.querySelector("form.modal");
+    setInputValue(form.querySelector("input"), "fresh");
+    submit(form);
+    await waitFor(() => expect(document.querySelector(".modal")).toBeNull());
+  });
+
+  it("ignores a second rename or delete submit while the first is pending", async () => {
+    let releaseMove;
+    let releaseDelete;
+    await mount({
+      overrides: {
+        "MOVE /alpha.txt": () => new Promise(resolve => { releaseMove = resolve; }),
+        "DELETE /beta.txt": () => new Promise(resolve => { releaseDelete = resolve; }),
+      },
+    });
+    click(document.querySelector('[data-path="/alpha.txt"]'));
+    await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toBe("1 selected"));
+    click(document.querySelector('[aria-label="Actions for alpha.txt"]'));
+    await waitFor(() => expect(document.querySelector("#row-actions-menu")).not.toBeNull());
+    click(document.querySelector('[aria-label="Rename alpha.txt"]'));
+    await waitFor(() => expect(document.querySelector(".modal")).not.toBeNull());
+    const rename = document.querySelector("form.modal");
+    setInputValue(rename.querySelector("input"), "renamed.txt");
+    submit(rename);
+    submit(rename);
+    releaseMove({ body: {}, status: 201 });
+    await waitFor(() => expect(document.querySelector(".modal")).toBeNull());
+
+    click(document.querySelector('[data-path="/beta.txt"]'));
+    await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toBe("1 selected"));
+    click(document.querySelector('[aria-label="Delete selected"]'));
+    await waitFor(() => expect(document.querySelector(".modal")).not.toBeNull());
+    const remove = document.querySelector("form.modal");
+    submit(remove);
+    submit(remove);
+    releaseDelete({ body: { transaction_id: "tx-delete" } });
+    await waitFor(() => expect(document.querySelector(".modal")).toBeNull());
+  });
+
+  it("counts refresh failures when the quiet listing breaks", async () => {
+    UploadXHR.all = [];
+    vi.stubGlobal("XMLHttpRequest", UploadXHR);
+    const callsSeen = await mount({
+      overrides: {
+        "GET /": () => {
+          return { status: 500, body: { detail: "down" } };
+        },
+        "POST /_upload/init": () => ({ body: { upload_id: "up", chunk_size: 1024, concurrency: 1, size: 6 } }),
+        "POST /_upload/up/complete": () => ({ body: { path: "uploaded.txt", size: 6 } }),
+      },
+    });
+    const input = document.querySelector('input[type="file"]:not([webkitdirectory])');
+    Object.defineProperty(input, "files", { configurable: true, value: [new File(["abcdef"], "uploaded.txt")] });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    await waitFor(() => expect(document.querySelector(".upload-dock")?.textContent).toContain("Upload complete"), { timeout: 3000 });
+    await waitFor(() => expect(callsSeen.filter(call => call === "GET /").length).toBeGreaterThan(0), { timeout: 3000 });
+  });
 });

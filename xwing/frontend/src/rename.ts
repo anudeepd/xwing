@@ -14,4 +14,3 @@ export function renameDestination(path: string, name: string): string {
   const parent = current.slice(0, current.lastIndexOf("/"));
   return `${parent}/${encodeURIComponent(name)}${isDirectory ? "/" : ""}`;
 }
-// coverage probe

@@ -759,3 +759,106 @@ describe("request deadlines", () => {
     await assertion;
   });
 });
+
+describe("fallback conditions", () => {
+  it("derives the defaults when init and the server omit optional fields", async () => {
+    const fake = {
+      initWithRetry: vi.fn(async () => ({ upload_id: "bare", size: 8 })),
+      put: vi.fn(async () => ({ received: 0 })),
+      complete: vi.fn(async () => ({})),
+      status: vi.fn(async () => ({ ranges: [] })),
+    };
+    await expect(uploadFile({
+      client: fake as unknown as UploadClient,
+      file: blobOf(8),
+      filename: "bare.bin",
+    })).resolves.toMatchObject({ ok: true, path: "bare.bin", bytes: 8 });
+  });
+
+  it("wraps a non-upload rejection from a window", async () => {
+    const fake = {
+      put: vi.fn(async () => { throw "boom"; }),
+      complete: vi.fn(async () => ({ path: "x" })),
+      status: vi.fn(async () => ({ ranges: [[0, 8]] })),
+    };
+    await expect(uploadFile({
+      client: fake as unknown as UploadClient,
+      file: blobOf(8),
+      destDir: "/",
+      session: { uploadId: "s", chunkSize: 8, concurrency: 1, ranges: [], size: 8 },
+      chunkSize: 8,
+      maxAttempts: 1,
+    })).rejects.toMatchObject({ message: "Upload failed", retryable: true });
+  });
+
+  it("wraps a non-error finalize failure", async () => {
+    const fake = {
+      put: vi.fn(async () => ({ ranges: [[0, 8]], received: 8 })),
+      complete: vi.fn(async () => { throw "done"; }),
+      status: vi.fn(async () => ({ ranges: [[0, 8]] })),
+    };
+    await expect(uploadFile({
+      client: fake as unknown as UploadClient,
+      file: blobOf(8),
+      destDir: "/",
+      session: { uploadId: "s", chunkSize: 8, concurrency: 1, ranges: [], size: 8 },
+      chunkSize: 8,
+      maxAttempts: 1,
+    })).rejects.toMatchObject({ message: "done" });
+  });
+
+  it("stops when session loss restart is disabled or already used", async () => {
+    const failed = {
+      put: vi.fn(async () => { throw new UploadError("lost", { code: "SESSION_LOST" }); }),
+      complete: vi.fn(async () => ({})),
+      status: vi.fn(async () => ({ ranges: [] })),
+    };
+    await expect(uploadFile({
+      client: failed as unknown as UploadClient,
+      file: blobOf(8),
+      destDir: "/",
+      session: { uploadId: "s", chunkSize: 8, concurrency: 1, ranges: [], size: 8 },
+      chunkSize: 8,
+      restartOnSessionLoss: false,
+    })).rejects.toMatchObject({ code: "SESSION_LOST" });
+
+    let inits = 0;
+    const restarted = {
+      initWithRetry: vi.fn(async () => {
+        inits += 1;
+        return { upload_id: `s${inits}`, chunk_size: 8, concurrency: 1, ranges: [], size: 8 };
+      }),
+      put: vi.fn(async () => { throw new UploadError("lost", { code: "SESSION_LOST" }); }),
+      complete: vi.fn(async () => ({})),
+      status: vi.fn(async () => ({ ranges: [] })),
+    };
+    await expect(uploadFile({
+      client: restarted as unknown as UploadClient,
+      file: blobOf(8),
+      destDir: "/",
+      session: { uploadId: "s", chunkSize: 8, concurrency: 1, ranges: [], size: 8 },
+      chunkSize: 8,
+    })).rejects.toMatchObject({ code: "SESSION_LOST" });
+    expect(inits).toBe(1);
+  });
+
+  it("shrinks a window that the server rejects as too large", async () => {
+    const retries: number[] = [];
+    const fake = {
+      put: vi.fn(async () => { throw new UploadError("too large", { status: 413, retryable: true }); }),
+      complete: vi.fn(async () => ({})),
+      status: vi.fn(async () => ({ ranges: [] })),
+    };
+    await expect(uploadFile({
+      client: fake as unknown as UploadClient,
+      file: blobOf(8),
+      destDir: "/",
+      session: { uploadId: "s", chunkSize: 8, concurrency: 1, ranges: [], size: 8 },
+      chunkSize: 8,
+      minChunkBytes: 2,
+      maxAttempts: 1,
+      callbacks: { onRetry: info => retries.push(info.attempt) },
+    })).rejects.toMatchObject({ status: 413 });
+    expect(retries.length).toBeGreaterThan(0);
+  });
+});
