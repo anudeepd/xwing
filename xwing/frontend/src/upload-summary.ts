@@ -47,3 +47,4 @@ export function uploadItemLabel(item: UploadItem): string {
   if (item.status === "uploading" && item.phase === "finalizing") return "Finalizing…";
   return STATUS_LABELS[item.status];
 }
+// coverage probe

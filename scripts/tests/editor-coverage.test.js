@@ -318,4 +318,67 @@ describe("editor coverage edges", () => {
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     expect(closeCount).toBe(1);
   });
+
+  it("navigates a clean editor and handles missing search fields", async () => {
+    vi.useFakeTimers();
+    const assign = vi.fn();
+    vi.stubGlobal("location", {
+      href: "http://xwing.test/README.md",
+      pathname: "/README.md",
+      search: "",
+      hash: "",
+      assign,
+    });
+    await mount({}, { reduced: false });
+    const unload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(unload);
+    expect(unload.defaultPrevented).toBe(false);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    vi.advanceTimersByTime(170);
+    expect(assign).toHaveBeenCalledWith("/");
+
+    const panel = document.createElement("div");
+    panel.className = "cm-panel cm-search";
+    document.querySelector("#editor-canvas").append(panel);
+    searchOpen = true;
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "f", ctrlKey: true, bubbles: true, cancelable: true }));
+    click(document.querySelector("#editor-canvas"));
+    expect(closeCount).toBe(0);
+  });
+
+  it("treats a login redirect as an auth failure", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200, url: "http://xwing.test/_auth/login" })));
+    await mount();
+    await setDoc("changed");
+    click(document.querySelector(".button.primary"));
+    await vi.waitFor(() => expect(document.querySelector(".auth-overlay")).not.toBeNull());
+  });
+
+  it("ignores saves while read-only and falls back to the default chunk size", async () => {
+    vi.stubGlobal("fetch", saveFetch());
+    await mount({ canWrite: false, maxChunkBytes: 0 });
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "s", ctrlKey: true, bubbles: true, cancelable: true }));
+    expect(document.querySelector('[role="status"]')?.textContent).not.toBe("Saving…");
+  });
+
+  it("saves an empty document through the fallback chunk limit", async () => {
+    const fetchMock = saveFetch();
+    vi.stubGlobal("fetch", fetchMock);
+    await mount({ content: "", maxChunkBytes: -1 });
+    await setDoc("x");
+    click(document.querySelector(".button.primary"));
+    await vi.waitFor(() => expect(document.querySelector('[role="status"]')?.textContent).toBe("Saved"));
+  });
+
+  it("shows the static shell without editor markup", async () => {
+    vi.resetModules();
+    window.__xwingEditorRoot?.unmount();
+    window.__xwingEditorRoot = undefined;
+    document.body.innerHTML = '<div id="xwing-editor-root"></div>';
+    await import("../../xwing/frontend/src/editor.tsx?editor-missing-bootstrap");
+    expect(document.querySelector(".editor-app")).toBeNull();
+    document.body.innerHTML = `<script id="xwing-editor-bootstrap" type="application/json">${JSON.stringify(baseBoot)}</script>`;
+    await import("../../xwing/frontend/src/editor.tsx?editor-missing-root");
+    expect(document.querySelector(".editor-app")).toBeNull();
+  });
 });

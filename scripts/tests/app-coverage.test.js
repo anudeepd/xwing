@@ -111,8 +111,8 @@ function installFetch(overrides = {}) {
   return calls;
 }
 
-async function waitFor(assertion) {
-  await vi.waitFor(assertion);
+async function waitFor(assertion, options) {
+  await vi.waitFor(assertion, options);
 }
 
 function click(element) {
@@ -132,6 +132,10 @@ function confirmModal() {
   return document.querySelectorAll(".modal .modal-actions button")[1];
 }
 
+function submit(form) {
+  form.dispatchEvent(new Event("submit", { cancelable: true, bubbles: true }));
+}
+
 async function mount({
   overrides = {},
   data = {},
@@ -139,12 +143,13 @@ async function mount({
   bootstrapData = bootstrap,
   bootstrapJson = null,
   sortValue = null,
+  idle = 0,
 } = {}) {
   vi.resetModules();
   window.__xwingAppRoot?.unmount();
   window.__xwingAppRoot = undefined;
   window.history.replaceState(null, "", "/");
-  document.body.dataset.authIdleTimeout = "0";
+  document.body.dataset.authIdleTimeout = String(idle);
   document.body.dataset.auth = data.auth ?? "";
   document.documentElement.style.cssText = "";
   document.body.innerHTML = `
@@ -785,5 +790,207 @@ describe("file browser coverage edges", () => {
     await import("../../xwing/frontend/src/app.tsx?app-startup-error");
     await waitFor(() => expect(document.querySelector(".boot-error")).not.toBeNull());
     expect(document.querySelector(".boot-error")?.textContent).toContain("X-wing couldn’t start");
+  });
+
+  it("shows the startup failure shell without a root or bootstrap", async () => {
+    vi.resetModules();
+    window.__xwingAppRoot?.unmount();
+    window.__xwingAppRoot = undefined;
+    document.body.innerHTML = '<div id="xwing-root"></div>';
+    window.matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} });
+    globalThis.ResizeObserver = class { observe() {} disconnect() {} };
+    vi.stubGlobal("localStorage", { getItem: () => null, setItem() {}, removeItem() {} });
+    await import("../../xwing/frontend/src/app.tsx?app-missing-bootstrap");
+    await waitFor(() => expect(document.querySelector(".boot-error")).not.toBeNull());
+
+    vi.resetModules();
+    document.body.innerHTML = `<script id="xwing-bootstrap" type="application/json">${JSON.stringify(bootstrap)}</script>`;
+    await import("../../xwing/frontend/src/app.tsx?app-missing-root");
+    await waitFor(() => expect(document.querySelector(".boot-error")).not.toBeNull());
+  });
+
+  it("shows the empty folder and filtered-empty states", async () => {
+    await mount({ bootstrapData: { ...bootstrap, files: [] } });
+    await waitFor(() => expect(document.querySelector(".state-panel.empty")?.textContent).toContain("This folder is empty"));
+    setInputValue(document.querySelector('[aria-label="Filter files by name"]'), "nothing");
+    await waitFor(() => expect(document.querySelector(".state-panel.empty")?.textContent).toContain("No matches"));
+  });
+
+  it("renders an anonymous shell without breadcrumbs", async () => {
+    await mount({
+      bootstrapData: {
+        ...bootstrap,
+        user: { name: "guest", authenticated: false },
+        breadcrumbs: [],
+        admin: false,
+      },
+    });
+    await waitFor(() => expect(document.querySelector(".xw-app")).not.toBeNull());
+    expect(document.querySelector(".account-trigger")).toBeNull();
+  });
+
+  it("clears every drag edge and rejects drops without files", async () => {
+    await mount();
+    const app = document.querySelector(".xw-app");
+    app.dispatchEvent(new Event("dragleave", { bubbles: true }));
+    app.dispatchEvent(new Event("dragenter", { bubbles: true }));
+    app.dispatchEvent(new Event("dragover", { bubbles: true }));
+    app.dispatchEvent(new Event("dragover", { bubbles: true }));
+    app.dispatchEvent(new Event("dragleave", { bubbles: true }));
+    const drop = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, "dataTransfer", { value: { items: [], files: [] } });
+    app.dispatchEvent(drop);
+    await waitFor(() => expect(document.querySelector(".toast")?.textContent).toContain("no files"));
+    window.dispatchEvent(new Event("blur"));
+
+    await mount({ bootstrapData: { ...bootstrap, permissions: { read: true, write: false, delete: false } } });
+    const readonlyDrop = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(readonlyDrop, "dataTransfer", { value: { items: [], files: [] } });
+    document.querySelector(".xw-app").dispatchEvent(readonlyDrop);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    expect(document.querySelector(".toast")).toBeNull();
+  });
+
+  it("ignores a repeat folder submit while the first is pending", async () => {
+    let release;
+    const pending = new Promise(resolve => { release = resolve; });
+    await mount({ overrides: { "MKCOL /fresh/": () => pending } });
+    click([...document.querySelectorAll("button")].find(button => button.textContent.includes("New folder")));
+    await waitFor(() => expect(document.querySelector(".modal")).not.toBeNull());
+    const form = document.querySelector("form.modal");
+    setInputValue(form.querySelector("input"), "fresh");
+    submit(form);
+    submit(form);
+    release({ body: {}, status: 201 });
+    await waitFor(() => expect(document.querySelector(".modal")).toBeNull());
+  });
+
+  it("restores with and without a count, and shows the zip overlay", async () => {
+    let restored = 0;
+    const zip = new Promise(() => {});
+    vi.stubGlobal("URL", Object.assign(URL, { createObjectURL: vi.fn(() => "blob:x"), revokeObjectURL: vi.fn() }));
+    const calls = await mount({
+      overrides: {
+        "POST /api/restore/tx-delete": () => ({ body: { restored } }),
+        "POST /_bulk/zip": () => zip,
+      },
+    });
+    const alpha = document.querySelector('[data-path="/alpha.txt"]');
+    click(alpha);
+    await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toBe("1 selected"));
+    click(document.querySelector('[aria-label="Delete selected"]'));
+    await waitFor(() => expect(document.querySelector(".modal")).not.toBeNull());
+    click(confirmModal());
+    const undo = () => [...document.querySelectorAll(".toast")].find(toast => toast.textContent.includes("Undo"));
+    await waitFor(() => expect(undo()).not.toBeUndefined());
+    click(undo().querySelector("button"));
+    const toastText = () => [...document.querySelectorAll(".toast")].map(toast => toast.textContent).join(" ");
+    await waitFor(() => expect(toastText()).toContain("Deleted items restored"));
+    expect(calls).toContain("POST /api/restore/tx-delete");
+
+    restored = 2;
+    click(document.querySelector('[data-path="/alpha.txt"]'));
+    await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toBe("1 selected"));
+    click(document.querySelector('[aria-label="Delete selected"]'));
+    await waitFor(() => expect(document.querySelector(".modal")).not.toBeNull());
+    click(confirmModal());
+    await waitFor(() => expect(undo()).not.toBeUndefined());
+    click(undo().querySelector("button"));
+    await waitFor(() => expect(toastText()).toContain("2 items restored"));
+
+    click(document.querySelector('[data-path="/alpha.txt"]'));
+    await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toBe("1 selected"));
+    click(document.querySelector('[aria-label="Download selected as zip"]'));
+    await waitFor(() => expect(document.querySelector(".zip-overlay")).not.toBeNull());
+    click(document.querySelector('[aria-label="Download selected as zip"]'));
+  });
+
+  it("moves focus with End and gives it back to the list after deleting the last row", async () => {
+    await mount({ bootstrapData: { ...bootstrap, files: [files[2]] } });
+    const alpha = document.querySelector('[data-path="/alpha.txt"]');
+    alpha.focus();
+    key(alpha, "End");
+    expect(document.activeElement).toBe(alpha);
+
+    click(alpha);
+    await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toBe("1 selected"));
+    click(document.querySelector('[aria-label="Delete selected"]'));
+    await waitFor(() => expect(document.querySelector(".modal")).not.toBeNull());
+    click(confirmModal());
+    await waitFor(() => expect(document.querySelector("#file-list")).toBe(document.activeElement));
+  });
+
+  it("shows a failed upload in the dock and retries it", async () => {
+    await mount({ overrides: { "POST /_upload/init": { status: 500, body: { detail: "no" } } } });
+    const input = document.querySelector('input[type="file"]:not([webkitdirectory])');
+    Object.defineProperty(input, "files", { configurable: true, value: [new File(["abc"], "bad.txt")] });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    await waitFor(() => expect(document.querySelector(".upload-dock")?.textContent).toContain("failed"));
+    click([...document.querySelectorAll(".upload-dock button")].find(button => button.textContent.includes("Retry")));
+    await waitFor(() => expect(document.querySelector(".upload-dock")?.textContent).toContain("failed"));
+  });
+
+  it("cancels an active upload and clears finished entries", async () => {
+    class HangingXHR extends UploadXHR {
+      send() {
+        this.uploadHandlers.loadstart?.();
+      }
+    }
+    vi.stubGlobal("XMLHttpRequest", HangingXHR);
+    await mount({
+      overrides: {
+        "POST /_upload/init": () => ({ body: { upload_id: "slow", chunk_size: 1024, concurrency: 2, size: 6 } }),
+      },
+    });
+    const input = document.querySelector('input[type="file"]:not([webkitdirectory])');
+    Object.defineProperty(input, "files", {
+      configurable: true,
+      value: [new File(["abcdef"], "one.txt"), new File(["abcdef"], "two.txt")],
+    });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    await waitFor(() => expect(document.querySelectorAll(".upload-item").length).toBe(2));
+    const cancel = [...document.querySelectorAll(".upload-item button")].find(button => button.textContent.includes("Cancel"));
+    click(cancel);
+    await waitFor(() => expect(document.querySelector(".upload-dock")?.textContent).toContain("Upload cancelled"));
+    click(document.querySelector('[aria-label="Clear finished uploads"]'));
+    await waitFor(() => expect(document.querySelectorAll(".upload-item").length).toBeLessThan(2));
+  });
+
+  it("expires an idle session", async () => {
+    await mount({ idle: 1 });
+    await waitFor(() => expect(document.querySelector(".auth-overlay")).not.toBeNull(), { timeout: 4000 });
+  });
+
+  it("blocks unload during an active upload", async () => {
+    class HangingXHR extends UploadXHR {
+      send() {
+        this.uploadHandlers.loadstart?.();
+      }
+    }
+    vi.stubGlobal("XMLHttpRequest", HangingXHR);
+    await mount({
+      overrides: {
+        "POST /_upload/init": () => ({ body: { upload_id: "hold", chunk_size: 1024, concurrency: 1, size: 6 } }),
+      },
+    });
+    const input = document.querySelector('input[type="file"]:not([webkitdirectory])');
+    Object.defineProperty(input, "files", { configurable: true, value: [new File(["abcdef"], "hold.txt")] });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    await waitFor(() => expect(document.querySelector(".upload-item")).not.toBeNull());
+    const unload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(unload);
+    expect(unload.defaultPrevented).toBe(true);
+  });
+
+  it("refreshes on visibility and stays quiet while hidden", async () => {
+    const calls = await mount();
+    const before = calls.filter(call => call === "GET /").length;
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(calls.filter(call => call === "GET /")).toHaveLength(before);
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() => expect(calls.filter(call => call === "GET /").length).toBeGreaterThan(before));
   });
 });

@@ -62,3 +62,4 @@ export function trapFocus(root: HTMLElement, options: { onEscape?: () => void; s
     if (focusStillHere && options.shouldRestore?.() !== false && previous?.isConnected) previous.focus();
   };
 }
+// coverage probe

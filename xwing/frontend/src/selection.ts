@@ -15,3 +15,4 @@ export function nearestSurvivor(files: SelectableFile[], removedPaths: Iterable<
   const survivors = files.filter(file => !removed.has(file.path));
   return survivors[Math.min(firstRemoved, survivors.length - 1)]?.path ?? null;
 }
+// coverage probe

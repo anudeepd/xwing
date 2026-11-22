@@ -44,6 +44,7 @@ function installFetch(overrides = {}) {
     if (typeof override === "function") override = override();
     if (override) {
       if (override instanceof Error || typeof override === "string") throw override;
+      if (typeof override === "object" && "ok" in override) return override;
       return json(override.body ?? override, override.status ?? 200, `${window.location.origin}${path}`);
     }
     if (method === "POST" && path === "/api/admin/users") return json({ restart_required: false });
@@ -134,10 +135,10 @@ const activityEvents = [
   },
 ];
 
-function mount(tab = "overview", { ldapConfigured = false, overrides = {} } = {}) {
+function mount(tab = "overview", { ldapConfigured = false, overrides = {}, idle = 0 } = {}) {
   vi.resetModules();
   window.history.replaceState(null, "", `?tab=${tab}`);
-  document.body.dataset.authIdleTimeout = "0";
+  document.body.dataset.authIdleTimeout = String(idle);
   window.matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} });
   window.__xwingAdminRoot?.unmount();
   window.__xwingAdminRoot = undefined;
@@ -436,5 +437,165 @@ describe("admin coverage edges", () => {
 
     click(document.querySelector(".brand"));
     document.querySelector(".brand").dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true }));
+  });
+
+  it("renders every activity detail shape and an unknown method", async () => {
+    const event = activityEvents[0];
+    const events = [
+      { ...event, method: "custom_action", details: "null" },
+      { ...event, details: "[]" },
+      { ...event, method: "admin_user_delete", details: JSON.stringify({ username: 42 }) },
+      { ...event, method: "admin_audit_purge", details: JSON.stringify({ older_than_days: "soon" }) },
+      { ...event, method: "copy", details: JSON.stringify({ count: 4, paths: ["/a", "/b", "/c", "/d"] }) },
+      { ...event, method: "unknown_verb", details: "" },
+    ];
+    await mount("activity", {
+      overrides: {
+        "GET /api/admin/activity": {
+          events,
+          summary: { event_count: events.length, active_users: 1, by_user: [] },
+        },
+      },
+    });
+    await vi.waitFor(() => expect(document.querySelectorAll(".activity-action")).toHaveLength(6));
+    const table = document.querySelector(".activity-table").textContent;
+    expect(table).toContain("custom action");
+    expect(table).toContain("unknown verb");
+    expect(table).toContain("4 items: /a, /b, /c, +1 more");
+  });
+
+  it("renders empty and unrestricted users with the LDAP help copy", async () => {
+    await mount("users", {
+      ldapConfigured: true,
+      overrides: {
+        "GET /api/admin/users": {
+          users: [{ username: "nobody", permissions: { read: false, write: false, delete: false } }],
+          default: null,
+        },
+      },
+    });
+    await vi.waitFor(() => expect(document.querySelector(".user-table")?.textContent).toContain("nobody"));
+    expect(document.querySelector(".permission-badge.none")).not.toBeNull();
+    expect(document.body.textContent).toContain("LDAPGate users are synchronized");
+
+    await mount("users", {
+      overrides: { "GET /api/admin/users": { users: [], default: null } },
+    });
+    await vi.waitFor(() => expect(document.querySelector(".empty-cell")?.textContent).toContain("No explicit users"));
+  });
+
+  it("paints the overview skeleton while metrics are pending", async () => {
+    await mount("overview", { overrides: { "GET /api/admin/metrics": () => new Promise(() => {}) } });
+    expect(document.querySelector(".loading-card")).not.toBeNull();
+  });
+
+  it("accepts an idle timeout and falls back from an unknown tab", async () => {
+    await mount("not-a-tab", { idle: 5 });
+    await vi.waitFor(() => expect(document.querySelector(".metric-card")).not.toBeNull());
+  });
+
+  it("uses the server detail, then the status when the error body is not JSON", async () => {
+    await mount("users", {
+      overrides: { "GET /api/admin/users": { detail: "Broken users", status: 500 } },
+    });
+    expect(document.body.textContent).toContain("Broken users");
+
+    await mount("users", {
+      overrides: {
+        "GET /api/admin/users": { ok: false, status: 500, json: async () => { throw new Error("no json"); } },
+      },
+    });
+    expect(document.body.textContent).toContain("Request failed (500)");
+
+    await mount("users", { overrides: { "GET /api/admin/users": "plain failure" } });
+    expect(document.body.textContent).toContain("Request failed");
+  });
+
+  it("keeps the account menu for inside clicks and non-Escape keys", async () => {
+    await mount("overview");
+    const trigger = document.querySelector(".account-trigger");
+    click(trigger);
+    await vi.waitFor(() => expect(document.querySelector("#account-menu")).not.toBeNull());
+    document.querySelector("#account-menu a").dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true }));
+    expect(document.querySelector("#account-menu")).not.toBeNull();
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await vi.waitFor(() => expect(document.querySelector("#account-menu")).toBeNull());
+  });
+
+  it("guards repeated leaves and uses the reduced-motion handover", async () => {
+    vi.stubGlobal("location", {
+      ...window.location,
+      assign: vi.fn(),
+      href: window.location.href,
+      pathname: window.location.pathname,
+      search: window.location.search,
+      hash: window.location.hash,
+    });
+    window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+    await mount("overview");
+    const brand = document.querySelector(".brand");
+    click(brand);
+    click(brand);
+    await vi.waitFor(() => expect(location.assign).toHaveBeenCalledWith("/"));
+  });
+
+  it("skips user edits when the form fields are absent", async () => {
+    await mount("users");
+    await vi.waitFor(() => expect(document.querySelector("#user-form")).not.toBeNull());
+    const form = document.querySelector("#user-form");
+    Object.defineProperty(form, "elements", { configurable: true, value: { namedItem: () => null } });
+    click(document.querySelector('[aria-label="Edit user alice"]'));
+    await vi.waitFor(() => expect(document.querySelector("#user-form-title").textContent).toBe("Edit alice"));
+
+    submit(form);
+    expect(document.querySelector("#user-form-error")?.textContent).toBe("");
+  });
+
+  it("reports restart-required saves and non-error save failures", async () => {
+    await mount("users", {
+      overrides: { "POST /api/admin/users": { restart_required: true } },
+    });
+    await vi.waitFor(() => expect(document.querySelector("#user-form")).not.toBeNull());
+    document.querySelector("#username").value = "carol";
+    submit(document.querySelector("#user-form"));
+    await vi.waitFor(() => expect(document.querySelector(".toast")?.textContent).toContain("Restart X-wing"));
+
+    await mount("users", { overrides: { "POST /api/admin/users": "offline" } });
+    await vi.waitFor(() => expect(document.querySelector("#user-form")).not.toBeNull());
+    document.querySelector("#username").value = "carol";
+    submit(document.querySelector("#user-form"));
+    await vi.waitFor(() => expect(document.querySelector("#user-form-error")?.textContent).toContain("could not be saved"));
+  });
+
+  it("reports a live user deletion", async () => {
+    await mount("users", {
+      overrides: { "DELETE /api/admin/users/bob": { restart_required: false } },
+    });
+    await vi.waitFor(() => expect(document.querySelector("#user-form")).not.toBeNull());
+    click(document.querySelector('[aria-label="Remove user bob"]'));
+    submit(await confirmDialog("live user delete"));
+    await vi.waitFor(() => expect(document.querySelector(".toast")?.textContent).toContain("Access updated live"));
+  });
+
+  it("ignores a user form without a username field", async () => {
+    await mount("users");
+    await vi.waitFor(() => expect(document.querySelector("#user-form")).not.toBeNull());
+    const form = document.querySelector("#user-form");
+    Object.defineProperty(form, "elements", { configurable: true, value: { namedItem: () => null } });
+    submit(form);
+    expect(document.querySelector("#user-form-error")?.textContent).toBe("");
+  });
+
+  it("does nothing without admin bootstrap markup", async () => {
+    vi.resetModules();
+    window.__xwingAdminRoot?.unmount();
+    window.__xwingAdminRoot = undefined;
+    document.body.innerHTML = "";
+    await import("../../xwing/frontend/src/admin.tsx?admin-missing-markup");
+    expect(document.querySelector("#admin-view")).toBeNull();
+    document.body.innerHTML = '<div id="admin-root"></div>';
+    await import("../../xwing/frontend/src/admin.tsx?admin-missing-bootstrap");
+    expect(document.querySelector("#admin-view")).toBeNull();
   });
 });

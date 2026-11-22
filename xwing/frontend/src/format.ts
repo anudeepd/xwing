@@ -25,3 +25,4 @@ export function escapeHtml(value: unknown): string {
 export function prefersReducedMotion(): boolean {
   return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
+// coverage probe

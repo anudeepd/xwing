@@ -25,3 +25,4 @@ export function permissionNotice(permissions: Permissions): string | null {
   if (!permissions.delete) return "Renaming and deleting are disabled for your account.";
   return "Uploads, folder creation and renaming are disabled for your account.";
 }
+// coverage probe

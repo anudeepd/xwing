@@ -31,3 +31,4 @@ export function AuthOverlay({ kind }: { kind: keyof typeof AUTH_OVERLAY_COPY }):
     </div>
   </m.div>;
 }
+// coverage probe
