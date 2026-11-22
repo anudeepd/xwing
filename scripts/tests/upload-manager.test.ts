@@ -316,4 +316,18 @@ describe("upload ids", () => {
     expect(item?.id).toContain("07070707070707070707070707070707");
     expect(random).not.toHaveBeenCalled();
   });
+
+  it("falls back to a local counter when Web Crypto is absent", () => {
+    vi.stubGlobal("crypto", undefined);
+
+    const { manager } = managerWith();
+    manager.add(
+      [new File(["a"], "a.txt"), new File(["b"], "b.txt")],
+      "/",
+      1024,
+    );
+
+    const ids = manager.getSnapshot().items.map(item => item.id);
+    expect(new Set(ids).size).toBe(2);
+  });
 });

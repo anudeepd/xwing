@@ -1639,10 +1639,6 @@ def create_app(settings: Settings) -> FastAPI:
         users_document: dict,
         ldap_update: tuple[Path, dict] | None,
     ) -> bool:
-        if users_path != settings.users_config:
-            raise HTTPException(status_code=500, detail="Unexpected users config path")
-        if ldap_update is not None and ldap_update[0] != _ldap_config_path:
-            raise HTTPException(status_code=500, detail="Unexpected LDAP config path")
         live_applied = False
         try:
             original_users = users_path.read_bytes()
