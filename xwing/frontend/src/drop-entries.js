@@ -148,7 +148,11 @@ function readAll(entry) {
         batch => {
           const children = (batch || []).filter(child => child);
           if (children.length === 0) {
-            resolve(failed && found.length === 0 ? null : found);
+            let result = found;
+            if (failed) {
+              if (found.length === 0) result = null;
+            }
+            resolve(result);
             return;
           }
           found.push(...children);
