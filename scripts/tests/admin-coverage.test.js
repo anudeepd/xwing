@@ -179,6 +179,7 @@ beforeEach(() => {
 describe("admin coverage edges", () => {
   it("explains every activity detail shape", async () => {
     await mount("activity");
+    await vi.waitFor(() => expect(document.querySelectorAll(".activity-action")).toHaveLength(6));
     const rows = [...document.querySelectorAll(".activity-action")];
     expect(rows.map(row => row.textContent)).toEqual([
       "Uploaded",
