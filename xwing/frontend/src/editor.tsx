@@ -172,8 +172,8 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
       if (event.key === "Escape" && closeSearchPanelAnimated()) { event.preventDefault(); event.stopPropagation(); }
     };
     const onCloseClickCapture = (event: MouseEvent) => {
-      const target = event.target as Element;
-      if (!target.closest(".cm-panel.cm-search [name=close]")) return;
+      const target = event.target;
+      if (!(target instanceof Element) || !target.closest(".cm-panel.cm-search [name=close]")) return;
       if (closeSearchPanelAnimated()) { event.preventDefault(); event.stopPropagation(); }
     };
     window.addEventListener("beforeunload", beforeUnload); document.addEventListener("keydown", shortcut);

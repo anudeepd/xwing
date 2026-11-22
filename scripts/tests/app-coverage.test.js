@@ -1081,9 +1081,19 @@ describe("file browser coverage edges", () => {
       path: "/docs/",
       breadcrumbs: [...bootstrap.breadcrumbs, { name: "docs", path: "/docs/" }],
       files: [],
-    })), 700));
+    })), 1500));
     await mount({ reduced: false, overrides: { "GET /docs/": () => slow } });
     document.querySelector('[data-path="/docs/"]').dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+    await waitFor(() => expect(document.querySelector(".transition-veil")).not.toBeNull(), { timeout: 2000 });
+    await waitFor(() => expect(document.querySelector(".transition-veil")).toBeNull(), { timeout: 2000 });
+    const reducedSlow = new Promise(resolve => setTimeout(() => resolve(directoryResponse({
+      ...bootstrap,
+      path: "/other/",
+      breadcrumbs: [...bootstrap.breadcrumbs, { name: "other", path: "/other/" }],
+      files: [],
+    })), 1500));
+    await mount({ overrides: { "GET /other/": () => reducedSlow } });
+    document.querySelector('[data-path="/other/"]').dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
     await waitFor(() => expect(document.querySelector(".transition-veil")).not.toBeNull(), { timeout: 2000 });
     await waitFor(() => expect(document.querySelector(".transition-veil")).toBeNull(), { timeout: 2000 });
   });
@@ -1325,5 +1335,58 @@ describe("file browser coverage edges", () => {
     other.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
     await vi.advanceTimersByTimeAsync(130);
     vi.useRealTimers();
+  });
+
+  it("moves to the first row with Home and ignores a read-only drag", async () => {
+    await mount();
+    const beta = document.querySelector('[data-path="/beta.txt"]');
+    beta.focus();
+    key(beta, "Home");
+    expect(document.activeElement).toBe(document.querySelector('[data-path="/other/"]'));
+
+    await mount({ bootstrapData: { ...bootstrap, permissions: { read: true, write: false, delete: false } } });
+    const drag = new Event("dragover", { bubbles: true, cancelable: true });
+    document.querySelector(".xw-app").dispatchEvent(drag);
+    expect(drag.defaultPrevented).toBe(false);
+    click(document.querySelector('[data-path="/alpha.txt"]'));
+    await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toBe("1 selected"));
+    expect(document.querySelector('[aria-label="Delete selected"]')?.disabled).toBe(true);
+  });
+
+  it("opens a menu without a previously focused element", async () => {
+    await mount();
+    Object.defineProperty(document, "activeElement", { configurable: true, get: () => null });
+    try {
+      document.querySelector('[data-path="/alpha.txt"]').dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+      await waitFor(() => expect(document.querySelector("#row-actions-menu")).not.toBeNull());
+      key(document.querySelector("#row-actions-menu"), "Escape");
+      await waitFor(() => expect(document.querySelector("#row-actions-menu")).toBeNull());
+    } finally {
+      delete document.activeElement;
+    }
+  });
+
+  it("renders reduced-motion drag, toast and zero-size upload states", async () => {
+    await mount({ reduced: false });
+    const app = document.querySelector(".xw-app");
+    app.dispatchEvent(new Event("dragenter", { bubbles: true, cancelable: true }));
+    app.dispatchEvent(new Event("dragover", { bubbles: true, cancelable: true }));
+    await waitFor(() => expect(document.querySelector(".drop-target")).not.toBeNull());
+    const drop = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(drop, "dataTransfer", { value: { items: [], files: [] } });
+    app.dispatchEvent(drop);
+    await waitFor(() => expect(document.querySelector(".toast")).not.toBeNull());
+
+    await mount({
+      reduced: false,
+      overrides: {
+        "POST /_upload/init": () => ({ body: { upload_id: "zero", chunk_size: 1024, concurrency: 1, size: 0 } }),
+        "POST /_upload/zero/complete": () => ({ body: { path: "empty.txt", size: 0 } }),
+      },
+    });
+    const input = document.querySelector('input[type="file"]:not([webkitdirectory])');
+    Object.defineProperty(input, "files", { configurable: true, value: [new File([], "empty.txt")] });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    await waitFor(() => expect(document.querySelector(".upload-dock")).not.toBeNull());
   });
 });

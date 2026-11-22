@@ -354,6 +354,15 @@ describe("editor coverage edges", () => {
     await vi.waitFor(() => expect(document.querySelector(".auth-overlay")).not.toBeNull());
   });
 
+  it("saves when the response has no URL and ignores a document click", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200 })));
+    await mount();
+    await setDoc("changed");
+    click(document.querySelector(".button.primary"));
+    await vi.waitFor(() => expect(document.querySelector('[role="status"]')?.textContent).toBe("Saved"));
+    document.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+
   it("ignores saves while read-only and falls back to the default chunk size", async () => {
     vi.stubGlobal("fetch", saveFetch());
     await mount({ canWrite: false, maxChunkBytes: 0 });

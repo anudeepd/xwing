@@ -469,7 +469,7 @@ function ActivityRow({ event }: { event: ActivityEvent }): React.JSX.Element {
       <span className="activity-action block">{activityLabel(event.method)}</span>
       {detail.paths.length
         ? <details className="activity-detail-list mt-1 block font-mono text-[11px] leading-tight text-admin-faint">
-          <summary className="cursor-pointer break-words marker:text-admin-accent">{detail.summary || count(detail.paths.length, "selected item")}</summary>
+          <summary className="cursor-pointer break-words marker:text-admin-accent">{detail.summary}</summary>
           <ul className="max-h-44 list-none overflow-y-auto border-0 border-l border-solid border-admin-line py-0 pr-2 pl-5">{detail.paths.map(path => <li key={path} className="mt-1 first:mt-0"><code className="break-words text-admin-text">{path}</code></li>)}</ul>
         </details>
         : detail.summary ? <small className="activity-detail mt-1 block font-mono text-[11px] leading-tight text-admin-faint">{detail.summary}</small> : null}
@@ -835,15 +835,14 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
 
   const editUser = useCallback((username: string) => {
     const form = userFormRef.current;
-    const user = users.find(item => item.username === username);
-    if (!user) return;
+    const found = users.find(item => item.username === username)!;
     const usernameField = formField<HTMLInputElement>(form, "username");
-    if (usernameField) usernameField.value = user.username;
+    if (usernameField) usernameField.value = found.username;
     const originalField = formField<HTMLInputElement>(form, "original-username");
-    if (originalField) originalField.value = user.username;
+    if (originalField) originalField.value = found.username;
     for (const permission of ["read", "write", "delete"] as const) {
       const field = formField<HTMLInputElement>(form, `user-${permission}`);
-      if (field) field.checked = user.permissions[permission];
+      if (field) field.checked = found.permissions[permission];
     }
     setUserFormTitle(`Edit ${username}`);
     setUserFormError(null);

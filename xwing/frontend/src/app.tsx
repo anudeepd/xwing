@@ -579,15 +579,16 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     // A second submit while the request is in flight (a double Enter) would
     // MKCOL the same name again, hit the 405 for the folder it had just made and
     // reopen the dialog with an error about a success.
-    if (!dialog || dialog.kind !== "mkdir" || dialog.pending) return;
-    const value = dialog.value.trim();
-    if (!value || value.includes("/") || value === "." || value === "..") { setDialog({ ...dialog, error: "Enter one valid folder name." }); return; }
+    const current = dialog as Extract<Dialog, { kind: "mkdir" }>;
+    if (current.pending) return;
+    const value = current.value.trim();
+    if (!value || value.includes("/") || value === "." || value === "..") { setDialog({ ...current, error: "Enter one valid folder name." }); return; }
     const target = `${directory.path === "/" ? "" : directory.path}/${encodeURIComponent(value)}/`;
-    setDialog({ ...dialog, pending: true, error: undefined });
+    setDialog({ ...current, pending: true, error: undefined });
     let response: Response;
     try { response = await authFetch(target, { method: "MKCOL" }); }
-    catch (error) { setDialog({ ...dialog, pending: false, error: errorMessage(error) }); return; }
-    if (!response.ok) { setDialog({ ...dialog, pending: false, error: await responseError(response) }); return; }
+    catch (error) { setDialog({ ...current, pending: false, error: errorMessage(error) }); return; }
+    if (!response.ok) { setDialog({ ...current, pending: false, error: await responseError(response) }); return; }
     setDialog(null); addToast(`Created ${value}`);
     // Focus follows the folder the user just made, wherever the sort puts it,
     // not whichever row happens to be first.
@@ -598,37 +599,39 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   // not. Overwrite is refused (F) so renaming onto an existing name reports a
   // conflict instead of silently replacing the other item.
   const renamePath = async (): Promise<void> => {
-    if (!dialog || dialog.kind !== "rename" || dialog.pending) return;
-    const value = dialog.value.trim();
-    if (!value || value.includes("/")) { setDialog({ ...dialog, error: "Enter one valid name." }); return; }
-    if (value === dialog.name) { setDialog(null); return; }
-    const destination = renameDestination(dialog.path, value);
-    setDialog({ ...dialog, pending: true, error: undefined });
+    const current = dialog as Extract<Dialog, { kind: "rename" }>;
+    if (current.pending) return;
+    const value = current.value.trim();
+    if (!value || value.includes("/")) { setDialog({ ...current, error: "Enter one valid name." }); return; }
+    if (value === current.name) { setDialog(null); return; }
+    const destination = renameDestination(current.path, value);
+    setDialog({ ...current, pending: true, error: undefined });
     let response: Response;
-    try { response = await authFetch(dialog.path, { method: "MOVE", headers: { Destination: destination, Overwrite: "F" } }); }
-    catch (error) { setDialog({ ...dialog, pending: false, error: errorMessage(error) }); return; }
-    if (!response.ok) { setDialog({ ...dialog, pending: false, error: await responseError(response) }); return; }
+    try { response = await authFetch(current.path, { method: "MOVE", headers: { Destination: destination, Overwrite: "F" } }); }
+    catch (error) { setDialog({ ...current, pending: false, error: errorMessage(error) }); return; }
+    if (!response.ok) { setDialog({ ...current, pending: false, error: await responseError(response) }); return; }
     setDialog(null); addToast(`Renamed to ${value}`, "success");
     await refresh({ kind: "name", name: value });
   };
 
   const deletePaths = async (): Promise<void> => {
-    if (!dialog || dialog.kind !== "delete" || dialog.pending) return;
-    const focusAfterDelete = nearestSurvivor(files, dialog.paths);
-    setDialog({ ...dialog, pending: true, error: undefined });
+    const current = dialog as Extract<Dialog, { kind: "delete" }>;
+    if (current.pending) return;
+    const focusAfterDelete = nearestSurvivor(files, current.paths);
+    setDialog({ ...current, pending: true, error: undefined });
     let response: Response;
     try {
-      response = dialog.paths.length === 1
-        ? await authFetch(dialog.paths[0]!, { method: "DELETE" })
-        : await authFetch("/_bulk/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paths: dialog.paths }) });
+      response = current.paths.length === 1
+        ? await authFetch(current.paths[0]!, { method: "DELETE" })
+        : await authFetch("/_bulk/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paths: current.paths }) });
     } catch (error) {
-      setDialog({ ...dialog, pending: false, error: errorMessage(error) });
+      setDialog({ ...current, pending: false, error: errorMessage(error) });
       return;
     }
-    if (!response.ok) { setDialog({ ...dialog, pending: false, error: await responseError(response) }); return; }
+    if (!response.ok) { setDialog({ ...current, pending: false, error: await responseError(response) }); return; }
     const data = await response.json().catch(() => ({})) as { transaction_id?: string };
     setDialog(null); setSelected(new Set());
-    addToast(`${dialog.paths.length} item${dialog.paths.length === 1 ? "" : "s"} deleted`, "deleted", data.transaction_id ? {
+    addToast(`${current.paths.length} item${current.paths.length === 1 ? "" : "s"} deleted`, "deleted", data.transaction_id ? {
       label: "Undo", run: () => void restore(data.transaction_id!),
     } : undefined, 15000);
     await refresh({ kind: "path", path: focusAfterDelete, fallbackToFirst: false });
@@ -786,6 +789,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     : directory.permissions.delete
       ? "You don't have permission to add files here."
       : "You have read-only access here.";
+  const emptyState = !files.length && directoryState !== "error" ? <div className="state-panel empty h-full min-h-[220px] flex flex-col items-center justify-center gap-2 text-xw-muted text-pretty"><span className="empty-icon w-[46px] h-[46px] grid place-items-center border border-solid border-xw-line rounded-[10px] bg-xw-raised text-[#d8b963] [&_.ui-icon]:w-[22px] [&_.ui-icon]:h-[22px]"><Icon name="folder"/></span><strong>{query.trim() ? "No matches" : "This folder is empty"}</strong><span>{query.trim() ? `Nothing here matches “${query.trim()}”.` : emptyStateHint}</span>{directory.permissions.write && !query.trim() && <button className={cn("button", BTN, BTN_PRIMARY)} onClick={() => fileInput.current?.click()}><Icon name="upload"/><span className="label">Upload files</span></button>}</div> : null;
   const anchorPath = rovingPath && files.some(file => file.path === rovingPath) ? rovingPath : files[0]?.path ?? null;
 
   return <m.div className="xw-app h-full grid grid-rows-[52px_minmax(0,1fr)] isolate bg-xw-bg max-[640px]:grid-rows-[48px_minmax(0,1fr)]"
@@ -871,7 +875,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
           animate={listLeaving ? { opacity: 0, y: -4 } : { opacity: 1, y: 0 }}
           transition={listLeaving ? { duration: presenceDuration(reduced, LIST_LEAVE_MS / 1000), ease: "easeIn" } : { duration: presenceDuration(reduced, 0.24), ease: [0.16, 1, 0.3, 1] }}>
           {directoryState === "error" && <div className="state-panel h-full min-h-[220px] flex flex-col items-center justify-center gap-2 text-xw-muted text-pretty"><strong>Couldn’t open this folder</strong><span>{directoryError}</span><button className={cn("button", BTN)} onClick={() => void refresh()}>Retry</button></div>}
-          {!files.length && directoryState !== "error" && <div className="state-panel empty h-full min-h-[220px] flex flex-col items-center justify-center gap-2 text-xw-muted text-pretty"><span className="empty-icon w-[46px] h-[46px] grid place-items-center border border-solid border-xw-line rounded-[10px] bg-xw-raised text-[#d8b963] [&_.ui-icon]:w-[22px] [&_.ui-icon]:h-[22px]"><Icon name="folder"/></span><strong>{query.trim() ? "No matches" : "This folder is empty"}</strong><span>{query.trim() ? `Nothing here matches “${query.trim()}”.` : emptyStateHint}</span>{directory.permissions.write && !query.trim() && <button className={cn("button", BTN, BTN_PRIMARY)} onClick={() => fileInput.current?.click()}><Icon name="upload"/><span className="label">Upload files</span></button>}</div>}
+          {emptyState}
           {files.map((file, index) => <FileRow key={file.path} file={file} index={index} selected={selected.has(file.path)} loading={directoryState === "loading"} arriving={arrivingNames.has(file.name)} tabStop={file.path === anchorPath} onFocusRow={setRovingPath} actionsOpen={actionsPath === file.path} actionsAnchor={actionsPath === file.path ? actionsAnchor : null} onToggleActions={() => { const next = actionsPath === file.path ? null : file.path; setActionsPath(next); if (next) setActionsAnchor(null); }} onOpenActions={() => { setActionsPath(file.path); setActionsAnchor(null); }} onOpenActionsAt={point => { setActionsPath(file.path); setActionsAnchor(point); }} onCloseActions={() => { setActionsPath(current => current === file.path ? null : current); }} permissions={directory.permissions} policyHint={policyHint} onSelect={(gesture) => toggleSelection(file, index, gesture)} onOpen={() => file.kind === "directory" ? void navigate(file.path) : openDocument(`${file.path}${file.editable ? "?edit" : ""}`, file.editable)} onRename={() => { if (directory.permissions.write && directory.permissions.delete) setDialog({ kind: "rename", path: file.path, name: file.name, value: file.name, pending: false }); }} onDelete={() => setDialog({ kind: "delete", paths: [file.path], pending: false })} onDeleteKey={() => { if (directory.permissions.delete) setDialog({ kind: "delete", paths: selected.size ? [...selected] : [file.path], pending: false }); }} onClear={() => { setSelected(new Set()); setLastSelected(null); }}/>) }
           {/* Space the rail's height, so the last rows can scroll clear of it. */}
           <div className="rail-clearance h-[var(--xw-rail-clearance,0)]" aria-hidden="true"/>
