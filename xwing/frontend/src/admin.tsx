@@ -836,7 +836,7 @@ function AdminApp({ bootstrap }: { bootstrap: AdminBootstrap }): React.JSX.Eleme
   const editUser = useCallback((username: string) => {
     const form = userFormRef.current;
     const user = users.find(item => item.username === username);
-    if (!user || !form) return;
+    if (!user) return;
     const usernameField = formField<HTMLInputElement>(form, "username");
     if (usernameField) usernameField.value = user.username;
     const originalField = formField<HTMLInputElement>(form, "original-username");

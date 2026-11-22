@@ -647,9 +647,6 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   };
 
   const downloadSelected = async (): Promise<void> => {
-    // One archive at a time: the pending count is the button's label, not a
-    // queue, so a second request would clear the first one's overlay.
-    if (zipPending > 0) return;
     const paths = [...selected];
     // The server builds the archive on demand, so a large selection leaves the
     // toolbar waiting for a while; say so instead of looking inert.

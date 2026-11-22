@@ -83,7 +83,7 @@ function installFetch(overrides = {}) {
     const key = `${method} ${url.pathname}${url.search}`;
     calls.push(key);
     let override = overrides[key] ?? overrides[`${method} ${url.pathname}`];
-    if (typeof override === "function") override = override();
+    if (typeof override === "function") override = override(init);
     if (override instanceof Promise) override = await override;
     if (override) {
       if (override instanceof Error || typeof override === "string") throw override;
@@ -153,7 +153,8 @@ async function mount({
   window.__xwingAppRoot?.unmount();
   window.__xwingAppRoot = undefined;
   window.history.replaceState(null, "", "/");
-  document.body.dataset.authIdleTimeout = String(idle);
+  if (idle === null) delete document.body.dataset.authIdleTimeout;
+  else document.body.dataset.authIdleTimeout = String(idle);
   document.body.dataset.auth = data.auth ?? "";
   document.documentElement.style.cssText = "";
   document.body.innerHTML = `
@@ -870,7 +871,7 @@ describe("file browser coverage edges", () => {
   });
 
   it("restores with and without a count, and shows the zip overlay", async () => {
-    let restored = 0;
+    let restored;
     const zip = new Promise(() => {});
     vi.stubGlobal("URL", Object.assign(URL, { createObjectURL: vi.fn(() => "blob:x"), revokeObjectURL: vi.fn() }));
     const calls = await mount({
@@ -1247,5 +1248,82 @@ describe("file browser coverage edges", () => {
     input.dispatchEvent(new Event("change", { bubbles: true }));
     await waitFor(() => expect(document.querySelector(".upload-dock")?.textContent).toContain("Upload complete"), { timeout: 3000 });
     await waitFor(() => expect(callsSeen.filter(call => call === "GET /").length).toBeGreaterThan(0), { timeout: 3000 });
+  });
+
+  it("allows unload when no upload is active and accepts a missing idle attribute", async () => {
+    await mount({ idle: null });
+    const unload = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(unload);
+    expect(unload.defaultPrevented).toBe(false);
+  });
+
+  it("hides the admin link for a non-admin account and ignores an empty folder input", async () => {
+    await mount({ bootstrapData: { ...bootstrap, admin: false } });
+    expect(document.querySelector(".account-trigger")).toBeNull();
+    expect(document.querySelector('a[href="/admin"]')).toBeNull();
+    const folderInput = document.querySelector('input[webkitdirectory]');
+    Object.defineProperty(folderInput, "files", { configurable: true, value: null });
+    folderInput.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+
+  it("clears a row selection and a select-all selection", async () => {
+    await mount();
+    const alpha = document.querySelector('[data-path="/alpha.txt"]');
+    alpha.focus();
+    click(alpha);
+    await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toBe("1 selected"));
+    click([...document.querySelectorAll("button")].find(button => button.textContent === "Clear"));
+    await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toBe("0 selected"));
+    expect(document.activeElement).toBe(alpha);
+
+    click(document.querySelector('[aria-label="Select all"]'));
+    await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toBe("4 selected"));
+    click([...document.querySelectorAll("button")].find(button => button.textContent === "Clear"));
+    await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toBe("0 selected"));
+  });
+
+  it("sorts by three columns and keeps the priority labels", async () => {
+    await mount();
+    const sort = label => click([...document.querySelectorAll(".sort")].find(button => button.textContent.startsWith(label)));
+    sort("Name");
+    sort("Size");
+    await waitFor(() => expect(document.querySelector(".table-head")?.textContent).toContain("3"));
+    expect(document.querySelector('[aria-label*="priority 1"]')).not.toBeNull();
+  });
+
+  it("ignores a mousedown inside the dialog and a login redirect on download", async () => {
+    await mount();
+    click([...document.querySelectorAll("button")].find(button => button.textContent.includes("New folder")));
+    await waitFor(() => expect(document.querySelector(".modal")).not.toBeNull());
+    document.querySelector(".modal").dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    expect(document.querySelector(".modal")).not.toBeNull();
+    click(document.querySelector(".modal .modal-actions button"));
+    await waitFor(() => expect(document.querySelector(".modal")).toBeNull());
+
+    const login = response("PK\u0003\u0004zip", 200, "http://xwing.test/_auth/login");
+    await mount({ overrides: { "POST /_bulk/zip": login } });
+    click(document.querySelector('[data-path="/alpha.txt"]'));
+    await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toBe("1 selected"));
+    click(document.querySelector('[aria-label="Download selected as zip"]'));
+    await waitFor(() => expect(document.querySelector(".auth-overlay")).not.toBeNull());
+  });
+
+  it("drops stale navigation results and aborted requests", async () => {
+    const abortable = init => new Promise((_resolve, reject) => {
+      init.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+    });
+    await mount({ reduced: false, overrides: { "GET /docs/": abortable, "GET /other/": abortable } });
+    vi.useFakeTimers();
+    const docs = document.querySelector('[data-path="/docs/"]');
+    const other = document.querySelector('[data-path="/other/"]');
+    docs.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+    other.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+    await vi.advanceTimersByTimeAsync(130);
+    await vi.advanceTimersByTimeAsync(130);
+    docs.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+    await vi.advanceTimersByTimeAsync(130);
+    other.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+    await vi.advanceTimersByTimeAsync(130);
+    vi.useRealTimers();
   });
 });

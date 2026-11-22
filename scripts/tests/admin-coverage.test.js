@@ -138,7 +138,8 @@ const activityEvents = [
 function mount(tab = "overview", { ldapConfigured = false, overrides = {}, idle = 0 } = {}) {
   vi.resetModules();
   window.history.replaceState(null, "", `?tab=${tab}`);
-  document.body.dataset.authIdleTimeout = String(idle);
+  if (idle === null) delete document.body.dataset.authIdleTimeout;
+  else document.body.dataset.authIdleTimeout = String(idle);
   window.matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} });
   window.__xwingAdminRoot?.unmount();
   window.__xwingAdminRoot = undefined;
@@ -447,6 +448,7 @@ describe("admin coverage edges", () => {
       { ...event, method: "admin_user_delete", details: JSON.stringify({ username: 42 }) },
       { ...event, method: "admin_audit_purge", details: JSON.stringify({ older_than_days: "soon" }) },
       { ...event, method: "copy", details: JSON.stringify({ count: 4, paths: ["/a", "/b", "/c", "/d"] }) },
+      { ...event, method: "bulk_delete", details: JSON.stringify({ paths: ["/x", "/y"] }) },
       { ...event, method: "unknown_verb", details: "" },
     ];
     await mount("activity", {
@@ -457,11 +459,12 @@ describe("admin coverage edges", () => {
         },
       },
     });
-    await vi.waitFor(() => expect(document.querySelectorAll(".activity-action")).toHaveLength(6));
+    await vi.waitFor(() => expect(document.querySelectorAll(".activity-action")).toHaveLength(7));
     const table = document.querySelector(".activity-table").textContent;
     expect(table).toContain("custom action");
     expect(table).toContain("unknown verb");
     expect(table).toContain("4 items: /a, /b, /c, +1 more");
+    expect(table).toContain("/x, /y");
   });
 
   it("submits the activity filter with every field missing", async () => {
@@ -498,8 +501,22 @@ describe("admin coverage edges", () => {
     expect(document.querySelector(".loading-card")).not.toBeNull();
   });
 
+  it("replaces the overview skeleton when metrics arrive", async () => {
+    let release;
+    const pending = new Promise(resolve => { release = resolve; });
+    await mount("overview", { overrides: { "GET /api/admin/metrics": () => pending } });
+    expect(document.querySelector(".loading-card")).not.toBeNull();
+    release({
+      configured_users: 1, active_users: 1, activity_events: 1,
+      active_window_minutes: 5, storage: { files: 1, bytes: 1 }, trash: { items: 0, bytes: 0 },
+    });
+    await vi.waitFor(() => expect(document.querySelector(".metric-card")).not.toBeNull());
+  });
+
   it("accepts an idle timeout and falls back from an unknown tab", async () => {
     await mount("not-a-tab", { idle: 5 });
+    await vi.waitFor(() => expect(document.querySelector(".metric-card")).not.toBeNull());
+    await mount("overview", { idle: null });
     await vi.waitFor(() => expect(document.querySelector(".metric-card")).not.toBeNull());
   });
 
@@ -518,6 +535,29 @@ describe("admin coverage edges", () => {
 
     await mount("users", { overrides: { "GET /api/admin/users": "plain failure" } });
     expect(document.body.textContent).toContain("Request failed");
+  });
+
+  it("falls back to the status message when the detail is empty", async () => {
+    await mount("users", {
+      overrides: { "GET /api/admin/users": { status: 500, body: { detail: "" } } },
+    });
+    expect(document.body.textContent).toContain("Request failed (500)");
+  });
+
+  it("reports a non-error refresh failure", async () => {
+    let calls = 0;
+    await mount("overview", {
+      overrides: {
+        "GET /api/admin/metrics": () => {
+          calls += 1;
+          return calls === 1 ? undefined : "plain failure";
+        },
+      },
+    });
+    click([...document.querySelectorAll(".admin-tab")].find(node => node.textContent === "Trash"));
+    await vi.waitFor(() => expect(document.querySelector(".trash-table")).not.toBeNull());
+    click([...document.querySelectorAll(".admin-tab")].find(node => node.textContent === "Overview"));
+    await vi.waitFor(() => expect(document.querySelector(".toast")?.textContent).toContain("Something went wrong"));
   });
 
   it("keeps the account menu for inside clicks and non-Escape keys", async () => {
@@ -545,8 +585,16 @@ describe("admin coverage edges", () => {
     await mount("overview");
     const brand = document.querySelector(".brand");
     click(brand);
-    click(brand);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    click(document.querySelector(".brand"));
     await vi.waitFor(() => expect(location.assign).toHaveBeenCalledWith("/"));
+    expect(location.assign).toHaveBeenCalledTimes(1);
+
+    location.assign.mockClear();
+    window.matchMedia = () => ({ matches: true, addEventListener() {}, removeEventListener() {} });
+    await mount("overview");
+    click(document.querySelector(".brand"));
+    await vi.waitFor(() => expect(location.assign).toHaveBeenCalledTimes(1));
   });
 
   it("skips user edits when the form fields are absent", async () => {

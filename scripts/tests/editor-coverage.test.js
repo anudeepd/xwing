@@ -433,4 +433,16 @@ describe("editor coverage edges", () => {
     await import("../../xwing/frontend/src/editor.tsx?editor-missing-root");
     expect(document.querySelector(".editor-app")).toBeNull();
   });
+
+  it("renders the notices with motion and ignores a close click when search is closed", async () => {
+    await mount({ canWrite: false, truncated: true }, { reduced: false });
+    expect(document.querySelector(".editor-notices")).not.toBeNull();
+    const panel = document.createElement("div");
+    panel.className = "cm-panel cm-search";
+    panel.innerHTML = '<button name="close"></button>';
+    document.querySelector("#editor-canvas").append(panel);
+    searchOpen = false;
+    click(panel.querySelector("[name=close]"));
+    expect(closeCount).toBe(0);
+  });
 });
