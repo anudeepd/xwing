@@ -106,6 +106,26 @@ def test_serve_warns_without_users_config(monkeypatch, tmp_path):
     assert "all users are read-only" in result.output
 
 
+def test_reload_without_users_config(monkeypatch, tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    monkeypatch.delenv("XWING_USERS_CONFIG", raising=False)
+
+    result, calls = _run(
+        monkeypatch,
+        tmp_path,
+        "serve",
+        "--root",
+        str(root),
+        "--reload",
+        "--no-open",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls
+    assert "XWING_USERS_CONFIG" not in os.environ
+
+
 def test_audit_path_resolution_and_printing(monkeypatch, tmp_path):
     configured = tmp_path / "configured.db"
     monkeypatch.setenv("XWING_AUDIT_DB", str(configured))
@@ -125,7 +145,17 @@ def test_audit_path_resolution_and_printing(monkeypatch, tmp_path):
         status_code=200,
         duration_ms=1,
     )
+    audit_store.record_event(
+        db_path=db,
+        username="bob",
+        method="DELETE",
+        path="/y",
+        details=None,
+        status_code=200,
+        duration_ms=1,
+    )
     result = CliRunner().invoke(cli.main, ["audit", "--audit-db", str(db)])
     assert result.exit_code == 0
     assert "alice" in result.output
+    assert "bob" in result.output
     assert "details" in result.output

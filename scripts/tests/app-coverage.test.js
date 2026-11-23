@@ -222,6 +222,8 @@ describe("file browser coverage edges", () => {
     await waitFor(() => expect(document.querySelector("#account-menu")).toBeNull());
     click(document.querySelector(".account-trigger"));
     await waitFor(() => expect(document.querySelector("#account-menu")).not.toBeNull());
+    document.querySelector("#account-menu").dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    expect(document.querySelector("#account-menu")).not.toBeNull();
     const adminLink = document.querySelector('#account-menu a[href="/admin"]');
     adminLink.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true }));
     click(adminLink);
@@ -961,11 +963,33 @@ describe("file browser coverage edges", () => {
     });
     input.dispatchEvent(new Event("change", { bubbles: true }));
     await waitFor(() => expect(document.querySelectorAll(".upload-item").length).toBe(2));
-    const cancel = [...document.querySelectorAll(".upload-item button")].find(button => button.textContent.includes("Cancel"));
-    click(cancel);
-    await waitFor(() => expect(document.querySelector(".upload-dock")?.textContent).toContain("Upload cancelled"));
+    const cancels = () => [...document.querySelectorAll(".upload-item button")].filter(button => button.textContent.includes("Cancel"));
+    click(cancels()[0]);
+    await waitFor(() => expect(document.querySelector(".upload-item")?.textContent).toContain("Upload cancelled"));
+    click(cancels()[0]);
+    await waitFor(() => expect(document.querySelector(".upload-dock")?.textContent).toContain("2 cancelled"));
+    expect(document.querySelector(".upload-summary")?.className).toContain("text-xw-muted");
     click(document.querySelector('[aria-label="Clear finished uploads"]'));
     await waitFor(() => expect(document.querySelectorAll(".upload-item").length).toBeLessThan(2));
+  });
+
+  it("skips arrival tracking for an upload with no relative path", async () => {
+    UploadXHR.all = [];
+    vi.stubGlobal("XMLHttpRequest", UploadXHR);
+    await mount({
+      overrides: {
+        "POST /_upload/init": () => ({ body: { upload_id: "empty", chunk_size: 1024, concurrency: 1, size: 1 } }),
+        "POST /_upload/empty/complete": () => ({ body: { path: "", size: 1 } }),
+      },
+    });
+    const input = document.querySelector('input[type="file"]:not([webkitdirectory])');
+    Object.defineProperty(input, "files", {
+      configurable: true,
+      value: [new File(["x"], "")],
+    });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+
+    await waitFor(() => expect(document.querySelector(".upload-dock")?.textContent).toContain("1 complete"));
   });
 
   it("expires an idle session", async () => {
@@ -1502,6 +1526,9 @@ describe("file browser coverage edges", () => {
     expect(document.querySelector(".upload-dock")?.textContent).toContain("Upload complete");
     await vi.advanceTimersByTimeAsync(200);
     await vi.advanceTimersByTimeAsync(800);
+    await vi.advanceTimersByTimeAsync(4000);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(document.querySelector(".upload-dock")?.getAttribute("style")).toContain("opacity: 0");
     vi.useRealTimers();
   });
 
@@ -1557,5 +1584,419 @@ describe("file browser coverage edges", () => {
     Object.defineProperty(input, "files", { configurable: true, value: [new File(["abcdef"], "speed.txt")] });
     input.dispatchEvent(new Event("change", { bubbles: true }));
     await waitFor(() => expect(document.querySelector(".upload-dock")?.textContent).toContain("/s"), { timeout: 3000 });
+  });
+
+  it("covers row checkboxes, action menu callbacks and dialog focus", async () => {
+    await mount();
+    const alpha = document.querySelector('[data-path="/alpha.txt"]');
+    const checkbox = alpha.querySelector('label.row-check input');
+    checkbox.dispatchEvent(new MouseEvent("click", {
+      bubbles: true,
+      cancelable: true,
+      detail: 1,
+      metaKey: true,
+    }));
+    await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toBe("1 selected"));
+
+    const trigger = document.querySelector('[aria-label="Actions for alpha.txt"]');
+    click(trigger);
+    await waitFor(() => expect(document.querySelector("#row-actions-menu")).not.toBeNull());
+    click(document.querySelector('#row-actions-menu [aria-label="Rename alpha.txt"]'));
+    await waitFor(() => expect(document.querySelector(".modal")).not.toBeNull());
+    click(document.querySelector(".modal button"));
+    await waitFor(() => expect(document.querySelector(".modal")).toBeNull());
+
+    click(trigger);
+    await waitFor(() => expect(document.querySelector("#row-actions-menu")).not.toBeNull());
+    click(document.querySelector('#row-actions-menu [aria-label="Delete alpha.txt"]'));
+    await waitFor(() => expect(document.querySelector(".modal")).not.toBeNull());
+    click(document.querySelector(".modal button"));
+    await waitFor(() => expect(document.querySelector(".modal")).toBeNull());
+
+    click(trigger);
+    await waitFor(() => expect(document.querySelector("#row-actions-menu")).not.toBeNull());
+    click(document.querySelector('#row-actions-menu [aria-label="Download alpha.txt"]'));
+    await waitFor(() => expect(document.querySelector("#row-actions-menu")).toBeNull());
+
+    click([...document.querySelectorAll("button")].find(button => button.textContent.includes("New folder")));
+    await waitFor(() => expect(document.querySelector(".modal")).not.toBeNull());
+    const modal = document.querySelector(".modal");
+    const actions = modal.querySelectorAll(".modal-actions button");
+    actions[1].focus();
+    const rects = vi.spyOn(HTMLElement.prototype, "getClientRects").mockReturnValue([{}]);
+    key(document.activeElement, "Tab");
+    await waitFor(() => expect(document.activeElement).toBe(modal.querySelector("input")));
+    document.querySelector('[aria-label="New folder"]').focus();
+    key(modal, "Tab");
+    expect(document.activeElement).toBe(modal.querySelector("input"));
+    actions[0].focus();
+    key(actions[0], "Tab", { shiftKey: true });
+    expect(document.activeElement).toBe(actions[0]);
+    rects.mockRestore();
+    click(actions[0]);
+    await waitFor(() => expect(document.querySelector(".modal")).toBeNull());
+  });
+
+  it("covers menu keyboard navigation, menu scroll and row mouse variants", async () => {
+    await mount();
+    const alpha = document.querySelector('[data-path="/alpha.txt"]');
+    key(alpha, "F10", { shiftKey: true });
+    await waitFor(() => expect(document.querySelector("#row-actions-menu")).not.toBeNull());
+    const menu = document.querySelector("#row-actions-menu");
+    key(menu, "Home");
+    key(menu, "End");
+    menu.dispatchEvent(new Event("scroll", { bubbles: true }));
+    menu.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    const first = menu.querySelector('[role="menuitem"]');
+    first.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, shiftKey: true }));
+    first.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+    key(menu, "Tab");
+    await waitFor(() => expect(document.querySelector("#row-actions-menu")).toBeNull());
+
+    alpha.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, shiftKey: true }));
+    alpha.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+    key(alpha, "Enter");
+    key(alpha, "F2");
+    key(alpha, "Escape");
+    key(alpha, "ArrowDown");
+    click(alpha);
+    await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toBe("1 selected"));
+    key(alpha, "Delete");
+    await waitFor(() => expect(document.querySelector(".modal")).not.toBeNull());
+    click(document.querySelector(".modal button"));
+  });
+
+  it("covers malformed delete and restore responses", async () => {
+    const badJson = () => ({
+      ok: true,
+      status: 200,
+      url: "http://xwing.test/",
+      headers: new Headers(),
+      json: async () => { throw new Error("not json"); },
+    });
+    let deletes = 0;
+    await mount({
+      overrides: {
+        "DELETE /alpha.txt": () => (deletes++ === 0
+          ? badJson()
+          : { body: { transaction_id: "tx-delete" } }),
+        "POST /api/restore/tx-delete": badJson,
+      },
+    });
+
+    click(document.querySelector('[data-path="/alpha.txt"]'));
+    await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toBe("1 selected"));
+    click(document.querySelector('[aria-label="Delete selected"]'));
+    await waitFor(() => expect(document.querySelector(".modal")).not.toBeNull());
+    click(confirmModal());
+    await waitFor(() => expect(document.querySelector(".toast")?.textContent).toContain("1 item deleted"));
+
+    click(document.querySelector('[data-path="/alpha.txt"]'));
+    await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toBe("1 selected"));
+    click(document.querySelector('[aria-label="Delete selected"]'));
+    await waitFor(() => expect(document.querySelector(".modal")).not.toBeNull());
+    click(confirmModal());
+    const undo = () => [...document.querySelectorAll(".toast")].find(toast => toast.textContent.includes("Undo"));
+    await waitFor(() => expect(undo()).not.toBeUndefined());
+    click(undo().querySelector("button"));
+    await waitFor(() => expect(deletes).toBe(2));
+  });
+
+  it("uses the generic zip filename when the response has no disposition", async () => {
+    vi.stubGlobal("URL", Object.assign(URL, {
+      createObjectURL: vi.fn(() => "blob:x"),
+      revokeObjectURL: vi.fn(),
+    }));
+    const downloads = [];
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function () {
+      downloads.push(this.download);
+    });
+    let zipCalls = 0;
+    await mount({
+      overrides: {
+        "POST /_bulk/zip": () => {
+          zipCalls += 1;
+          const headers = new Headers({ "content-type": "application/zip" });
+          if (zipCalls === 2) headers.set("content-disposition", 'attachment; filename="named.zip"');
+          return {
+            ok: true,
+            status: 200,
+            url: "http://xwing.test/_bulk/zip",
+            headers,
+            blob: async () => new Blob(["zip"]),
+          };
+        },
+      },
+    });
+    click(document.querySelector('[data-path="/alpha.txt"]'));
+    await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toBe("1 selected"));
+    click(document.querySelector('[aria-label="Download selected as zip"]'));
+    await waitFor(() => expect(downloads).toEqual(["xwing-selection.zip"]));
+    click(document.querySelector('[aria-label="Download selected as zip"]'));
+    await waitFor(() => expect(downloads).toEqual(["xwing-selection.zip", "named.zip"]));
+  });
+
+  it("ignores an empty file input and read-only drag gestures", async () => {
+    await mount({ bootstrapData: { ...bootstrap, permissions: { read: true, write: false, delete: false } } });
+    const input = document.querySelector('input[type="file"]:not([webkitdirectory])');
+    Object.defineProperty(input, "files", { configurable: true, value: null });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    const app = document.querySelector(".xw-app");
+    app.dispatchEvent(new Event("dragenter", { bubbles: true, cancelable: true }));
+    app.dispatchEvent(new Event("dragover", { bubbles: true, cancelable: true }));
+  });
+
+  it("covers empty-state uploads, breadcrumb navigation and direct row keys", async () => {
+    await mount({ bootstrapData: { ...bootstrap, files: [] } });
+    const fileClick = vi.spyOn(HTMLInputElement.prototype, "click");
+    click(document.querySelector(".state-panel.empty button"));
+    expect(fileClick).toHaveBeenCalled();
+
+    await mount({
+      bootstrapData: {
+        ...bootstrap,
+        path: "/docs/",
+        breadcrumbs: [...bootstrap.breadcrumbs, { name: "docs", path: "/docs/" }],
+        files: [],
+      },
+    });
+    click(document.querySelector("a.crumb"));
+    await waitFor(() => expect(document.title).toBe("X-wing — /"));
+
+    await mount();
+    const docs = document.querySelector('[data-path="/docs/"]');
+    key(docs, "Enter");
+    await waitFor(() => expect(document.title).toBe("X-wing — /docs/"));
+    await mount();
+    const alpha = document.querySelector('[data-path="/alpha.txt"]');
+    key(alpha, "Delete");
+    await waitFor(() => expect(document.querySelector(".modal")).not.toBeNull());
+    click(document.querySelector(".modal button"));
+    await waitFor(() => expect(document.querySelector(".modal")).toBeNull());
+  });
+
+  it("covers every checkbox modifier and direct delete-key selection branch", async () => {
+    await mount();
+    const checkbox = () => document.querySelector('[data-path="/alpha.txt"] label.row-check input');
+    const betaCheckbox = () => document.querySelector('[data-path="/beta.txt"] label.row-check input');
+    checkbox().dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: true, detail: 1 }));
+    betaCheckbox().dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
+    checkbox().dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, shiftKey: true, detail: 1 }));
+    await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toContain("selected"));
+    key(document.querySelector('[data-path="/alpha.txt"]'), "Delete");
+    await waitFor(() => expect(document.querySelector(".modal")).not.toBeNull());
+    click(document.querySelector(".modal button"));
+
+    await mount({ bootstrapData: { ...bootstrap, permissions: { read: true, write: false, delete: false } } });
+    const alpha = document.querySelector('[data-path="/alpha.txt"]');
+    key(alpha, "Delete");
+    key(alpha, "F2");
+    expect(document.querySelector(".modal")).toBeNull();
+  });
+
+  it("covers disabled row actions and a directory download", async () => {
+    await mount({ bootstrapData: { ...bootstrap, permissions: { read: true, write: false, delete: false } } });
+    click(document.querySelector('[aria-label="Actions for alpha.txt"]'));
+    await waitFor(() => expect(document.querySelector("#row-actions-menu")).not.toBeNull());
+    expect(document.querySelector('#row-actions-menu [aria-label="Rename alpha.txt"]').disabled).toBe(true);
+    expect(document.querySelector('#row-actions-menu [aria-label="Delete alpha.txt"]').disabled).toBe(true);
+    click(document.querySelector('#row-actions-menu [aria-label="Download alpha.txt"]'));
+
+    click(document.querySelector('[aria-label="Actions for docs"]'));
+    await waitFor(() => expect(document.querySelector("#row-actions-menu")).not.toBeNull());
+    expect(document.querySelector('#row-actions-menu [aria-label="Download docs"]').getAttribute("href")).toBe("/docs/?zip");
+  });
+
+  it("keeps a pending dialog open and closes the parallel menu on blur", async () => {
+    let release;
+    const pending = new Promise(resolve => { release = resolve; });
+    await mount({ overrides: { "DELETE /alpha.txt": () => pending } });
+    click(document.querySelector('[data-path="/alpha.txt"]'));
+    await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toBe("1 selected"));
+    click(document.querySelector('[aria-label="Delete selected"]'));
+    await waitFor(() => expect(document.querySelector(".modal")).not.toBeNull());
+    click(confirmModal());
+    await waitFor(() => expect(document.querySelector(".modal .modal-actions button:last-child")?.disabled).toBe(true));
+    key(document.querySelector(".modal"), "Escape");
+    expect(document.querySelector(".modal")).not.toBeNull();
+    const backdrop = document.querySelector(".modal-backdrop");
+    backdrop.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    expect(document.querySelector(".modal")).not.toBeNull();
+    release({ body: { transaction_id: "pending" } });
+    await waitFor(() => expect(document.querySelector(".modal")).toBeNull());
+
+    const trigger = document.querySelector(".parallel-trigger");
+    click(trigger);
+    await waitFor(() => expect(document.querySelector("#parallel-menu")).not.toBeNull());
+    const wrap = document.querySelector(".parallel-wrap");
+    const inside = document.querySelector("#parallel-menu");
+    wrap.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: inside }));
+    expect(document.querySelector("#parallel-menu")).not.toBeNull();
+    wrap.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: document.body }));
+    await waitFor(() => expect(document.querySelector("#parallel-menu")).toBeNull());
+  });
+
+  it("recomputes rail clearance after a resize", async () => {
+    await mount();
+    const rect = vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
+      top: 100,
+      height: 0,
+      right: 0,
+      bottom: 0,
+      left: 0,
+      width: 0,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    window.dispatchEvent(new Event("resize"));
+    expect(document.documentElement.style.getPropertyValue("--xw-rail-clearance")).toBe("0px");
+    rect.mockRestore();
+
+    const tall = vi.spyOn(Element.prototype, "getBoundingClientRect").mockReturnValue({
+      top: 100,
+      height: 48,
+      right: 0,
+      bottom: 0,
+      left: 0,
+      width: 0,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    });
+    window.dispatchEvent(new Event("resize"));
+    expect(document.documentElement.style.getPropertyValue("--xw-rail-clearance")).not.toBe("0px");
+    tall.mockRestore();
+  });
+
+  it("covers direct delete selection and modal refreshes", async () => {
+    await mount({
+      overrides: {
+        "GET /other/": () => directoryResponse({
+          ...bootstrap,
+          path: "/other/",
+          breadcrumbs: [...bootstrap.breadcrumbs, { name: "other", path: "/other/" }],
+          files: [],
+        }),
+      },
+    });
+    click(document.querySelector('[data-path="/alpha.txt"]'));
+    await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toBe("1 selected"));
+    key(document.querySelector('[data-path="/alpha.txt"]'), "Delete");
+    await waitFor(() => expect(document.querySelector(".modal")).not.toBeNull());
+    click(document.querySelector(".modal button"));
+
+    const input = document.querySelector('input[type="file"]:not([webkitdirectory])');
+    Object.defineProperty(input, "files", { configurable: true, value: [] });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+
+    click([...document.querySelectorAll("button")].find(button => button.textContent.includes("New folder")));
+    await waitFor(() => expect(document.querySelector(".modal")).not.toBeNull());
+    window.history.pushState({ path: "/other/" }, "", "/other/");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await waitFor(() => expect(document.title).toBe("X-wing — /other/"));
+    click(document.querySelector(".modal button"));
+  });
+
+  it("covers a read-only file selection and flipped upload menu", async () => {
+    await mount({ bootstrapData: { ...bootstrap, permissions: { read: true, write: false, delete: false } } });
+    const input = document.querySelector('input[type="file"]:not([webkitdirectory])');
+    Object.defineProperty(input, "files", { configurable: true, value: [new File(["x"], "x.txt")] });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+    Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+      configurable: true,
+      get() { return 200; },
+    });
+    Object.defineProperty(HTMLElement.prototype, "offsetWidth", {
+      configurable: true,
+      get() { return 180; },
+    });
+    const trigger = document.querySelector('[aria-label="Actions for alpha.txt"]');
+    const rect = vi.spyOn(trigger, "getBoundingClientRect").mockReturnValue({
+      top: 700,
+      bottom: 730,
+      right: 300,
+      left: 200,
+      width: 100,
+      height: 30,
+      x: 200,
+      y: 700,
+      toJSON: () => ({}),
+    });
+    click(trigger);
+    await waitFor(() => expect(document.querySelector("#row-actions-menu")).not.toBeNull());
+    expect(document.querySelector("#row-actions-menu")?.className).toContain("origin-bottom-left");
+    key(document.querySelector("#row-actions-menu"), "Home");
+    key(document.querySelector("#row-actions-menu"), "End");
+    key(document.querySelector("#row-actions-menu"), "Delete");
+    await waitFor(() => expect(document.querySelector("#row-actions-menu")).toBeNull());
+    expect(document.querySelector(".modal")).toBeNull();
+    document.querySelector('[data-path="/alpha.txt"]').dispatchEvent(new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+      clientX: 300,
+      clientY: 700,
+    }));
+    await waitFor(() => expect(document.querySelector("#row-actions-menu")).not.toBeNull());
+    expect(document.querySelector("#row-actions-menu")?.className).toContain("origin-bottom-left");
+    key(document.querySelector("#row-actions-menu"), "Escape");
+    rect.mockRestore();
+  });
+
+  it("dismisses a completed toast only once", async () => {
+    await mount();
+    click(document.querySelector('[data-path="/alpha.txt"]'));
+    await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toBe("1 selected"));
+    click(document.querySelector('[aria-label="Delete selected"]'));
+    await waitFor(() => expect(document.querySelector(".modal")).not.toBeNull());
+    click(confirmModal());
+    await waitFor(() => expect(document.querySelector(".toast-action")).not.toBeNull());
+    const action = document.querySelector(".toast-action");
+    click(action);
+    click(action);
+  });
+
+  it("keeps the range anchor only while the row still exists", async () => {
+    let calls = 0;
+    await mount({
+      overrides: {
+        "GET /": () => {
+          calls += 1;
+          const visible = calls === 1
+            ? bootstrap.files
+            : bootstrap.files.filter(file => file.path !== "/alpha.txt");
+          return directoryResponse({ ...bootstrap, files: visible });
+        },
+      },
+    });
+    click(document.querySelector('[data-path="/alpha.txt"]'));
+    await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toBe("1 selected"));
+
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() => expect(calls).toBe(1));
+    expect(document.querySelector(".selection-pill")?.textContent).toBe("1 selected");
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() => expect(calls).toBe(2));
+    await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toBe("0 selected"));
+  });
+
+  it("focuses the confirm control after a text-dialog failure", async () => {
+    let release;
+    const pending = new Promise(resolve => { release = resolve; });
+    await mount({ overrides: { "MOVE /alpha.txt": () => pending } });
+    click(document.querySelector('[aria-label="Actions for alpha.txt"]'));
+    await waitFor(() => expect(document.querySelector("#row-actions-menu")).not.toBeNull());
+    click(document.querySelector('#row-actions-menu [aria-label="Rename alpha.txt"]'));
+    await waitFor(() => expect(document.querySelector(".modal")).not.toBeNull());
+    const form = document.querySelector("form.modal");
+    setInputValue(form.querySelector("input"), "renamed.txt");
+    submit(form);
+    await waitFor(() => expect(form.querySelector(".modal-actions button:last-child")?.disabled).toBe(true));
+    document.activeElement.blur();
+    release({ status: 500, body: { detail: "rename failed" } });
+    await waitFor(() => expect(document.querySelector(".dialog-error")?.textContent).toContain("rename failed"));
+    expect(document.activeElement).toBe(form.querySelector(".modal-actions button:last-child"));
   });
 });

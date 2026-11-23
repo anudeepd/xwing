@@ -34,6 +34,7 @@ from .files import (
     DEFAULT_STALE_STAGING_SECONDS,
     EDITOR_FULL_EDIT_MAX,
     EDITOR_PREVIEW_BYTES,
+    filesystem_failure,
     human_size,
     InvalidPath,
     is_editable,
@@ -68,6 +69,11 @@ _LOG_CONTROL_CHARS = str.maketrans(
 
 def _log_field(value: object) -> str:
     return str(value).translate(_LOG_CONTROL_CHARS)
+
+
+def _filesystem_http_error(exc: OSError, fallback: str) -> HTTPException:
+    failure = filesystem_failure(exc, fallback)
+    return HTTPException(status_code=failure.status_code, detail=failure.detail)
 
 
 def _temporary_archive(tmp_dir: Path) -> IO[bytes]:
@@ -340,12 +346,17 @@ def create_app(settings: Settings) -> FastAPI:
     async def _persist_trash() -> None:
         async with trash_save_lock:
             snapshot = dict(delete_transactions)
-            await anyio.to_thread.run_sync(
-                trash_store.save_transactions,
-                _trash_dir(),
-                settings.root_dir,
-                snapshot,
-            )
+            try:
+                await anyio.to_thread.run_sync(
+                    trash_store.save_transactions,
+                    _trash_dir(),
+                    settings.root_dir,
+                    snapshot,
+                )
+            except OSError as exc:
+                raise _filesystem_http_error(
+                    exc, "Could not save the trash state"
+                ) from exc
 
     def _skip_generic_audit(request: Request) -> bool:
         if request.url.path.startswith("/_auth/"):
@@ -748,9 +759,12 @@ def create_app(settings: Settings) -> FastAPI:
         originals = originals or {}
         txid = uuid.uuid4().hex
         trash_dir = _trash_dir()
-        await anyio.to_thread.run_sync(
-            lambda: trash_dir.mkdir(parents=True, exist_ok=True)
-        )
+        try:
+            await anyio.to_thread.run_sync(
+                lambda: trash_dir.mkdir(parents=True, exist_ok=True)
+            )
+        except OSError as exc:
+            raise _filesystem_http_error(exc, "Could not prepare the trash") from exc
         paths_to_delete = _top_level_paths(paths)
         for fspath in paths_to_delete:
             if not os.path.lexists(fspath):
@@ -768,11 +782,8 @@ def create_app(settings: Settings) -> FastAPI:
                     await anyio.to_thread.run_sync(
                         shutil.move, str(fspath), str(trash_path)
                     )
-                except FileNotFoundError:
-                    # A concurrent delete of the same path won the race.
-                    raise HTTPException(
-                        status_code=404, detail="Selected path not found"
-                    ) from None
+                except OSError as exc:
+                    raise _filesystem_http_error(exc, "Delete failed") from exc
                 items.append(
                     {
                         "original": original,
@@ -865,6 +876,8 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(
                 status_code=409, detail="A parent of that path is not a folder"
             ) from None
+        except OSError as exc:
+            raise _filesystem_http_error(exc, "Write failed") from exc
         sink = LocalFileSink(
             fspath.parent / staging_name(fspath.name, uuid.uuid4().hex),
             fspath,
@@ -883,7 +896,7 @@ def create_app(settings: Settings) -> FastAPI:
         except OSError as e:
             # Disk full or I/O error
             await _abort_sink(sink)
-            raise HTTPException(status_code=500, detail=f"Write failed: {e}") from e
+            raise _filesystem_http_error(e, "Write failed") from e
         except ClientDisconnect:
             await _abort_sink(sink)
             # Nobody is listening; 499 only shows up in access logs.
@@ -911,10 +924,13 @@ def create_app(settings: Settings) -> FastAPI:
             raise HTTPException(status_code=403, detail="Cannot delete root")
         if _is_ignored_system_path(fspath):
             if fspath.exists():
-                if fspath.is_dir():
-                    await anyio.to_thread.run_sync(shutil.rmtree, fspath)  # type: ignore[reportAttributeAccessIssue]
-                else:
-                    await anyio.to_thread.run_sync(fspath.unlink)  # type: ignore[reportAttributeAccessIssue]
+                try:
+                    if fspath.is_dir():
+                        await anyio.to_thread.run_sync(shutil.rmtree, fspath)  # type: ignore[reportAttributeAccessIssue]
+                    else:
+                        await anyio.to_thread.run_sync(fspath.unlink)  # type: ignore[reportAttributeAccessIssue]
+                except OSError as exc:
+                    raise _filesystem_http_error(exc, "Delete failed") from exc
             return Response(status_code=204)
         _reject_sensitive_path(fspath)
 
@@ -960,6 +976,15 @@ def create_app(settings: Settings) -> FastAPI:
         if "edit" in request.query_params and is_editable(fspath):
             return await _handle_edit(fspath, request, user)
 
+        if fspath.is_file():
+            try:
+                with fspath.open("rb"):
+                    pass
+            except OSError as exc:
+                raise _filesystem_http_error(
+                    exc, "Could not open that file"
+                ) from exc
+
         response = FileResponse(fspath)
         # Uploaded files share the app origin: never let the browser sniff a
         # type, and run active content (HTML, SVG, scripts) in an opaque sandbox.
@@ -1003,8 +1028,8 @@ def create_app(settings: Settings) -> FastAPI:
 
         try:
             entries = await anyio.to_thread.run_sync(_visible_entries, fspath)
-        except PermissionError:
-            raise HTTPException(status_code=403, detail="Permission denied")
+        except OSError as exc:
+            raise _filesystem_http_error(exc, "Could not open that folder") from exc
 
         parts = [p for p in rel_path.strip("/").split("/") if p]
         breadcrumbs = [{"name": "Home", "path": "/", "url_path": "/"}]
@@ -1077,23 +1102,26 @@ def create_app(settings: Settings) -> FastAPI:
     async def _handle_edit(fspath: Path, request: Request, user: str) -> Response:
         rel_path = _to_rel_path(fspath)
         url_path = _to_url_path(fspath)
-        total_size = (await anyio.Path(fspath).stat()).st_size
-        if total_size <= EDITOR_FULL_EDIT_MAX:
-            # Bytes, not text mode: universal-newline translation would turn
-            # CRLF/CR into LF before the editor ever sees the file.
-            content = (await anyio.Path(fspath).read_bytes()).decode(
-                "utf-8", errors="replace"
-            )
-            truncated = False
-            preview_bytes = total_size
-        else:
-            # Never load a huge file fully into memory or the page:
-            # preview the head as read-only instead.
-            async with await anyio.open_file(fspath, "rb") as f:
-                head = await f.read(EDITOR_PREVIEW_BYTES)
-            content = head.decode("utf-8", errors="replace")
-            truncated = True
-            preview_bytes = len(head)
+        try:
+            total_size = (await anyio.Path(fspath).stat()).st_size
+            if total_size <= EDITOR_FULL_EDIT_MAX:
+                # Bytes, not text mode: universal-newline translation would turn
+                # CRLF/CR into LF before the editor ever sees the file.
+                content = (await anyio.Path(fspath).read_bytes()).decode(
+                    "utf-8", errors="replace"
+                )
+                truncated = False
+                preview_bytes = total_size
+            else:
+                # Never load a huge file fully into memory or the page:
+                # preview the head as read-only instead.
+                async with await anyio.open_file(fspath, "rb") as f:
+                    head = await f.read(EDITOR_PREVIEW_BYTES)
+                content = head.decode("utf-8", errors="replace")
+                truncated = True
+                preview_bytes = len(head)
+        except OSError as exc:
+            raise _filesystem_http_error(exc, "Could not open that file") from exc
         dir_path = rel_path.rsplit("/", 1)[0] + "/"
         dir_url_path = _to_url_path(fspath.parent, trailing_slash=True)
         perms = settings.perms_for(user)
@@ -1227,6 +1255,11 @@ def create_app(settings: Settings) -> FastAPI:
                 archive.seek(0)
 
             await anyio.to_thread.run_sync(_build)  # type: ignore[reportAttributeAccessIssue]
+        except OSError as exc:
+            _finish()
+            raise _filesystem_http_error(
+                exc, "Could not create that archive"
+            ) from exc
         except BaseException:
             _finish()
             raise
@@ -1367,10 +1400,10 @@ def create_app(settings: Settings) -> FastAPI:
 
         try:
             zip_bytes = await anyio.to_thread.run_sync(_zip_selected, paths, base_path)  # type: ignore[reportAttributeAccessIssue]
-        except FileNotFoundError:
-            raise HTTPException(
-                status_code=404, detail="Selected path not found"
-            ) from None
+        except OSError as exc:
+            raise _filesystem_http_error(
+                exc, "Could not create that archive"
+            ) from exc
         response = Response(
             zip_bytes,
             media_type="application/zip",
@@ -1445,18 +1478,29 @@ def create_app(settings: Settings) -> FastAPI:
 
         restored = 0
         restored_paths = []
-        for item in transaction["items"]:
-            trash_path: Path = item["trash"]
-            original_path: Path = item["original"]
-            if not os.path.lexists(trash_path):
-                continue
-            target = _restore_candidate(original_path, item["kind"])
-            target.parent.mkdir(parents=True, exist_ok=True)
-            await anyio.to_thread.run_sync(shutil.move, str(trash_path), str(target))
-            restored += 1
-            restored_paths.append(_to_rel_path(target))
+        try:
+            for item in transaction["items"]:
+                trash_path: Path = item["trash"]
+                original_path: Path = item["original"]
+                if not os.path.lexists(trash_path):
+                    continue
+                target = _restore_candidate(original_path, item["kind"])
+                try:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    await anyio.to_thread.run_sync(
+                        shutil.move, str(trash_path), str(target)
+                    )
+                except OSError as exc:
+                    raise _filesystem_http_error(
+                        exc, "Could not restore that item"
+                    ) from exc
+                restored += 1
+                restored_paths.append(_to_rel_path(target))
 
-        await _persist_trash()
+            await _persist_trash()
+        except BaseException:
+            delete_transactions[transaction_id] = transaction
+            raise
         response = JSONResponse(
             {"ok": True, "restored": restored, "paths": restored_paths}
         )
@@ -1628,9 +1672,10 @@ def create_app(settings: Settings) -> FastAPI:
         live_applied = False
         try:
             original_users = users_path.read_bytes()
-            original_ldap: bytes | None = None
+            rollback = [(users_path, original_users)]
             if ldap_update is not None:
-                original_ldap = ldap_update[0].read_bytes()
+                ldap_path = ldap_update[0]
+                rollback.append((ldap_path, ldap_path.read_bytes()))
             _write_yaml_document(users_path, users_document)
             try:
                 if ldap_update is not None:
@@ -1640,9 +1685,8 @@ def create_app(settings: Settings) -> FastAPI:
             except Exception:
                 # The paths are the configured admin files, and these bytes are
                 # each file's own previous contents, so the rollback is local.
-                users_path.write_bytes(original_users)  # NOSONAR
-                if ldap_update is not None and original_ldap is not None:
-                    ldap_update[0].write_bytes(original_ldap)
+                for path, contents in reversed(rollback):
+                    path.write_bytes(contents)  # NOSONAR
                 raise
             settings._user_config = UserConfig(users_path)
             settings._config_mtime = users_path.stat().st_mtime
@@ -1861,8 +1905,15 @@ def create_app(settings: Settings) -> FastAPI:
             if not os.path.lexists(trash_path):
                 continue
             target = _restore_candidate(original_path, item["kind"])
-            target.parent.mkdir(parents=True, exist_ok=True)
-            await anyio.to_thread.run_sync(shutil.move, str(trash_path), str(target))
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                await anyio.to_thread.run_sync(
+                    shutil.move, str(trash_path), str(target)
+                )
+            except OSError as exc:
+                raise _filesystem_http_error(
+                    exc, "Could not restore that item"
+                ) from exc
             restored_paths.append(_to_rel_path(target))
         return restored_paths
 
@@ -1876,16 +1927,17 @@ def create_app(settings: Settings) -> FastAPI:
         )
         transactions = len(snapshot)
         trash_dir = _trash_dir()
-        if trash_dir.exists():
-            for child in trash_dir.iterdir():
-                if child.is_dir() and not child.is_symlink():
-                    shutil.rmtree(child)
-                else:
-                    child.unlink()
+        try:
+            if trash_dir.exists():
+                for child in trash_dir.iterdir():
+                    if child.is_dir() and not child.is_symlink():
+                        shutil.rmtree(child)
+                    else:
+                        child.unlink()
+            trash_store.save_transactions(trash_dir, settings.root_dir, {})
+        except OSError as exc:
+            raise _filesystem_http_error(exc, "Could not empty the trash") from exc
         delete_transactions.clear()
-        trash_store.save_transactions(
-            trash_dir, settings.root_dir, dict(delete_transactions)
-        )
         return {"deleted": deleted, "transactions": transactions}
 
     @app.get("/api/admin/trash", include_in_schema=False)
@@ -1982,10 +2034,15 @@ def create_app(settings: Settings) -> FastAPI:
             trash_path: Path = item["trash"]
             if not os.path.lexists(trash_path):
                 continue
-            if trash_path.is_dir() and not trash_path.is_symlink():
-                await anyio.to_thread.run_sync(shutil.rmtree, trash_path)
-            else:
-                await anyio.to_thread.run_sync(trash_path.unlink)
+            try:
+                if trash_path.is_dir() and not trash_path.is_symlink():
+                    await anyio.to_thread.run_sync(shutil.rmtree, trash_path)
+                else:
+                    await anyio.to_thread.run_sync(trash_path.unlink)
+            except OSError as exc:
+                raise _filesystem_http_error(
+                    exc, "Could not delete from the trash"
+                ) from exc
             deleted += 1
         delete_transactions.pop(transaction_id, None)
         await _persist_trash()

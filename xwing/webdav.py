@@ -12,9 +12,16 @@ from urllib.parse import quote
 import anyio
 from fastapi import Request, Response
 
+from .files import filesystem_failure
+
 DAV_NS = "DAV:"
 
 ET.register_namespace("D", DAV_NS)
+
+
+def _filesystem_response(exc: OSError, fallback: str) -> Response:
+    failure = filesystem_failure(exc, fallback)
+    return Response(status_code=failure.status_code, content=failure.detail)
 
 
 def _dav(tag: str) -> str:
@@ -78,16 +85,22 @@ def propfind_response(request: Request, path: Path, root: Path) -> Response:
     rel = _href_for_path(path, root)
 
     multistatus = ET.Element(_dav("multistatus"))
-    multistatus.append(_prop_response(rel, path))
-
-    if depth_header != "0" and path.is_dir():
-        for child in sorted(path.iterdir()):
-            try:
-                multistatus.append(_prop_response(_href_for_path(child, root), child))
-            except (OSError, UnicodeEncodeError):
-                # Vanished entry or a name that cannot be sent as UTF-8: skip it
-                # rather than failing the whole listing.
-                continue
+    try:
+        multistatus.append(_prop_response(rel, path))
+        children = (
+            sorted(path.iterdir())
+            if depth_header != "0" and path.is_dir()
+            else []
+        )
+    except OSError as exc:
+        return _filesystem_response(exc, "Could not list that folder")
+    for child in children:
+        try:
+            multistatus.append(_prop_response(_href_for_path(child, root), child))
+        except (OSError, UnicodeEncodeError):
+            # Vanished entry or a name that cannot be sent as UTF-8: skip it
+            # rather than failing the whole listing.
+            continue
 
     xml_bytes = ET.tostring(multistatus, encoding="utf-8", xml_declaration=True)
     return Response(
@@ -109,6 +122,8 @@ def mkcol_response(path: Path) -> Response:
         path.mkdir(parents=False)
     except (FileNotFoundError, NotADirectoryError):
         return Response(status_code=409, content="Parent does not exist")
+    except OSError as exc:
+        return _filesystem_response(exc, "Could not create that folder")
     return Response(status_code=201)
 
 
@@ -199,8 +214,8 @@ async def copy_response(
         )
     except (FileNotFoundError, NotADirectoryError):
         return Response(status_code=409, content="Destination parent does not exist")
-    except OSError:
-        return Response(status_code=500, content="Copy failed")
+    except OSError as exc:
+        return _filesystem_response(exc, "Copy failed")
     try:
         if src.is_symlink():
             # Copy the link itself, never what it points to.
@@ -212,12 +227,12 @@ async def copy_response(
         else:
             await anyio.to_thread.run_sync(lambda: shutil.copy2(src, temp_dest))  # type: ignore[reportAttributeAccessIssue]
         backup = await anyio.to_thread.run_sync(_install_staged_path, temp_dest, dest)  # type: ignore[reportAttributeAccessIssue]
-    except OSError:
+    except OSError as exc:
         try:
             _cleanup_path(temp_dest)
         except Exception:
             pass
-        return Response(status_code=500, content="Copy failed")
+        return _filesystem_response(exc, "Copy failed")
     await _dispose_backup(backup, dispose)
     return Response(status_code=201 if backup is None else 204)
 
@@ -235,8 +250,8 @@ async def move_response(
         backup = await anyio.to_thread.run_sync(_install_staged_path, src, dest)  # type: ignore[reportAttributeAccessIssue]
     except (FileNotFoundError, NotADirectoryError):
         return Response(status_code=409, content="Destination parent does not exist")
-    except OSError:
-        return Response(status_code=500, content="Move failed")
+    except OSError as exc:
+        return _filesystem_response(exc, "Move failed")
     await _dispose_backup(backup, dispose)
     return Response(status_code=201 if backup is None else 204)
 

@@ -19,6 +19,18 @@ def test_admin_users_are_loaded_separately_from_environment(monkeypatch, tmp_pat
     assert settings.is_admin_user("ALICE")
 
 
+def test_perms_for_falls_back_when_cached_config_is_missing(tmp_path):
+    users = tmp_path / "users.yaml"
+    users.write_text("users:\n  alice: rwd\n")
+    settings = Settings(root_dir=tmp_path, users_config=users)
+    settings._user_config = None
+
+    perms = settings.perms_for("alice")
+    assert perms.read is True
+    assert perms.write is False
+    assert perms.delete is False
+
+
 class TestUserConfigCompact:
     def test_rwd(self, tmp_path):
         f = tmp_path / "u.yaml"

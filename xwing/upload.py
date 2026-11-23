@@ -27,7 +27,12 @@ from fastapi import APIRouter, HTTPException, Request
 from . import audit_store
 from .auth import get_user, require_perm
 from .config import Settings
-from .files import is_ignored_system_file, is_within_root, safe_path
+from .files import (
+    filesystem_failure,
+    is_ignored_system_file,
+    is_within_root,
+    safe_path,
+)
 from .upload_engine import (
     AuthContext,
     UploadSink,
@@ -38,6 +43,11 @@ from .upload_engine import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _filesystem_http_error(exc: OSError, fallback: str) -> HTTPException:
+    failure = filesystem_failure(exc, fallback)
+    return HTTPException(status_code=failure.status_code, detail=failure.detail)
 
 
 def _read_umask() -> int:
@@ -104,14 +114,24 @@ class LocalFileSink:
             return self._fd
         async with self._open_lock:
             if self._fd is None:
-                self._fd = await anyio.to_thread.run_sync(_open_staging, self._staged)
+                try:
+                    self._fd = await anyio.to_thread.run_sync(
+                        _open_staging, self._staged
+                    )
+                except OSError as exc:
+                    raise _filesystem_http_error(exc, "Upload failed") from exc
         return self._fd
 
     async def write_at(self, offset: int, data: bytes) -> None:
         if self._closed:
             raise OSError("upload sink is closed")
         fd = await self._descriptor()
-        await anyio.to_thread.run_sync(_pwrite_all, fd, memoryview(data), offset)
+        try:
+            await anyio.to_thread.run_sync(
+                _pwrite_all, fd, memoryview(data), offset
+            )
+        except OSError as exc:
+            raise _filesystem_http_error(exc, "Upload failed") from exc
 
     def _take_descriptor(self) -> int | None:
         fd, self._fd = self._fd, None
@@ -120,10 +140,15 @@ class LocalFileSink:
 
     async def finalize(self) -> None:
         fd = self._take_descriptor()
-        if fd is None:
-            # An empty upload never wrote, so the staging file does not exist yet.
-            fd = await anyio.to_thread.run_sync(_open_staging, self._staged)
-        await anyio.to_thread.run_sync(_publish, fd, self._staged, self._destination)
+        try:
+            if fd is None:
+                # An empty upload never wrote, so the staging file does not exist yet.
+                fd = await anyio.to_thread.run_sync(_open_staging, self._staged)
+            await anyio.to_thread.run_sync(
+                _publish, fd, self._staged, self._destination
+            )
+        except OSError as exc:
+            raise _filesystem_http_error(exc, "Upload failed") from exc
 
     async def abort(self) -> None:
         fd = self._take_descriptor()
@@ -192,7 +217,15 @@ def create_upload_router(settings: Settings, store: UploadStore) -> APIRouter:
             dest_dir / filename
         ):
             raise HTTPException(status_code=404, detail="Destination directory not found")
-        if not dest_dir.exists() or not dest_dir.is_dir():
+        try:
+            dest_stat = dest_dir.stat()
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="Destination directory not found")
+        except OSError as exc:
+            raise _filesystem_http_error(
+                exc, "Could not open the destination folder"
+            ) from exc
+        if not stat.S_ISDIR(dest_stat.st_mode):
             raise HTTPException(status_code=404, detail="Destination directory not found")
         if (dest_dir / filename).is_dir():
             raise HTTPException(status_code=409, detail="A folder with that name exists")

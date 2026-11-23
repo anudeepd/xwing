@@ -63,6 +63,13 @@ const AUTH_REDIRECT_DELAY_MS = 1500;
 // the shared resumable upload engine (see `saveDocument`), which chunks at this
 // size and retries only the bytes the server has not accepted yet.
 const SAVE_CHUNK_BYTES = 8 * 1024 * 1024;
+const SAVE_STATUS_COPY: Record<number, string> = {
+  403: "You don't have permission for that.",
+  404: "That file no longer exists.",
+  409: "That name is already taken.",
+  413: "That file is too large.",
+  507: "Not enough space on the server.",
+};
 
 // The motion numbers the editor's stylesheet used to own: the 340ms page
 // entrance (`xw-page-in`), the 150/170ms page-leaving pair the handover waits
@@ -165,8 +172,7 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
     };
     const onKeydownCapture = (event: KeyboardEvent) => {
       const cm = window.CM;
-      const editor = view.current;
-      if (!editor) return;
+      const editor = view.current!;
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "f" && cm.searchPanelOpen(editor.state)) {
         const field = mount.current?.querySelector<HTMLInputElement>(".cm-panel.cm-search [main-field]");
         if (field) { event.preventDefault(); event.stopPropagation(); field.focus(); field.select(); }
@@ -220,6 +226,16 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
     }
   };
 
+  const saveError = async (response: Response): Promise<string> => {
+    const mapped = SAVE_STATUS_COPY[response.status];
+    try {
+      const body = await response.json() as { detail?: string };
+      return mapped ?? (body.detail || `Save failed (${response.status})`);
+    } catch {
+      return mapped ?? `Save failed (${response.status})`;
+    }
+  };
+
   /**
    * Save a large document through the shared upload engine: `init` → ranged
    * PUTs → `complete`, which replaces the file atomically. A failed request
@@ -262,7 +278,7 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
         noteAuthActivity();
         const response = await fetch(boot.path, { method: "PUT", body: content, headers: { "Content-Type": "text/plain; charset=utf-8" } });
         requireAuthOk(response);
-        if (!response.ok) throw new Error(`Save failed (${response.status})`);
+        if (!response.ok) throw new Error(await saveError(response));
       } else {
         setStatus("Saving… 0%");
         await saveDocument(blob);
@@ -270,7 +286,12 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
       saved.current = text; setDirty(false); setStatus("Saved");
       window.setTimeout(() => setStatus(""), 2500);
     } catch (error) {
-      if (error instanceof UploadError && (error.status === 401 || error.status === 403 || error.code === "BAD_RESPONSE")) {
+      const authRequired = error instanceof UploadError && (
+        error.status === 401 ||
+        error.code === "BAD_RESPONSE" ||
+        (error.status === 403 && /authentication required/i.test(error.message))
+      );
+      if (authRequired) {
         beginAuthRedirect();
         setStatus("Sign-in required");
         return;

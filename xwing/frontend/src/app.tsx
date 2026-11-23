@@ -220,7 +220,7 @@ function readBootstrap(): XwingBootstrapV1 {
 function useOutsideClose(ref: React.RefObject<HTMLElement | null>, close: () => void): void {
   useEffect(() => {
     const handler = (event: PointerEvent) => {
-      if (!ref.current?.contains(event.target as Node)) close();
+      if (!ref.current!.contains(event.target as Node)) close();
     };
     document.addEventListener("pointerdown", handler);
     return () => document.removeEventListener("pointerdown", handler);
@@ -334,9 +334,9 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
 
   /** Close the parallel-uploads popover; focus returns to its trigger when the
    *  close came from the keyboard or from choosing an option. */
-  const closeParallel = (restoreFocus = false): void => {
+  const closeParallel = (): void => {
     setParallelOpen(false);
-    if (restoreFocus) parallelRef.current?.querySelector<HTMLElement>(".parallel-trigger")?.focus();
+    parallelRef.current?.querySelector<HTMLElement>(".parallel-trigger")?.focus();
   };
 
   useOutsideClose(parallelRef, () => setParallelOpen(false));
@@ -346,8 +346,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   // popover's own key path instead of the file row that opened it.
   useEffect(() => {
     if (!parallelOpen) return;
-    const menu = parallelMenu.current;
-    if (!menu) return;
+    const menu = parallelMenu.current!;
     (menu.querySelector<HTMLInputElement>("input[type='radio']") ?? menu).focus();
   }, [parallelOpen]);
 
@@ -364,7 +363,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
         accountRef.current?.querySelector<HTMLElement>(".account-trigger")?.focus();
       } else if (event.key === "Escape" && parallelOpen) {
         event.preventDefault();
-        closeParallel(true);
+        closeParallel();
       } else if (event.key === "Escape" && selected.size && !typing) {
         event.preventDefault();
         setSelected(new Set());
@@ -404,7 +403,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     window.setTimeout(() => location.assign(href), prefersReducedMotion() ? 0 : 170);
   };
 
-  const navigate = async (path: string, historyMode: "push" | "replace" | "none" = "push", focus: PendingFocus | null = FIRST_ROW): Promise<void> => {
+  const navigate = async (path: string, historyMode: "push" | "none" = "push", focus: PendingFocus | null = FIRST_ROW): Promise<void> => {
     const id = ++requestId.current;
     abort.current?.abort();
     navigationInFlight.current = true;
@@ -436,7 +435,6 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
         document.title = `X-wing — ${next.path}`;
         const url = encodePath(next.path === "/" ? "/" : `${next.path}/`);
         if (historyMode === "push") history.pushState({ path: next.path }, "", url);
-        if (historyMode === "replace") history.replaceState({ path: next.path }, "", url);
         // A folder URL carries no filter: the query belongs to the listing the
         // user was filtering, not to the folder they just opened.
         if (historyMode !== "none") setQuery("");
@@ -895,13 +893,13 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
         <div className="toolbar-group toolbar-end flex items-center gap-2 min-w-0 ml-auto">
           <input className="filter-input w-[132px] h-[31px] min-h-[31px] px-3 border border-solid border-xw-line-hi rounded-md bg-xw-raised text-xw-text text-xs appearance-none placeholder:text-xw-faint max-[640px]:w-[112px] max-[640px]:px-2 max-[640px]:text-base max-[640px]:placeholder:text-sm" type="search" aria-label="Filter files by name" placeholder="Filter files…" value={query} onChange={event => updateQuery(event.target.value)}/>
           <div className="parallel-wrap relative" ref={parallelRef} onBlur={event => { if (parallelOpen && !event.currentTarget.contains(event.relatedTarget as Node | null)) setParallelOpen(false); }}>
-            <button className="parallel-trigger w-[126px] max-[640px]:w-[64px] h-[31px] min-h-[31px] grid grid-cols-[1fr_auto] items-center gap-2 pl-3 pr-2 max-[640px]:pl-2 border border-solid border-xw-line-hi rounded-md bg-xw-raised text-xs font-medium hover:border-xw-accent-border hover:bg-[#171d2e] aria-expanded:border-xw-accent-border aria-expanded:bg-[#171d2e] [&[aria-expanded=true]>.ui-icon]:rotate-180" aria-label={`Parallel uploads: ${upload.parallel}`} aria-expanded={parallelOpen} aria-controls={parallelOpen ? "parallel-menu" : undefined} onClick={() => parallelOpen ? closeParallel(true) : setParallelOpen(true)}>
+            <button className="parallel-trigger w-[126px] max-[640px]:w-[64px] h-[31px] min-h-[31px] grid grid-cols-[1fr_auto] items-center gap-2 pl-3 pr-2 max-[640px]:pl-2 border border-solid border-xw-line-hi rounded-md bg-xw-raised text-xs font-medium hover:border-xw-accent-border hover:bg-[#171d2e] aria-expanded:border-xw-accent-border aria-expanded:bg-[#171d2e] [&[aria-expanded=true]>.ui-icon]:rotate-180" aria-label={`Parallel uploads: ${upload.parallel}`} aria-expanded={parallelOpen} aria-controls={parallelOpen ? "parallel-menu" : undefined} onClick={() => parallelOpen ? closeParallel() : setParallelOpen(true)}>
               <span className="parallel-copy flex items-baseline justify-between gap-2 font-sans [&>span]:text-[#7f8a9e] [&>span]:text-[11px] [&>span]:font-medium [&>span]:uppercase max-[640px]:[&>span]:hidden [&>strong]:text-[#eef0f5] [&>strong]:text-xs [&>strong]:font-medium [&>strong]:font-mono"><span>Parallel</span><strong>{upload.parallel}</strong></span><Icon name="chevron"/>
             </button>
             {parallelOpen && <div ref={parallelMenu} id="parallel-menu" className={cn(POPOVER, "parallel-menu top-[36px] min-w-[184px]")} role="group" aria-label="Parallel uploads" tabIndex={-1}>
               <div id="parallel-menu-title" className="menu-title px-2 pt-1 pb-2 text-[#788499] text-[11px] font-medium uppercase">Parallel uploads</div>
               <div role="radiogroup" aria-labelledby="parallel-menu-title">{PARALLEL_VALUES.map(value => <label className={cn("parallel-option h-8 min-h-8 flex items-center justify-between px-2 rounded-[5px] text-[#b9c1ce] cursor-pointer text-xs hover:bg-xw-hover focus-within:outline focus-within:outline-2 focus-within:outline-offset-[-2px] focus-within:outline-xw-accent [&>input]:absolute [&>input]:opacity-0 [&>span]:flex [&>span]:items-baseline [&>span]:gap-2 [&_strong]:min-w-3 [&_strong]:font-mono [&_strong]:font-medium [&_strong]:text-[#eef0f5] [&_small]:text-[11px] [&_small]:text-[#8792a5]", upload.parallel === value && "selected bg-xw-accent-lo text-xw-accent-hi")} key={value}>
-                <input type="radio" name="parallel" value={value} checked={upload.parallel === value} onChange={() => { uploadManager.setParallel(value); closeParallel(true); }}/>
+                <input type="radio" name="parallel" value={value} checked={upload.parallel === value} onChange={() => { uploadManager.setParallel(value); closeParallel(); }}/>
                 <span><strong>{value}</strong><small>{value === 1 ? "upload at a time" : "uploads at a time"}</small></span>{upload.parallel === value && <Icon name="check"/>}
               </label>)}</div>
             </div>}
@@ -1064,8 +1062,7 @@ function FileRow({ file, index, selected, loading, arriving, tabStop, onFocusRow
       }
       return;
     }
-    const menu = leaving;
-    if (!menu) return;
+    const menu = leaving!;
     // First open only: a right click on this row while the menu is already up
     // re-runs the effect with focus inside the menu, which is not where to go back to.
     if (!opener.current) {
@@ -1262,7 +1259,7 @@ function FileRow({ file, index, selected, loading, arriving, tabStop, onFocusRow
 
 function SelectionCheckbox({ label, checked, indeterminate = false, rowControl = false, onToggle }: { label: string; checked: boolean; indeterminate?: boolean; rowControl?: boolean; onToggle: (event: React.MouseEvent<HTMLInputElement>) => void }): React.JSX.Element {
   const ref = useRef<HTMLInputElement>(null);
-  useEffect(() => { if (ref.current) ref.current.indeterminate = indeterminate; }, [indeterminate]);
+  useEffect(() => { ref.current!.indeterminate = indeterminate; }, [indeterminate]);
   return <input ref={ref} className="w-[15px] h-[15px] m-auto cursor-pointer accent-xw-accent-fill [color-scheme:dark] selection-checkbox" type="checkbox" aria-label={label} checked={checked} onChange={() => undefined} onClick={event => { event.stopPropagation(); onToggle(event); if (rowControl && event.detail > 0) event.currentTarget.closest<HTMLElement>(".file-row")?.focus(); }}/>;
 }
 

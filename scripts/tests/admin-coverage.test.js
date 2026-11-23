@@ -168,6 +168,16 @@ function click(element) {
   element.click();
 }
 
+function key(target, value) {
+  target.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      key: value,
+      bubbles: true,
+      cancelable: true,
+    }),
+  );
+}
+
 async function confirmDialog(label = "") {
   await vi.waitFor(() => expect(document.querySelector(".modal"), label).not.toBeNull());
   return document.querySelector(".modal");
@@ -179,6 +189,105 @@ beforeEach(() => {
 });
 
 describe("admin coverage edges", () => {
+  it("defaults to the overview without a tab query", async () => {
+    await mount("");
+
+    await vi.waitFor(() =>
+      expect(document.querySelector(".metric-card")).not.toBeNull(),
+    );
+  });
+
+  it("renders an empty trash and refreshes a selected trash set", async () => {
+    await mount("trash", {
+      overrides: { "GET /api/admin/trash": { transactions: [] } },
+    });
+    await vi.waitFor(() =>
+      expect(document.body.textContent).toContain("Trash is empty"),
+    );
+
+    await mount("trash");
+    await vi.waitFor(() =>
+      expect(document.querySelectorAll("[data-select-trash]")).toHaveLength(2),
+    );
+    click(document.querySelector('[data-select-trash="tx-one"]'));
+    await vi.waitFor(() =>
+      expect(document.querySelector("#restore-selected-trash")?.textContent).toContain(
+        "(1)",
+      ),
+    );
+    click(
+      [...document.querySelectorAll(".trash-card-actions button")].find(
+        button => button.textContent === "Refresh",
+      ),
+    );
+    await new Promise(resolve => setTimeout(resolve, 10));
+    await vi.waitFor(() =>
+      expect(document.querySelectorAll("[data-select-trash]")).toHaveLength(2),
+    );
+  });
+
+  it("cancels a purge and dismisses a confirmation with Escape", async () => {
+    await mount("activity");
+    await vi.waitFor(() =>
+      expect(document.querySelector("#audit-purge-form")).not.toBeNull(),
+    );
+    submit(document.querySelector("#audit-purge-form"));
+    click((await confirmDialog("purge cancel")).querySelector("button"));
+    await vi.waitFor(() => expect(document.querySelector(".modal")).toBeNull());
+
+    await mount("users");
+    await vi.waitFor(() =>
+      expect(document.querySelector("#user-form")).not.toBeNull(),
+    );
+    click(document.querySelector('[aria-label="Remove user bob"]'));
+    key(await confirmDialog("escape close"), "Escape");
+    await vi.waitFor(() => expect(document.querySelector(".modal")).toBeNull());
+  });
+
+  it("clears a user form error when the draft changes", async () => {
+    await mount("users", {
+      overrides: { "POST /api/admin/users": "offline" },
+    });
+    await vi.waitFor(() =>
+      expect(document.querySelector("#user-form")).not.toBeNull(),
+    );
+    document.querySelector("#username").value = "carol";
+    submit(document.querySelector("#user-form"));
+    await vi.waitFor(() =>
+      expect(document.querySelector("#user-form-error")?.textContent).toContain(
+        "could not be saved",
+      ),
+    );
+
+    const username = document.querySelector("#username");
+    username.value = "dana";
+    username.dispatchEvent(new Event("input", { bubbles: true }));
+    await vi.waitFor(() =>
+      expect(document.querySelector("#user-form-error")?.textContent).toBe(""),
+    );
+  });
+
+  it("clears a successful toast after its timer", async () => {
+    await mount("trash");
+    await vi.waitFor(() =>
+      expect(document.querySelectorAll("[data-select-trash]")).toHaveLength(2),
+    );
+    const timers = [];
+    const spy = vi.spyOn(window, "setTimeout").mockImplementation((callback, delay) => {
+      timers.push({ callback, delay });
+      return timers.length;
+    });
+    click(document.querySelector('[aria-label="Restore deleted items"]'));
+    await vi.waitFor(() =>
+      expect(document.querySelector(".toast")?.textContent).toContain("restored"),
+    );
+    const successTimer = timers.find(timer => timer.delay === 5200);
+    expect(successTimer).toBeDefined();
+    successTimer.callback();
+    spy.mockRestore();
+    await vi.waitFor(() => expect(document.querySelector(".toast")).toBeNull());
+  });
+
   it("explains every activity detail shape", async () => {
     await mount("activity");
     await vi.waitFor(() => expect(document.querySelectorAll(".activity-action")).toHaveLength(6));

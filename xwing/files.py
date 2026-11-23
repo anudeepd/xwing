@@ -1,7 +1,9 @@
 import codecs
+import errno
 import os
 import re
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
 
@@ -18,6 +20,50 @@ _IGNORED_SYSTEM_NAMES = {
     ".trashes",
     ".fseventsd",
 }
+
+
+@dataclass(frozen=True, slots=True)
+class FilesystemFailure:
+    status_code: int
+    detail: str
+
+
+_ERRNO_FAILURES: dict[int, tuple[int, str]] = {
+    errno.EACCES: (403, "Permission denied"),
+    errno.EPERM: (403, "Permission denied"),
+    errno.EROFS: (403, "The storage is read-only"),
+    errno.ENOENT: (404, "File or folder no longer exists"),
+    errno.ENOTDIR: (409, "A parent of that path is not a folder"),
+    errno.EISDIR: (409, "A folder already exists at that path"),
+    errno.EEXIST: (409, "A file or folder with that name already exists"),
+    errno.ENOTEMPTY: (409, "That folder is not empty"),
+    errno.EBUSY: (409, "That file or folder is in use"),
+    errno.ENAMETOOLONG: (400, "That name is too long"),
+    errno.ELOOP: (400, "That path contains a symlink loop"),
+    errno.EFBIG: (413, "File too large"),
+    errno.ENOSPC: (507, "Not enough space on the server"),
+    errno.EDQUOT: (507, "Not enough space on the server"),
+}
+
+
+def filesystem_failure(
+    exc: OSError, fallback: str = "The file operation failed"
+) -> FilesystemFailure:
+    """Translate an OS error into the status and copy an HTTP client should see."""
+    if isinstance(exc, PermissionError):
+        return FilesystemFailure(403, "Permission denied")
+    if isinstance(exc, FileNotFoundError):
+        return FilesystemFailure(404, "File or folder no longer exists")
+    if isinstance(exc, NotADirectoryError):
+        return FilesystemFailure(409, "A parent of that path is not a folder")
+    if isinstance(exc, IsADirectoryError):
+        return FilesystemFailure(409, "A folder already exists at that path")
+    if isinstance(exc, FileExistsError):
+        return FilesystemFailure(
+            409, "A file or folder with that name already exists"
+        )
+    status, detail = _ERRNO_FAILURES.get(exc.errno or -1, (500, fallback))
+    return FilesystemFailure(status, detail)
 
 
 def is_within_root(root: Path, path: Path) -> bool:

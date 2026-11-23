@@ -22,7 +22,7 @@ let updateListener;
 let searchOpen;
 let closeCount;
 
-function installCodeMirror({ languageThrows = false } = {}) {
+function installCodeMirror({ languageThrows = false, languageMissing = false } = {}) {
   view = null;
   updateListener = null;
   searchOpen = false;
@@ -59,7 +59,7 @@ function installCodeMirror({ languageThrows = false } = {}) {
     keymap: { of: make },
     indentWithTab: {},
     oneDark: {},
-    langs: new Proxy({}, {
+    langs: languageMissing ? {} : new Proxy({}, {
       get: (_target, key) => () => {
         if (languageThrows) throw new Error(`no ${String(key)} language`);
         return { language: key };
@@ -143,7 +143,7 @@ class SaveXHR {
   }
 }
 
-function saveFetch({ initStatus = 200, completeStatus = 200 } = {}) {
+function saveFetch({ initStatus = 200, completeStatus = 200, initDetail = "init failed" } = {}) {
   return vi.fn(async (url, init = {}) => {
     const path = String(url);
     if (path.includes("/init")) {
@@ -152,7 +152,7 @@ function saveFetch({ initStatus = 200, completeStatus = 200 } = {}) {
         status: initStatus,
         url: "http://xwing.test/_upload/init",
         json: async () => initStatus >= 300
-          ? { detail: "init failed" }
+          ? { detail: initDetail }
           : { upload_id: "save", chunk_size: 4, concurrency: 1, size: 10 },
       };
     }
@@ -216,6 +216,16 @@ describe("editor coverage edges", () => {
     click(document.querySelector(".button.primary"));
     await vi.waitFor(() => expect(document.querySelector('[role="status"]')?.textContent).toBe("Save failed (500)"));
 
+    await setDoc("forbidden");
+    fetchMock.mockImplementationOnce(async () => ({
+      ok: false,
+      status: 403,
+      url: "http://xwing.test/README.md",
+      json: async () => ({ detail: "Permission denied" }),
+    }));
+    click(document.querySelector(".button.primary"));
+    await vi.waitFor(() => expect(document.querySelector('[role="status"]')?.textContent).toBe("You don't have permission for that."));
+
     await setDoc("auth");
     fetchMock.mockImplementationOnce(async () => ({ ok: false, status: 401, url: "http://xwing.test/README.md" }));
     click(document.querySelector(".button.primary"));
@@ -242,13 +252,23 @@ describe("editor coverage edges", () => {
   });
 
   it("uses the server chunk limit and reports an auth failure from a chunked save", async () => {
-    const fetchMock = saveFetch({ initStatus: 403 });
+    const fetchMock = saveFetch({ initStatus: 403, initDetail: "Authentication required" });
     vi.stubGlobal("fetch", fetchMock);
     await mount({ maxChunkBytes: 4 });
     await setDoc("abcdefghij");
     click(document.querySelector(".button.primary"));
     await vi.waitFor(() => expect(document.querySelector('[role="status"]')?.textContent).toBe("Sign-in required"));
     expect(document.querySelector(".auth-overlay")).not.toBeNull();
+  });
+
+  it("reports a forbidden chunked save without treating it as sign-in", async () => {
+    const fetchMock = saveFetch({ initStatus: 403, initDetail: "Permission denied" });
+    vi.stubGlobal("fetch", fetchMock);
+    await mount({ maxChunkBytes: 4 });
+    await setDoc("abcdefghij");
+    click(document.querySelector(".button.primary"));
+    await vi.waitFor(() => expect(document.querySelector('[role="status"]')?.textContent).toBe("Permission denied"));
+    expect(document.querySelector(".auth-overlay")).toBeNull();
   });
 
   it("owns the search panel, unsaved navigation and logout confirmation", async () => {
@@ -491,5 +511,89 @@ describe("editor coverage edges", () => {
     click(document.querySelector(".modal .button.danger"));
     vi.advanceTimersByTime(200);
     expect(assign).toHaveBeenCalledWith("/");
+  });
+
+  it("handles updates that do not change the document", async () => {
+    await mount();
+    updateListener?.({ docChanged: false, state: { doc: { toString: () => "changed" } } });
+
+    expect(document.querySelector(".button.primary")?.disabled).toBe(true);
+  });
+
+  it("falls back when a save error has no detail", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: false,
+      status: 500,
+      url: "http://xwing.test/README.md",
+      json: async () => ({}),
+    })));
+    await mount();
+    await setDoc("changed");
+    click(document.querySelector(".button.primary"));
+
+    await vi.waitFor(() => expect(document.querySelector('[role="status"]')?.textContent).toBe("Save failed (500)"));
+  });
+
+  it("writes the document's original CRLF line endings", async () => {
+    let body;
+    vi.stubGlobal("fetch", vi.fn(async (_url, init = {}) => {
+      if (init.method === "PUT") body = init.body;
+      return { ok: true, status: 200, url: "http://xwing.test/README.md" };
+    }));
+    await mount({ content: "one\r\ntwo\r\n" });
+    await setDoc("left\nright");
+    click(document.querySelector(".button.primary"));
+    await vi.waitFor(() => expect(document.querySelector('[role="status"]')?.textContent).toBe("Saved"));
+
+    expect(body).toBe("left\r\nright");
+  });
+
+  it("uses an empty language list when the factory is absent", async () => {
+    await mount({ extension: "txt" }, { languageMissing: true });
+
+    expect(document.querySelector(".editor-app")).not.toBeNull();
+  });
+
+  it("ignores a second leave request while the first is in motion", async () => {
+    vi.useFakeTimers();
+    const assign = vi.fn();
+    vi.stubGlobal("location", {
+      href: "http://xwing.test/README.md",
+      pathname: "/README.md",
+      search: "",
+      hash: "",
+      assign,
+    });
+    await mount({}, { reduced: false });
+    const brand = document.querySelector('a[aria-label="X-wing EDITOR, home"]');
+    click(brand);
+    await vi.advanceTimersByTimeAsync(0);
+    click(brand);
+    vi.advanceTimersByTime(200);
+
+    expect(assign).toHaveBeenCalledTimes(1);
+  });
+
+  it("submits a clean logout and returns to the folder", async () => {
+    vi.useFakeTimers();
+    const assign = vi.fn();
+    vi.stubGlobal("location", {
+      href: "http://xwing.test/README.md",
+      pathname: "/README.md",
+      search: "",
+      hash: "",
+      assign,
+    });
+    await mount({}, { reduced: true });
+    const form = document.querySelector("#logout-form");
+    form.submit = vi.fn();
+    click(form.querySelector("button"));
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(form.submit).toHaveBeenCalled();
+
+    click(document.querySelector(".editor-back"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(assign).toHaveBeenCalledWith("/");
+    vi.useRealTimers();
   });
 });

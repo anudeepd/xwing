@@ -291,7 +291,13 @@ def _write_non_utf8(path: bytes) -> None:
         with open(path, "wb") as handle:
             handle.write(b"latin1")
     except OSError as exc:
-        if exc.errno in {errno.EILSEQ, errno.EINVAL, errno.ENOTSUP}:
+        if exc.errno in {
+            errno.EACCES,
+            errno.EPERM,
+            errno.EILSEQ,
+            errno.EINVAL,
+            errno.ENOTSUP,
+        }:
             pytest.skip(f"filesystem rejects a non-UTF-8 filename: {exc}")
         raise
 
@@ -890,6 +896,23 @@ class TestPermissionsAndAdmin:
 
 
 class TestMisc:
+    def test_put_without_content_length_streams_to_disk(self, settings, root):
+        status, _ = read_asgi(
+            create_app(settings),
+            "PUT",
+            "/chunked.txt",
+            messages=[
+                {
+                    "type": "http.request",
+                    "body": b"streamed",
+                    "more_body": False,
+                }
+            ],
+        )
+
+        assert status == 204
+        assert (root / "chunked.txt").read_bytes() == b"streamed"
+
     def test_delete_losing_a_race_is_404(self, client, root, monkeypatch):
         (root / "x.txt").write_text("x")
 
