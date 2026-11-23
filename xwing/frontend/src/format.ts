@@ -16,12 +16,6 @@ export function formatDate(value: string): string {
   return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "medium" }).format(new Date(value));
 }
 
-export function escapeHtml(value: unknown): string {
-  const node = document.createElement("span");
-  node.textContent = String(value ?? "");
-  return node.innerHTML;
-}
-
 export function prefersReducedMotion(): boolean {
   return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
