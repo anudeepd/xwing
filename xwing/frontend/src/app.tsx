@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { createPortal } from "react-dom";
 import { AnimatePresence, LazyMotion, MotionConfig, domMax } from "motion/react";
 import * as m from "motion/react-m";
-import { escapeHtml, formatBytes, formatDate, prefersReducedMotion } from "./format";
+import { formatBytes, formatDate, prefersReducedMotion } from "./format";
 import { AuthOverlay } from "./auth-overlay";
 import { Tooltip } from "./tooltip";
 import { Logo } from "./logo";
@@ -56,6 +56,7 @@ import { AUTH_OVERLAY_COPY, AUTH_REDIRECT_EVENT, beginAuthRedirect, consumeHando
 import { UploadManager } from "./upload-manager";
 import type { UploadSnapshot } from "./upload-manager";
 import { uploadItemLabel, uploadSummary, uploadSummaryKind } from "./upload-summary";
+import { renderStartupError } from "./startup-error";
 
 interface Toast {
   id: number;
@@ -1410,5 +1411,5 @@ try {
 } catch (error) {
   const root = document.getElementById("xwing-root") || document.body;
   dismissBootCard();
-  root.innerHTML = `<div class="boot-error h-full flex flex-col items-center justify-center gap-2 bg-xw-bg text-xw-muted font-sans [&_strong]:text-xw-text [&_button]:mt-2 [&_button]:px-3 [&_button]:py-2 [&_button]:border [&_button]:border-solid [&_button]:border-xw-line-hi [&_button]:rounded-md [&_button]:bg-xw-raised [&_button]:text-xw-text"><strong>X-wing couldn’t start</strong><span>${escapeHtml(errorMessage(error))}</span><button onclick="location.reload()">Reload</button></div>`;
+  renderStartupError(root, errorMessage(error), () => location.reload());
 }

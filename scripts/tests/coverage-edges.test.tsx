@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthOverlay } from "../../xwing/frontend/src/auth-overlay";
 import { trapFocus } from "../../xwing/frontend/src/focus-trap";
 import { useModalFocus } from "../../xwing/frontend/src/keyboard";
-import { escapeHtml, formatBytes, formatDate, prefersReducedMotion } from "../../xwing/frontend/src/format";
+import { formatBytes, formatDate, prefersReducedMotion } from "../../xwing/frontend/src/format";
 import { nearestSurvivor, selectionRange } from "../../xwing/frontend/src/selection";
 import {
   AUTH_ACTIVITY_EVENT,
@@ -70,11 +70,8 @@ describe("shared value formatting", () => {
     expect(formatBytes(1024 ** 5)).toBe("1024.0 TB");
   });
 
-  it("formats a date and escapes markup", () => {
+  it("formats a date", () => {
     expect(formatDate("2026-08-01T12:00:00Z")).toMatch(/2026/);
-    expect(escapeHtml("<b>&</b>")).toBe("&lt;b&gt;&amp;&lt;/b&gt;");
-    expect(escapeHtml(null)).toBe("");
-    expect(escapeHtml(undefined)).toBe("");
   });
 
   it("reads the reduced-motion preference from the media query", () => {
