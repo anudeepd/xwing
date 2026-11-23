@@ -263,9 +263,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add pyproject.toml uv.lock xwing/__init__.py scripts/package.json scripts/package-lock.json
-          git commit \
-            -m "chore(release): xwing $RELEASE_VERSION" \
-            -m "Co-authored-by: DeepSeek V4.1 Flash <deepseek-v4.1-flash@deepseek.ai>"
+          git commit -m "chore(release): xwing $RELEASE_VERSION"
           git push origin HEAD:refs/heads/main
           echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
