@@ -1,11 +1,12 @@
-"""Behavioural tests for the shared chunked upload engine.
+"""Behavioural tests for the durable upload engine."""
 
-The engine is vendored into torrus unchanged, so these tests pin the contract
-both applications depend on: byte-range accounting, resume after partial
-writes, atomic publish, TTL reclamation and per-session ownership.
-"""
+from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
+import uuid
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI, Request
@@ -46,10 +47,58 @@ class RecordingSink:
         self.aborted = True
 
 
-def build_app(**store_kwargs):
+def digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def init_upload(
+    client: TestClient,
+    name: str,
+    size: int,
+    *,
+    directory: str = "/",
+    upload_key: str | None = None,
+    headers: dict[str, str] | None = None,
+) -> dict:
+    return client.post(
+        "/_upload/init",
+        json={
+            "upload_key": upload_key or uuid.uuid4().hex,
+            "filename": name,
+            "size": size,
+            "dir": directory,
+            "fingerprint": {"name": name, "size": size, "last_modified": 1},
+        },
+        headers=headers,
+    ).json()
+
+
+def send_chunk(
+    client: TestClient,
+    upload_id: str,
+    offset: int,
+    body: bytes,
+    *,
+    headers: dict[str, str] | None = None,
+    sha: str | None = None,
+    length: int | None = None,
+):
+    return client.post(
+        f"/_upload/{upload_id}/chunk",
+        params={
+            "offset": offset,
+            "sha256": sha or digest(body),
+            "length": len(body) if length is None else length,
+        },
+        content=body,
+        headers={"Content-Type": "application/octet-stream", **(headers or {})},
+    )
+
+
+def build_app(state_dir: Path, **store_kwargs):
     """Wire the engine onto a tiny app whose acting user the test can swap."""
     sink = RecordingSink()
-    store = UploadStore(**store_kwargs)
+    store = UploadStore(state_dir=state_dir, **store_kwargs)
     current = {"user": "alice"}
 
     async def authorize(request: Request, action: str) -> AuthContext:
@@ -64,6 +113,8 @@ def build_app(**store_kwargs):
             directory="/",
             filename=str(body.get("filename", "file.bin")),
             size=int(body.get("size", 0)),
+            upload_key=str(body.get("upload_key", "")),
+            fingerprint=dict(body.get("fingerprint") or {}),
         )
 
     async def open_sink(target: UploadTarget) -> UploadSink:
@@ -82,8 +133,8 @@ def build_app(**store_kwargs):
 
 
 @pytest.fixture
-def harness():
-    app, store, sink, current = build_app()
+def harness(tmp_path):
+    app, store, sink, current = build_app(tmp_path / "state")
     with TestClient(app) as client:
         yield client, store, sink, current
 
@@ -121,99 +172,170 @@ class TestInit:
     def test_rejects_negative_size(self, harness):
         client, _, _, _ = harness
         response = client.post(
-            "/_upload/init", json={"filename": "a.bin", "size": -1, "dir": "/"}
+            "/_upload/init",
+            json={
+                "upload_key": "negative-key",
+                "filename": "a.bin",
+                "size": -1,
+                "dir": "/",
+            },
         )
         assert response.status_code == 400
 
-    def test_rejects_size_over_limit(self):
-        app, _, _, _ = build_app(max_session_bytes=10)
+    def test_rejects_size_over_limit(self, tmp_path):
+        app, _, _, _ = build_app(tmp_path / "state", max_session_bytes=10)
         with TestClient(app) as client:
             response = client.post(
-                "/_upload/init", json={"filename": "a.bin", "size": 11, "dir": "/"}
+                "/_upload/init",
+                json={
+                    "upload_key": "too-big-key",
+                    "filename": "a.bin",
+                    "size": 11,
+                    "dir": "/",
+                },
             )
         assert response.status_code == 413
 
     def test_policy_can_decline_an_upload(self, harness):
         client, _, _, _ = harness
         response = client.post(
-            "/_upload/init", json={"filename": "skip.me", "size": 1, "dir": "/"}
+            "/_upload/init",
+            json={
+                "upload_key": "skip-key-1234",
+                "filename": "skip.me",
+                "size": 1,
+                "dir": "/",
+            },
         )
         assert response.json() == {"ignored": True}
+
+    def test_init_is_idempotent_for_the_same_key_and_file(self, harness):
+        client, _, _, _ = harness
+        key = "stable-upload-key"
+        first = init_upload(client, "a.bin", 8, upload_key=key)
+        second = init_upload(client, "a.bin", 8, upload_key=key)
+        assert first["upload_id"] == second["upload_id"]
+        assert first["chunk_policy"]["initial_bytes"] == 4 * 1024 * 1024
+        assert first["chunk_policy"]["max_concurrency"] == 2
+
+    def test_a_different_key_creates_a_different_session(self, harness):
+        client, _, _, _ = harness
+        first = init_upload(client, "a.bin", 8, upload_key="key-one-1234")
+        second = init_upload(client, "a.bin", 8, upload_key="key-two-1234")
+        assert first["upload_id"] != second["upload_id"]
 
 
 class TestUploadLifecycle:
     def test_out_of_order_writes_assemble_the_file(self, harness):
         client, _, sink, _ = harness
-        upload_id = client.post(
-            "/_upload/init", json={"filename": "a.bin", "size": 8, "dir": "/"}
-        ).json()["upload_id"]
+        upload_id = init_upload(client, "a.bin", 8)["upload_id"]
 
-        assert client.put(f"/_upload/{upload_id}?offset=4", content=b"efgh").status_code == 200
-        assert client.put(f"/_upload/{upload_id}?offset=0", content=b"abcd").status_code == 200
+        assert send_chunk(client, upload_id, 4, b"efgh").status_code == 200
+        assert send_chunk(client, upload_id, 0, b"abcd").status_code == 200
         assert bytes(sink.data) == b"abcdefgh"
 
         result = client.post(f"/_upload/{upload_id}/complete")
         assert result.status_code == 200
         assert sink.finalized
-        assert result.json() == {"path": "a.bin", "size": 8}
+        assert result.json() == {"path": "a.bin", "size": 8, "verified": True}
 
     def test_complete_rejects_a_hole_and_names_it(self, harness):
         client, _, sink, _ = harness
-        upload_id = client.post(
-            "/_upload/init", json={"filename": "a.bin", "size": 8, "dir": "/"}
-        ).json()["upload_id"]
-        client.put(f"/_upload/{upload_id}?offset=0", content=b"abcd")
+        upload_id = init_upload(client, "a.bin", 8)["upload_id"]
+        send_chunk(client, upload_id, 0, b"abcd")
 
         response = client.post(f"/_upload/{upload_id}/complete")
         assert response.status_code == 400
-        assert "(4, 8)" in response.json()["detail"]
+        detail = response.json()["detail"]
+        assert detail["code"] == "UPLOAD_INCOMPLETE"
+        assert "(4, 8)" in detail["message"]
         assert not sink.finalized
 
-        # The gap is the only thing left to send; the first four bytes are not resent.
-        client.put(f"/_upload/{upload_id}?offset=4", content=b"efgh")
+        send_chunk(client, upload_id, 4, b"efgh")
         assert client.post(f"/_upload/{upload_id}/complete").status_code == 200
         assert bytes(sink.data) == b"abcdefgh"
 
     def test_retrying_a_range_is_idempotent(self, harness):
         client, _, sink, _ = harness
-        upload_id = client.post(
-            "/_upload/init", json={"filename": "a.bin", "size": 4, "dir": "/"}
-        ).json()["upload_id"]
-        body = client.put(f"/_upload/{upload_id}?offset=0", content=b"abcd").json()
+        upload_id = init_upload(client, "a.bin", 4)["upload_id"]
+        body = send_chunk(client, upload_id, 0, b"abcd").json()
         assert body["received"] == 4
         assert body["ranges"] == [[0, 4]]
 
-        again = client.put(f"/_upload/{upload_id}?offset=0", content=b"abcd").json()
+        again = send_chunk(client, upload_id, 0, b"abcd").json()
         assert again["ranges"] == [[0, 4]]
         assert client.post(f"/_upload/{upload_id}/complete").status_code == 200
         assert bytes(sink.data) == b"abcd"
 
+    def test_complete_and_init_are_idempotent_after_a_lost_response(self, harness):
+        client, _, _, _ = harness
+        key = "lost-complete-key"
+        upload_id = init_upload(client, "a.bin", 4, upload_key=key)["upload_id"]
+        send_chunk(client, upload_id, 0, b"abcd")
+        assert client.post(f"/_upload/{upload_id}/complete").status_code == 200
+
+        again = client.post(f"/_upload/{upload_id}/complete")
+        assert again.status_code == 200
+        assert again.json()["path"] == "a.bin"
+
+        resumed = init_upload(client, "a.bin", 4, upload_key=key)
+        assert resumed["upload_id"] == upload_id
+        assert resumed["state"] == "complete"
+        assert resumed["path"] == "a.bin"
+
     def test_status_reports_resume_ranges(self, harness):
         client, _, _, _ = harness
-        upload_id = client.post(
-            "/_upload/init", json={"filename": "a.bin", "size": 10, "dir": "/"}
-        ).json()["upload_id"]
-        client.put(f"/_upload/{upload_id}?offset=2", content=b"xy")
+        upload_id = init_upload(client, "a.bin", 10)["upload_id"]
+        send_chunk(client, upload_id, 2, b"xy")
 
         status = client.get(f"/_upload/{upload_id}").json()
         assert status["ranges"] == [[2, 4]]
         assert status["received"] == 2
-        assert status["chunk_size"] > 0
+        assert status["chunk_policy"]["max_bytes"] > 0
 
     def test_rejects_offsets_beyond_the_declared_size(self, harness):
         client, _, _, _ = harness
-        upload_id = client.post(
-            "/_upload/init", json={"filename": "a.bin", "size": 4, "dir": "/"}
-        ).json()["upload_id"]
-        assert client.put(f"/_upload/{upload_id}?offset=5", content=b"x").status_code == 400
-        assert client.put(f"/_upload/{upload_id}?offset=2", content=b"xyz").status_code == 413
+        upload_id = init_upload(client, "a.bin", 4)["upload_id"]
+        assert send_chunk(client, upload_id, 5, b"x").status_code == 400
+        assert send_chunk(client, upload_id, 2, b"xyz").status_code == 413
+
+    def test_a_digest_mismatch_is_not_credited(self, harness):
+        client, _, _, _ = harness
+        upload_id = init_upload(client, "a.bin", 4)["upload_id"]
+        response = send_chunk(client, upload_id, 0, b"abcd", sha="0" * 64)
+        assert response.status_code == 400
+        assert response.json()["detail"]["code"] == "DIGEST_MISMATCH"
+        assert client.get(f"/_upload/{upload_id}").json()["ranges"] == []
+
+    def test_a_declared_length_mismatch_is_not_credited(self, harness):
+        client, _, _, _ = harness
+        upload_id = init_upload(client, "a.bin", 4)["upload_id"]
+        response = send_chunk(client, upload_id, 0, b"abcd", length=3)
+        assert response.status_code == 400
+        assert client.get(f"/_upload/{upload_id}").json()["ranges"] == []
+
+    def test_multipart_chunk_is_accepted(self, harness):
+        client, _, sink, _ = harness
+        upload_id = init_upload(client, "m.bin", 8)["upload_id"]
+        body = b"abcdefgh"
+        response = client.post(
+            f"/_upload/{upload_id}/chunk",
+            data={
+                "offset": "0",
+                "length": "8",
+                "sha256": digest(body),
+                "request_id": "multipart-test",
+            },
+            files={"file": ("m.bin", body, "application/octet-stream")},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["transport"] == "multipart_post"
+        assert bytes(sink.data) == body
 
     def test_cancel_aborts_the_sink_and_forgets_the_session(self, harness):
-        client, store, sink, _ = harness
-        upload_id = client.post(
-            "/_upload/init", json={"filename": "a.bin", "size": 4, "dir": "/"}
-        ).json()["upload_id"]
-        client.put(f"/_upload/{upload_id}?offset=0", content=b"ab")
+        client, _, sink, _ = harness
+        upload_id = init_upload(client, "a.bin", 4)["upload_id"]
+        send_chunk(client, upload_id, 0, b"ab")
 
         assert client.delete(f"/_upload/{upload_id}").json() == {"ok": True}
         assert sink.aborted
@@ -226,77 +348,94 @@ class TestUploadLifecycle:
 
     def test_foreign_owner_cannot_touch_a_session(self, harness):
         client, _, _, current = harness
-        upload_id = client.post(
-            "/_upload/init", json={"filename": "a.bin", "size": 4, "dir": "/"}
-        ).json()["upload_id"]
+        upload_id = init_upload(client, "a.bin", 4)["upload_id"]
 
         current["user"] = "mallory"
         assert client.get(f"/_upload/{upload_id}").status_code == 403
-        assert client.put(f"/_upload/{upload_id}?offset=0", content=b"abcd").status_code == 403
+        assert send_chunk(client, upload_id, 0, b"abcd").status_code == 403
         assert client.post(f"/_upload/{upload_id}/complete").status_code == 403
 
     @pytest.mark.asyncio
     async def test_sweep_aborts_and_forgets_expired_sessions(self, harness):
         client, store, sink, _ = harness
-        upload_id = client.post(
-            "/_upload/init", json={"filename": "a.bin", "size": 4, "dir": "/"}
-        ).json()["upload_id"]
-        client.put(f"/_upload/{upload_id}?offset=0", content=b"ab")
+        upload_id = init_upload(client, "a.bin", 4)["upload_id"]
+        send_chunk(client, upload_id, 0, b"ab")
 
         store.ttl_seconds = 0
         assert await store.sweep() == 1
         assert sink.aborted
         assert store.get(upload_id) is None
 
-    def test_rejects_more_sessions_than_a_user_may_hold(self):
-        app, _, _, _ = build_app(max_sessions_per_user=1)
+    def test_rejects_more_sessions_than_a_user_may_hold(self, tmp_path):
+        app, _, _, _ = build_app(tmp_path / "state", max_sessions_per_user=1)
         with TestClient(app) as client:
-            assert client.post(
-                "/_upload/init", json={"filename": "a.bin", "size": 1, "dir": "/"}
-            ).status_code == 200
-            assert client.post(
-                "/_upload/init", json={"filename": "b.bin", "size": 1, "dir": "/"}
-            ).status_code == 429
+            assert init_upload(client, "a.bin", 1)["upload_id"]
+            response = client.post(
+                "/_upload/init",
+                json={
+                    "upload_key": "second-key",
+                    "filename": "b.bin",
+                    "size": 1,
+                    "dir": "/",
+                },
+            )
+            assert response.status_code == 429
+
+    def test_completed_tombstones_do_not_count_against_the_session_cap(self, tmp_path):
+        app, _, _, _ = build_app(tmp_path / "state", max_sessions_per_user=1)
+        with TestClient(app) as client:
+            first = init_upload(client, "done.bin", 0)["upload_id"]
+            assert client.post(f"/_upload/{first}/complete").status_code == 200
+            response = client.post(
+                "/_upload/init",
+                json={
+                    "upload_key": "after-tombstone",
+                    "filename": "next.bin",
+                    "size": 0,
+                    "dir": "/",
+                },
+            )
+            assert response.status_code == 200
+            assert response.json()["state"] == "open"
 
 
 class TestSinkErrors:
     def test_a_sink_error_keeps_the_application_error_code(self, harness):
         client, _, sink, _ = harness
-        upload_id = client.post(
-            "/_upload/init", json={"filename": "a.bin", "size": 4, "dir": "/"}
-        ).json()["upload_id"]
+        upload_id = init_upload(client, "a.bin", 4)["upload_id"]
         sink.failure = UploadSinkError(
             "SFTP tab is not available for this session.",
             code="PERMISSION_DENIED",
             status=403,
         )
 
-        response = client.put(f"/_upload/{upload_id}?offset=0", content=b"abcd")
+        response = send_chunk(client, upload_id, 0, b"abcd")
         assert response.status_code == 403
         assert response.json() == {
             "ok": False,
             "code": "PERMISSION_DENIED",
             "message": "SFTP tab is not available for this session.",
         }
-        # Nothing was committed, so the client can retry the same range.
         assert client.get(f"/_upload/{upload_id}").json()["ranges"] == []
 
     def test_an_unexpected_sink_failure_is_a_retryable_502(self, harness):
         client, _, sink, _ = harness
-        upload_id = client.post(
-            "/_upload/init", json={"filename": "a.bin", "size": 4, "dir": "/"}
-        ).json()["upload_id"]
+        upload_id = init_upload(client, "a.bin", 4)["upload_id"]
         sink.failure = OSError("socket closed")
 
-        response = client.put(f"/_upload/{upload_id}?offset=0", content=b"abcd")
+        response = send_chunk(client, upload_id, 0, b"abcd")
         assert response.status_code == 502
         assert client.get(f"/_upload/{upload_id}").json()["ranges"] == []
 
 
 class TestSessionTable:
     @pytest.mark.asyncio
-    async def test_oldest_session_is_evicted_and_aborted_at_capacity(self):
-        store = UploadStore(max_sessions=1, max_sessions_per_user=0)
+    async def test_oldest_session_is_evicted_and_aborted_at_capacity(self, tmp_path):
+        store = UploadStore(
+            state_dir=tmp_path / "state",
+            max_sessions=1,
+            max_sessions_per_user=0,
+        )
         first = RecordingSink()
 
         def target(name: str) -> UploadTarget:
@@ -306,6 +445,7 @@ class TestSessionTable:
                 directory="/",
                 filename=name,
                 size=1,
+                upload_key=uuid.uuid4().hex,
             )
 
         one = await store.register(target("a.bin"), user="alice")
@@ -318,8 +458,8 @@ class TestSessionTable:
         assert first.aborted
 
     @pytest.mark.asyncio
-    async def test_close_aborts_every_sink(self):
-        store = UploadStore()
+    async def test_close_aborts_every_sink(self, tmp_path):
+        store = UploadStore(state_dir=tmp_path / "state")
         sink = RecordingSink()
         session = await store.register(
             UploadTarget(
@@ -328,9 +468,40 @@ class TestSessionTable:
                 directory="/",
                 filename="a.bin",
                 size=1,
+                upload_key=uuid.uuid4().hex,
             ),
             user=None,
         )
         session.sink = sink
         await store.close()
         assert sink.aborted
+
+    @pytest.mark.asyncio
+    async def test_manifest_survives_a_store_restart(self, tmp_path):
+        state_dir = tmp_path / "state"
+        staged = tmp_path / "staged.bin"
+        store = UploadStore(state_dir=state_dir)
+        target = UploadTarget(
+            session_id=store.new_session_id(),
+            user="alice",
+            directory=str(tmp_path),
+            filename="a.bin",
+            size=4,
+            staged_path=staged,
+            upload_key="persistent-key",
+            fingerprint={"name": "a.bin", "size": 4},
+        )
+        session = await store.register(target, user="alice")
+        staged.write_bytes(b"abcd")
+        session.ranges.add(0, 4)
+        await store.persist(session)
+
+        reloaded = UploadStore(state_dir=state_dir)
+        restored = reloaded.get(session.session_id)
+        assert restored is not None
+        assert restored.ranges.to_json() == [[0, 4]]
+        assert restored.target.filename == "a.bin"
+        assert restored.staged_path == staged
+        assert json.loads((state_dir / f"{session.session_id}.json").read_text())[
+            "version"
+        ] == 2

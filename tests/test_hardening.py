@@ -270,6 +270,13 @@ class TestInternalPathsHidden:
         assert r.status_code == 404
         assert not (root / ".xwing-trash" / "x.txt").exists()
 
+    def test_upload_into_upload_state_dir_is_404(self, internal_client):
+        r = internal_client.post(
+            "/_upload/init",
+            json={"filename": "x.txt", "size": 1, "dir": "/.xwing-uploads/"},
+        )
+        assert r.status_code == 404
+
     def test_upload_over_users_config_is_404(self, internal_client, root):
         before = (root / "users.yaml").read_text()
         r = internal_client.post(

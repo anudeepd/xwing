@@ -1,9 +1,11 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const webServerOutput = process.env.XWING_E2E_QUIET === "1" ? "ignore" : "pipe";
+
 export default defineConfig({
   testDir: "./e2e",
   outputDir: "./test-results",
-  timeout: 20_000,
+  timeout: 30_000,
   expect: { timeout: 5_000, toHaveScreenshot: { animations: "disabled", caret: "hide", maxDiffPixelRatio: 0.01 } },
   fullyParallel: true,
   forbidOnly: true,
@@ -18,6 +20,8 @@ export default defineConfig({
       url: "http://127.0.0.1:8990/",
       reuseExistingServer: false,
       timeout: 20_000,
+      stdout: webServerOutput,
+      stderr: webServerOutput,
     },
     {
       // Read-only permissions and an oversized file, so the read-only and
@@ -27,6 +31,8 @@ export default defineConfig({
       url: "http://127.0.0.1:8991/",
       reuseExistingServer: false,
       timeout: 60_000,
+      stdout: webServerOutput,
+      stderr: webServerOutput,
     },
     {
       // The admin console. It only answers behind LDAPGate, so this one runs with
@@ -37,6 +43,8 @@ export default defineConfig({
       url: "http://127.0.0.1:8993/",
       reuseExistingServer: false,
       timeout: 60_000,
+      stdout: webServerOutput,
+      stderr: webServerOutput,
     },
     {
       // A writable root of its own for the rename tests. They create and remove
@@ -47,10 +55,41 @@ export default defineConfig({
       url: "http://127.0.0.1:8992/",
       reuseExistingServer: false,
       timeout: 60_000,
+      stdout: webServerOutput,
+      stderr: webServerOutput,
+    },
+    {
+      command:
+        "node e2e/prepare-upload-root.mjs && uv run xwing serve --root .e2e-upload --port 8994 --no-open --users-config e2e/users-full.yaml",
+      url: "http://127.0.0.1:8994/",
+      reuseExistingServer: false,
+      timeout: 60_000,
+      stdout: webServerOutput,
+      stderr: webServerOutput,
+    },
+    {
+      command: "node upload-lab/fault-proxy.mjs",
+      url: "http://127.0.0.1:8995/__events",
+      reuseExistingServer: false,
+      timeout: 20_000,
+      env: { FAULT_PORT: "8995", FAULT_UPSTREAM_PORT: "8994" },
+      stdout: webServerOutput,
+      stderr: webServerOutput,
+    },
+    {
+      command: "node upload-lab/fault-proxy.mjs",
+      url: "http://127.0.0.1:8996/__events",
+      reuseExistingServer: false,
+      timeout: 20_000,
+      env: { FAULT_PORT: "8996", FAULT_UPSTREAM_PORT: "8994" },
+      stdout: webServerOutput,
+      stderr: webServerOutput,
     },
   ],
   projects: [
-    { name: "chromium", use: { ...devices["Desktop Chrome"] } },
-    { name: "firefox", use: { ...devices["Desktop Firefox"] } },
+    { name: "chromium", use: { ...devices["Desktop Chrome"] }, testIgnore: /upload-fault\.spec\.ts/ },
+    { name: "firefox", use: { ...devices["Desktop Firefox"] }, testIgnore: /upload-fault\.spec\.ts/ },
+    { name: "chromium-upload", use: { ...devices["Desktop Chrome"] }, testMatch: /upload-fault\.spec\.ts/ },
+    { name: "webkit-upload", use: { ...devices["Desktop Safari"] }, testMatch: /upload-fault\.spec\.ts/ },
   ],
 });

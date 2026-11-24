@@ -53,13 +53,22 @@ async function gotoWithBootstrap(page: Page, patch: BootstrapPatch): Promise<voi
   await page.goto("/");
 }
 
+async function chooseParallel(page: Page, value: number): Promise<void> {
+  await page.getByRole("button", { name: /Parallel uploads:/ }).click();
+  const menu = page.getByRole("group", { name: "Parallel uploads" });
+  await menu.getByRole("radio", { name: String(value) }).click();
+  await expect(
+    page.getByRole("button", { name: `Parallel uploads: ${value}` }),
+  ).toBeVisible();
+}
+
 test("daily browser workflow is keyboard-accessible", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("img", { name: "X-wing logo" })).toBeVisible();
   await expect(page.getByText("X-wing", { exact: true })).toBeVisible();
   await expect(page.getByLabel("Breadcrumb").getByText("workspace", { exact: true })).toBeVisible();
 
-  await page.getByRole("button", { name: "Parallel uploads: 4" }).click();
+  await page.getByRole("button", { name: "Parallel uploads: 2" }).click();
   const menu = page.getByRole("group", { name: "Parallel uploads" });
   await expect(menu).toBeVisible();
   await menu.getByRole("radio", { name: "8" }).click();
@@ -646,11 +655,15 @@ test("approved visual states", async ({ page, browserName }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   // The route stays installed, so the mobile reload gets the same listing.
   await gotoWithBootstrap(page, { files });
+  // These baselines predate the safer default of 2. Set 4 explicitly so the
+  // screenshot still protects layout, not the value of a product default.
+  await chooseParallel(page, 4);
   await expect(page).toHaveScreenshot("browser-desktop.png", { fullPage: true });
   await page.getByRole("button", { name: "Parallel uploads: 4" }).click();
   await expect(page).toHaveScreenshot("parallel-menu-desktop.png", { fullPage: true });
   await page.setViewportSize({ width: 375, height: 800 });
   await page.goto("/");
+  await chooseParallel(page, 4);
   await expect(page).toHaveScreenshot("browser-mobile.png", { fullPage: true });
 });
 
@@ -1144,7 +1157,7 @@ test("editor lines sit a whole number of pixels apart", async ({ page }) => {
 test("the search panel wears the spacing the editor stylesheet gives it", async ({ page }) => {
   await page.goto("/README.md?edit");
   await page.locator(".cm-content").click();
-  await page.keyboard.press("Control+f");
+  await page.keyboard.press("ControlOrMeta+f");
   const panel = page.locator(".cm-panel.cm-search");
   await expect(panel).toBeVisible();
   await expect(panel).toHaveCSS("padding", "8px 32px 8px 8px");

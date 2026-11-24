@@ -47,6 +47,7 @@ from .upload import (
     LocalFileSink,
     build_upload_store,
     cleanup_stale_sessions,
+    create_upload_diagnostics_router,
     create_upload_router,
 )
 from .upload_engine import staging_name, stream_to_sink
@@ -205,7 +206,7 @@ class FilePayload(BaseModel):
 
 class UploadPayload(BaseModel):
     chunkSize: int
-    parallelDefault: int = 4
+    parallelDefault: int = 2
 
 
 class XwingBootstrapV1(BaseModel):
@@ -281,6 +282,8 @@ def create_app_reload() -> FastAPI:
         )
     if os.environ.get("XWING_MAX_CHUNK_MB"):
         kwargs["max_chunk_bytes"] = int(os.environ["XWING_MAX_CHUNK_MB"]) * 1024**2
+    if os.environ.get("XWING_UPLOAD_CONCURRENCY"):
+        kwargs["upload_concurrency"] = int(os.environ["XWING_UPLOAD_CONCURRENCY"])
     if os.environ.get("XWING_MAX_CHUNKS"):
         kwargs["max_chunks"] = int(os.environ["XWING_MAX_CHUNKS"])
     if os.environ.get("XWING_SESSION_TTL_MINUTES"):
@@ -562,7 +565,12 @@ def create_app(settings: Settings) -> FastAPI:
             # which sizes its windows from it, so cap the setting as well as the
             # session table's advertised chunk size.
             settings.max_chunk_bytes = int(body_limit)
-            upload_store.chunk_size = int(body_limit)
+            upload_store.max_request_bytes = max(
+                64 * 1024, int(body_limit)
+            )
+            upload_store.initial_chunk_size = min(
+                upload_store.initial_chunk_size, upload_store.max_request_bytes
+            )
 
     # Content-hashed asset names come from the frontend build manifest, so the
     # templates never hard-code a version.
@@ -609,6 +617,7 @@ def create_app(settings: Settings) -> FastAPI:
             request, HTTPException(status_code=500, detail="Internal Server Error")
         )
 
+    app.include_router(create_upload_diagnostics_router(settings))
     app.include_router(create_upload_router(settings, upload_store))
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 

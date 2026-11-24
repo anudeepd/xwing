@@ -37,3 +37,6 @@ DESIGN.md
 scripts/.e2e-limited/
 scripts/.e2e-rename/
 scripts/e2e/fixtures/.xwing-trash/
+scripts/e2e/fixtures/.xwing-uploads/
+scripts/.e2e-upload/
+scripts/e2e/xwing.spec.ts-snapshots/*-darwin.png

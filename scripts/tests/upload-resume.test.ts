@@ -1,0 +1,127 @@
+import { afterEach, describe, expect, it } from "vitest";
+
+import {
+  clearResumeSession,
+  loadResumeSession,
+  resumeRecordKey,
+  saveResumeSession,
+} from "../../xwing/frontend/src/upload-resume";
+
+function file(name = "a.bin", size = 8, lastModified = 123): File {
+  return new File([new Uint8Array(size)], name, { lastModified });
+}
+
+class MemoryStorage implements Storage {
+  private values = new Map<string, string>();
+  get length(): number {
+    return this.values.size;
+  }
+  clear(): void {
+    this.values.clear();
+  }
+  getItem(key: string): string | null {
+    return this.values.get(key) ?? null;
+  }
+  key(index: number): string | null {
+    return [...this.values.keys()][index] ?? null;
+  }
+  removeItem(key: string): void {
+    this.values.delete(key);
+  }
+  setItem(key: string, value: string): void {
+    this.values.set(key, value);
+  }
+}
+
+let storage: MemoryStorage;
+
+afterEach(() => {
+  storage.clear();
+});
+
+describe("upload resume storage", () => {
+  it("round-trips a session and clears it", () => {
+    storage = new MemoryStorage();
+    const subject = file();
+    saveResumeSession(subject, "/docs", {
+      uploadKey: "key-123",
+      uploadId: "upload-123",
+      ranges: [[0, 4]],
+      chunkSize: 4,
+      concurrency: 1,
+      size: 8,
+      transport: "multipart_post",
+    }, storage);
+    expect(loadResumeSession(subject, "/docs", storage)).toMatchObject({
+      uploadKey: "key-123",
+      uploadId: "upload-123",
+      ranges: [[0, 4]],
+      transport: "multipart_post",
+    });
+    clearResumeSession(subject, "/docs", storage);
+    expect(loadResumeSession(subject, "/docs", storage)).toBeNull();
+  });
+
+  it("ignores an expired record and removes it", () => {
+    storage = new MemoryStorage();
+    const subject = file();
+    storage.setItem(
+      resumeRecordKey(subject, "/"),
+      JSON.stringify({
+        uploadKey: "old",
+        uploadId: "old",
+        ranges: [],
+        chunkSize: 4,
+        concurrency: 1,
+        size: 8,
+        savedAt: Date.now() - 8 * 24 * 60 * 60 * 1000,
+      }),
+    );
+    expect(loadResumeSession(subject, "/", storage)).toBeNull();
+    expect(storage.getItem(resumeRecordKey(subject, "/"))).toBeNull();
+  });
+
+  it("keeps different destinations separate", () => {
+    storage = new MemoryStorage();
+    const subject = file();
+    saveResumeSession(subject, "/a", {
+      uploadKey: "a",
+      uploadId: "a",
+      ranges: [],
+      chunkSize: 4,
+      concurrency: 1,
+      size: 8,
+    }, storage);
+    saveResumeSession(subject, "/b", {
+      uploadKey: "b",
+      uploadId: "b",
+      ranges: [],
+      chunkSize: 4,
+      concurrency: 1,
+      size: 8,
+    }, storage);
+    expect(loadResumeSession(subject, "/a", storage)?.uploadKey).toBe("a");
+    expect(loadResumeSession(subject, "/b", storage)?.uploadKey).toBe("b");
+  });
+
+  it("does not break when storage is unavailable", () => {
+    storage = new MemoryStorage();
+    const subject = file();
+    expect(() =>
+      saveResumeSession(
+        subject,
+        "/",
+        {
+          uploadKey: "a",
+          uploadId: "a",
+          ranges: [],
+          chunkSize: 4,
+          concurrency: 1,
+          size: 8,
+        },
+        null,
+      ),
+    ).not.toThrow();
+    expect(loadResumeSession(subject, "/", null)).toBeNull();
+  });
+});

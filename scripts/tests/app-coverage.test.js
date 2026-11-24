@@ -935,7 +935,7 @@ describe("file browser coverage edges", () => {
   });
 
   it("shows a failed upload in the dock and retries it", async () => {
-    await mount({ overrides: { "POST /_upload/init": { status: 500, body: { detail: "no" } } } });
+    await mount({ overrides: { "POST /_upload/init": { status: 403, body: { detail: "no" } } } });
     const input = document.querySelector('input[type="file"]:not([webkitdirectory])');
     Object.defineProperty(input, "files", { configurable: true, value: [new File(["abc"], "bad.txt")] });
     input.dispatchEvent(new Event("change", { bubbles: true }));
@@ -1189,9 +1189,9 @@ describe("file browser coverage edges", () => {
     await waitFor(() => expect(document.querySelector("#parallel-menu")).toBeNull());
     click(trigger);
     await waitFor(() => expect(document.querySelector("#parallel-menu")).not.toBeNull());
-    click(document.querySelector('#parallel-menu input[value="2"]'));
+    click(document.querySelector('#parallel-menu input[value="4"]'));
     await waitFor(() => expect(document.querySelector("#parallel-menu")).toBeNull());
-    expect(document.querySelector(".parallel-trigger")?.getAttribute("aria-label")).toContain("2");
+    expect(document.querySelector(".parallel-trigger")?.getAttribute("aria-label")).toContain("4");
   });
 
   it("places a menu without a column header or a scroll container", async () => {

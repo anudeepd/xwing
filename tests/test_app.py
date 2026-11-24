@@ -258,32 +258,19 @@ class TestEditorTruncation:
         assert editor_bootstrap(r)["maxChunkBytes"] == DEFAULT_MAX_CHUNK_SIZE
 
     def test_large_save_uses_resumable_session_api(self, client, root):
-        # Mirror of the frontend's chunked save path: init → ranged PUTs →
+        # Mirror of the frontend's chunked save path: init -> verified chunks ->
         # complete must atomically replace the edited file, and a stalled
         # request must resume from the offset the server already committed.
+        from test_upload import init_upload, send_chunk
+
         (root / "doc.txt").write_text("old")
         new_content = b"n" * (2 * 1024 * 1024 + 7)
-        init = client.post(
-            "/_upload/init",
-            json={"filename": "doc.txt", "size": len(new_content), "dir": "/"},
-        )
-        assert init.status_code == 200
-        upload_id = init.json()["upload_id"]
+        upload_id = init_upload(client, "doc.txt", len(new_content))["upload_id"]
 
         half = len(new_content) // 2
-        assert (
-            client.put(
-                f"/_upload/{upload_id}?offset=0", content=new_content[:half]
-            ).status_code
-            == 200
-        )
+        assert send_chunk(client, upload_id, 0, new_content[:half]).status_code == 200
         assert client.get(f"/_upload/{upload_id}").json()["ranges"] == [[0, half]]
-        assert (
-            client.put(
-                f"/_upload/{upload_id}?offset={half}", content=new_content[half:]
-            ).status_code
-            == 200
-        )
+        assert send_chunk(client, upload_id, half, new_content[half:]).status_code == 200
         assert client.post(f"/_upload/{upload_id}/complete").status_code == 200
         assert (root / "doc.txt").read_bytes() == new_content
 

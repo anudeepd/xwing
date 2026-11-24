@@ -1,26 +1,17 @@
 /**
- * Chunked upload client shared by torrus and xwing.
+ * Durable, checksum-verified upload client.
  *
- * This file is vendored verbatim into both repositories; keep the two copies
- * byte-identical (the parity test pins the digest). It has no imports and no
- * framework dependency, so it drops into a Vite/React build and into plain
- * ESM alike.
+ * The browser is the only component that can discover which request shape a
+ * corporate proxy will pass. It starts with a real canary window, rotates
+ * between typed binary POST, multipart POST and PUT when a request is dropped,
+ * and locks in the transport that worked.
  *
- * Why it is shaped this way:
- *
- * - Chunk size never scales with file size. A fixed window means a multi-GB
- *   file behaves exactly like a small one; the old "fileSize / 128, capped at
- *   64MB" rule gave the largest files the longest per-request wall time.
- * - There is no absolute per-request timeout. A request is abandoned only
- *   after `idleTimeoutMs` with *no byte movement*, so a DLP scanner
- *   (ForcePoint, Menlo, Zscaler) holding or inspecting a body produces an
- *   "processing" status instead of a killed upload. After the body is sent,
- *   `responseTimeoutMs` covers the server pushing bytes to the destination.
- * - The server is the source of truth. Every response carries committed byte
- *   ranges; a failed range is retried from whatever the server already holds,
- *   and its window halves on repeat failure instead of re-sending the whole
- *   chunk.
+ * Every chunk carries SHA-256. The server credits a range only after the body
+ * matches. A failed request is retried from the server's committed ranges, so
+ * duplicate data is harmless and a lost response does not lose bytes.
  */
+
+import { sha256Blob } from './sha256.js';
 
 export const UploadState = {
   PREPARING: 'preparing',
@@ -31,71 +22,43 @@ export const UploadState = {
   ERROR: 'error',
 };
 
-// Small enough to retry files rejected by common reverse-proxy body limits.
+export const TRANSPORTS = ['binary_post', 'multipart_post', 'binary_put'];
+
 export const DEFAULT_MIN_CHUNK_BYTES = 64 * 1024;
-// Matches the server's own ceiling: a window is one request, so the client is
-// allowed to use the largest window the engine will advertise.
-export const DEFAULT_MAX_CHUNK_BYTES = 64 * 1024 * 1024;
-export const DEFAULT_CHUNK_BYTES = 32 * 1024 * 1024;
-export const DEFAULT_CONCURRENCY = 4;
-export const DEFAULT_IDLE_TIMEOUT_MS = 120_000;
-export const DEFAULT_RESPONSE_TIMEOUT_MS = 300_000;
+export const DEFAULT_INITIAL_CHUNK_BYTES = 4 * 1024 * 1024;
+export const DEFAULT_MAX_CHUNK_BYTES = 16 * 1024 * 1024;
+export const DEFAULT_CONCURRENCY = 2;
+export const DEFAULT_IDLE_TIMEOUT_MS = 20_000;
+export const DEFAULT_RESPONSE_TIMEOUT_MS = 20_000;
 export const DEFAULT_MAX_ATTEMPTS = 6;
-/** Bounded re-plans when the server credits less than a whole window. */
-export const MAX_PASSES = 4;
-export const DEFAULT_BACKOFF_MS = [500, 1000, 2000, 4000, 8000, 15000];
+export const MAX_PASSES = 6;
+export const DEFAULT_BACKOFF_MS = [250, 500, 1000, 2000, 4000, 8000];
 
 const RETRYABLE_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
-const SESSION_LOST_STATUSES = new Set([404, 409, 410]);
-
-/**
- * Server-confirmed upload state. `ranges` are committed byte ranges as
- * `[[start, end], ...]`, which is what makes a resume possible.
- *
- * @typedef {object} UploadSessionInfo
- * @property {string} uploadId
- * @property {number} chunkSize
- * @property {number} concurrency
- * @property {number[][]} ranges
- * @property {number} size
- */
-
-/**
- * @typedef {object} UploadCallbacks
- * @property {(state: string) => void} [onState] Phase changes, see `UploadState`.
- * @property {(committed: number, total: number) => void} [onProgress] Monotonic bytes.
- * @property {(session: UploadSessionInfo) => void} [onSession] Keep this to resume later.
- * @property {(retry: {attempt: number, code: string, message: string}) => void} [onRetry]
- */
-
-/**
- * @typedef {object} PutHandlers
- * @property {number} [idleTimeoutMs] Abort only after this long with no byte movement.
- * @property {number} [responseTimeoutMs] Abort after the body is sent but unacknowledged.
- * @property {AbortSignal | null} [signal]
- * @property {(loaded: number, total: number) => void} [onProgress]
- * @property {(phase: string) => void} [onPhase]
- */
-
-/**
- * @typedef {object} UploadFileOptions
- * @property {UploadClient} client
- * @property {Blob} file
- * @property {string | null} [filename] Defaults to `file.name`.
- * @property {string} [destDir]
- * @property {UploadSessionInfo | null} [session] Reuse to resume instead of restarting.
- * @property {number | null} [chunkSize]
- * @property {number | null} [concurrency]
- * @property {number} [minChunkBytes]
- * @property {number} [maxChunkBytes]
- * @property {number} [maxAttempts]
- * @property {number[]} [backoffMs]
- * @property {number} [idleTimeoutMs]
- * @property {number} [responseTimeoutMs]
- * @property {boolean} [restartOnSessionLoss]
- * @property {UploadCallbacks} [callbacks]
- * @property {AbortSignal | null} [signal]
- */
+const SESSION_LOST_STATUSES = new Set([404, 410]);
+const RETRYABLE_CODES = new Set([
+  'BAD_RESPONSE',
+  'CHUNK_TOO_LARGE',
+  'CLIENT_DISCONNECTED',
+  'CONNECTION_CLOSED',
+  'DIGEST_MISMATCH',
+  'INIT_DROPPED',
+  'LENGTH_MISMATCH',
+  'NETWORK',
+  'RESPONSE_TIMEOUT',
+  'STALLED',
+  'TRANSFER_FAILED',
+  'TRANSPORT_DROPPED',
+  'UPLOAD_INCOMPLETE',
+  'WRITE_FAILED',
+]);
+const TRANSPORT_CODES = new Set([
+  'BAD_RESPONSE',
+  'NETWORK',
+  'RESPONSE_TIMEOUT',
+  'STALLED',
+  'TRANSPORT_DROPPED',
+]);
 
 /** Sliding-window transfer speed in bytes per second. */
 export class SpeedTracker {
@@ -177,17 +140,27 @@ export function committedBytes(ranges) {
   );
 }
 
+function windowCovered(ranges, start, end) {
+  return (ranges || []).some(([left, right]) => {
+    const spanStart = Number(left);
+    const spanEnd = Number(right);
+    return Number.isFinite(spanStart) && Number.isFinite(spanEnd)
+      && spanStart <= start && spanEnd >= end;
+  });
+}
+
 export class UploadError extends Error {
   /**
    * @param {string} message
-   * @param {{status?: number, code?: string, retryable?: boolean}} [options]
+   * @param {{status?: number, code?: string, retryable?: boolean, transport?: string}} [options]
    */
-  constructor(message, { status = 0, code = 'UPLOAD_FAILED', retryable = false } = {}) {
+  constructor(message, { status = 0, code = 'UPLOAD_FAILED', retryable = false, transport = null } = {}) {
     super(message);
     this.name = 'UploadError';
     this.status = status;
     this.code = code;
     this.retryable = retryable;
+    this.transport = transport;
   }
 }
 
@@ -200,28 +173,139 @@ export class UploadError extends Error {
  * @returns {UploadError}
  */
 export function errorFromResponse(status, payload, fallback) {
-  const code = (payload && payload.code) || '';
-  const message = (payload && (payload.message || payload.detail)) || fallback || `Upload failed (${status})`;
-  if (SESSION_LOST_STATUSES.has(status) && code !== 'UPLOAD_INCOMPLETE') {
+  const detail = payload?.detail;
+  const nested = detail && typeof detail === 'object' ? detail : null;
+  const code = String(nested?.code || payload?.code || '');
+  const message =
+    nested?.message ||
+    payload?.message ||
+    (typeof detail === 'string' ? detail : '') ||
+    fallback ||
+    `Upload failed (${status})`;
+
+  if (status === 401) {
+    return new UploadError(message, { status, code: 'AUTH_REQUIRED', retryable: false });
+  }
+  if (status === 403) {
+    const auth = /authentication required|sign[ -]?in|log[ -]?in/i.test(message);
+    return new UploadError(message, {
+      status,
+      code: auth ? 'AUTH_REQUIRED' : 'PERMISSION_DENIED',
+      retryable: false,
+    });
+  }
+  if (status === 413) {
+    return new UploadError(message, { status, code: 'CHUNK_TOO_LARGE', retryable: true });
+  }
+  if (SESSION_LOST_STATUSES.has(status) || code === 'SESSION_LOST') {
     return new UploadError(message, { status, code: 'SESSION_LOST', retryable: true });
+  }
+  if (status === 400 && (code === 'UPLOAD_INCOMPLETE' || code === 'STAGED_FILE_TRUNCATED')) {
+    return new UploadError(message, { status, code: code || 'UPLOAD_INCOMPLETE', retryable: true });
+  }
+  if (status === 409 && code !== 'UPLOAD_INCOMPLETE') {
+    return new UploadError(message, { status, code: code || 'SESSION_LOST', retryable: true });
   }
   const retryable =
     RETRYABLE_STATUSES.has(status) ||
-    ['CONNECTION_CLOSED', 'TRANSFER_FAILED', 'SINK_ERROR'].includes(code);
+    RETRYABLE_CODES.has(code) ||
+    status === 0;
   return new UploadError(message, { status, code: code || 'UPLOAD_FAILED', retryable });
 }
 
+function clampChunkSize(value, min, max) {
+  const floor = Math.max(1, Math.floor(min));
+  const ceiling = Math.max(floor, Math.floor(max));
+  if (!Number.isFinite(value) || value <= 0) return floor;
+  return Math.max(floor, Math.min(ceiling, Math.floor(value)));
+}
+
+function makeClientKey() {
+  const crypto = globalThis.crypto;
+  if (crypto && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  if (crypto && typeof crypto.getRandomValues === 'function') {
+    const bytes = crypto.getRandomValues(new Uint8Array(16));
+    return `k-${Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('')}`;
+  }
+  return `k-${Date.now().toString(36)}-${Math.floor(Math.random() * 0x7fffffff).toString(36)}`;
+}
+
+export function newUploadKey() {
+  return makeClientKey();
+}
+
+function normalizeTransports(values) {
+  const allowed = new Set(TRANSPORTS);
+  const filtered = Array.isArray(values) ? values.filter(value => allowed.has(value)) : [];
+  return filtered.length ? filtered : [...TRANSPORTS];
+}
+
+function sleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new UploadError('Upload cancelled', { code: 'ABORTED' }));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    function onAbort() {
+      clearTimeout(timer);
+      reject(new UploadError('Upload cancelled', { code: 'ABORTED' }));
+    }
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function backoffDelay(backoffMs, attempt) {
+  const base = backoffMs[Math.min(Math.max(0, attempt - 1), backoffMs.length - 1)] ?? 0;
+  return Math.max(0, Math.round(base * (0.5 + Math.random() * 0.5)));
+}
+
+function resourceProtocol(url) {
+  try {
+    const entries = performance.getEntriesByName(url, 'resource');
+    const entry = entries.length ? entries[entries.length - 1] : null;
+    return entry?.nextHopProtocol || null;
+  } catch {
+    return null;
+  }
+}
+
+function parsePayload(text) {
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+async function readResponseText(response) {
+  if (typeof response.text === 'function') {
+    try {
+      return await response.text();
+    } catch {
+      /* A test or an exotic Response implementation may only expose json(). */
+    }
+  }
+  if (typeof response.json === 'function') {
+    try {
+      return JSON.stringify(await response.json());
+    } catch {
+      return '';
+    }
+  }
+  return '';
+}
+
 /**
- * HTTP client for the shared upload protocol.
- *
- * `fetchImpl` defaults to `fetch`; pass the application's authenticated fetch
- * when one exists.
+ * HTTP client for the upload protocol.
  */
 export class UploadClient {
   /**
    * @param {{base?: string, params?: Record<string, string> | null, fetchImpl?: typeof fetch | null, signal?: AbortSignal | null}} [options]
-   * @param options.params Query parameters appended to every request, e.g. the
-   *   `session_id`/`tab_id` pair a tab-scoped server needs.
    */
   constructor({ base = '/_upload', params = null, fetchImpl = null, signal = null } = {}) {
     this.base = base.replace(/\/$/, '');
@@ -230,136 +314,155 @@ export class UploadClient {
     this.signal = signal;
   }
 
-  /** Request URL for `path`, carrying any client-wide query parameters. */
   url(path, extra = null) {
     const search = new URLSearchParams(this.params || undefined);
     if (extra) {
-      for (const [key, value] of Object.entries(extra)) search.set(key, String(value));
+      for (const [key, value] of Object.entries(extra)) {
+        if (value !== null && value !== undefined) search.set(key, String(value));
+      }
     }
     const query = search.toString();
     return `${this.base}${path}${query ? `?${query}` : ''}`;
   }
 
-  _requestOptions(options = {}) {
-    const merged = { ...options };
-    const signal = merged.signal || this.signal;
-    if (signal) merged.signal = signal;
-    return merged;
+  async _requestJson(path, init = {}, timeoutMs = DEFAULT_RESPONSE_TIMEOUT_MS) {
+    if (this.signal?.aborted) {
+      throw new UploadError('Upload cancelled', { code: 'ABORTED' });
+    }
+    const timeoutSignal = AbortSignal.timeout(timeoutMs);
+    const signal = this.signal
+      ? AbortSignal.any([this.signal, timeoutSignal])
+      : timeoutSignal;
+    try {
+      const response = await this.fetchImpl(this.url(path), {
+        ...init,
+        signal,
+      });
+      const text = await readResponseText(response);
+      const payload = parsePayload(text);
+      if (!response.ok) {
+        throw errorFromResponse(
+          response.status,
+          payload,
+          text ? text.slice(0, 300) : undefined,
+        );
+      }
+      if (payload === null || typeof payload !== 'object') {
+        throw new UploadError(
+          'The server sent a page instead of an upload response. Sign in again or check the proxy.',
+          { status: response.status, code: 'AUTH_REQUIRED', retryable: false },
+        );
+      }
+      return payload;
+    } catch (error) {
+      if (error instanceof UploadError) throw error;
+      if (this.signal?.aborted) {
+        throw new UploadError('Upload cancelled', { code: 'ABORTED' });
+      }
+      if (timeoutSignal.aborted) {
+        throw new UploadError('Upload setup timed out', {
+          code: 'RESPONSE_TIMEOUT',
+          retryable: true,
+        });
+      }
+      throw new UploadError('Upload setup was blocked or the connection dropped', {
+        code: 'INIT_DROPPED',
+        retryable: true,
+      });
+    }
   }
 
-  /**
-   * @param {object} body `{filename, size, dir}`
-   * @returns {Promise<any>}
-   */
-  async initWithRetry(body) {
-    const response = await this.fetchImpl(
-      this.url('/init'),
-      this._requestOptions({
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      }),
-    );
-    if (!response.ok) {
-      let payload = null;
+  async initWithRetry(body, { attempts = 4, backoffMs = DEFAULT_BACKOFF_MS } = {}) {
+    let lastError = null;
+    for (let attempt = 1; attempt <= Math.max(1, attempts); attempt += 1) {
       try {
-        payload = await response.json();
-      } catch {
-        /* Non-JSON error body: fall back to the status text. */
+        return await this._requestJson('/init', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+      } catch (error) {
+        lastError = error instanceof UploadError
+          ? error
+          : new UploadError(error?.message || 'Upload setup failed', { retryable: true });
+        if (!lastError.retryable || attempt >= attempts || lastError.code === 'ABORTED') {
+          throw lastError;
+        }
+        await sleep(backoffDelay(backoffMs, attempt), this.signal);
       }
-      throw errorFromResponse(response.status, payload);
     }
-    return response.json();
+    throw lastError;
   }
 
   async status(uploadId) {
-    const response = await this.fetchImpl(
-      this.url(`/${encodeURIComponent(uploadId)}`),
-      this._requestOptions({ method: 'GET' }),
-    );
-    if (!response.ok) {
-      let payload = null;
-      try {
-        payload = await response.json();
-      } catch {
-        /* Non-JSON error body: fall back to the status text. */
-      }
-      throw errorFromResponse(response.status, payload);
-    }
-    return response.json();
+    return this._requestJson(`/${encodeURIComponent(uploadId)}`, { method: 'GET' });
   }
 
   async complete(uploadId) {
-    const response = await this.fetchImpl(
-      this.url(`/${encodeURIComponent(uploadId)}/complete`),
-      this._requestOptions({ method: 'POST' }),
-    );
-    if (!response.ok) {
-      let payload = null;
-      try {
-        payload = await response.json();
-      } catch {
-        /* Non-JSON error body: fall back to the status text. */
-      }
-      throw errorFromResponse(response.status, payload);
-    }
-    return response.json();
+    return this._requestJson(`/${encodeURIComponent(uploadId)}/complete`, { method: 'POST' });
   }
 
   async cancel(uploadId) {
     try {
-      await this.fetchImpl(
-        this.url(`/${encodeURIComponent(uploadId)}`),
-        this._requestOptions({ method: 'DELETE' }),
-      );
+      await this.fetchImpl(this.url(`/${encodeURIComponent(uploadId)}`), {
+        method: 'DELETE',
+        signal: this.signal || undefined,
+      });
     } catch {
       /* Cancellation is best effort. */
     }
   }
 
   /**
-   * Send one byte window. Resolves with the server's committed ranges.
-   *
-   * `handlers.onProgress(loaded)` fires as the body drains.
-   * `handlers.onPhase('uploading'|'processing')` distinguishes "bytes are
-   * moving" from "bytes are sent, waiting for the server" so the UI can show
-   * a DLP scan without pretending the transfer is broken.
+   * Send one verified byte window.
    *
    * @param {string} uploadId
    * @param {number} offset
    * @param {Blob} blob
-   * @param {PutHandlers} [handlers]
+   * @param {string} digest
+   * @param {string} transport
+   * @param {object} [handlers]
    * @returns {Promise<any>}
    */
-  put(uploadId, offset, blob, handlers = {}) {
-    const { idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS, responseTimeoutMs = DEFAULT_RESPONSE_TIMEOUT_MS, signal = null } = handlers;
-    const url = this.url(`/${encodeURIComponent(uploadId)}`, { offset });
+  sendChunk(uploadId, offset, blob, digest, transport, handlers = {}) {
+    const {
+      idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
+      ackTimeoutMs = DEFAULT_RESPONSE_TIMEOUT_MS,
+      signal = null,
+      filename = 'upload',
+    } = handlers;
+    const requestId = makeClientKey();
+    const url = this.url(`/${encodeURIComponent(uploadId)}/chunk`, {
+      offset,
+      sha256: digest,
+      length: blob.size,
+      request_id: requestId,
+    });
 
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       let idleTimer = null;
-      let responseTimer = null;
+      let ackTimer = null;
       let settled = false;
       let bodySent = false;
+      let bodyMoved = false;
       let phase = UploadState.UPLOADING;
 
       const clearTimers = () => {
         if (idleTimer) clearTimeout(idleTimer);
-        if (responseTimer) clearTimeout(responseTimer);
+        if (ackTimer) clearTimeout(ackTimer);
         idleTimer = null;
-        responseTimer = null;
+        ackTimer = null;
       };
 
       const finish = (fn, value) => {
         if (settled) return;
         settled = true;
         clearTimers();
-        if (signal) signal.removeEventListener('abort', onAbort);
+        signal?.removeEventListener('abort', onAbort);
         fn(value);
       };
 
-      // Settle the promise before aborting: `xhr.abort()` fires its event
-      // asynchronously, and the reason must not depend on that ordering.
       const failWith = error => {
         finish(reject, error);
         try {
@@ -370,46 +473,70 @@ export class UploadClient {
       };
 
       const onAbort = () => failWith(new UploadError('Upload cancelled', { code: 'ABORTED' }));
-
       const setPhase = next => {
         if (phase === next) return;
         phase = next;
         handlers.onPhase?.(next);
       };
-
-      const armIdleTimer = () => {
+      const armIdle = () => {
         if (idleTimer) clearTimeout(idleTimer);
         idleTimer = setTimeout(() => {
           failWith(
-            new UploadError(`Upload stalled: no data moved for ${idleTimeoutMs / 1000}s`, {
-              code: 'STALLED',
-              retryable: true,
-            }),
+            new UploadError(
+              bodyMoved
+                ? 'The proxy stopped moving upload data'
+                : 'The upload connection was dropped before data moved',
+              {
+                code: bodyMoved ? 'STALLED' : 'TRANSPORT_DROPPED',
+                retryable: true,
+                transport,
+              },
+            ),
           );
         }, idleTimeoutMs);
       };
-
-      const armResponseTimer = () => {
-        if (responseTimer) clearTimeout(responseTimer);
-        responseTimer = setTimeout(() => {
+      const armAck = () => {
+        if (ackTimer) clearTimeout(ackTimer);
+        ackTimer = setTimeout(() => {
           failWith(
-            new UploadError(`Server did not acknowledge within ${responseTimeoutMs / 1000}s`, {
+            new UploadError('The proxy held the upload response too long', {
               code: 'RESPONSE_TIMEOUT',
               retryable: true,
+              transport,
             }),
           );
-        }, responseTimeoutMs);
+        }, ackTimeoutMs);
       };
 
-      xhr.open('PUT', url, true);
-      xhr.withCredentials = false;
+      try {
+        xhr.open(transport === 'binary_put' ? 'PUT' : 'POST', url, true);
+        xhr.withCredentials = false;
+        if (typeof xhr.setRequestHeader === 'function') {
+          xhr.setRequestHeader('X-Xwing-Transport', transport);
+          xhr.setRequestHeader(
+            'Content-Disposition',
+            `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
+          );
+          if (transport !== 'multipart_post') {
+            xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+          }
+        }
+      } catch {
+        finish(
+          reject,
+          new UploadError('This browser could not start the upload request', {
+            code: 'BAD_REQUEST',
+            retryable: false,
+          }),
+        );
+        return;
+      }
 
-      xhr.upload.addEventListener('loadstart', () => {
-        armIdleTimer();
-      });
+      xhr.upload.addEventListener('loadstart', () => armIdle());
       xhr.upload.addEventListener('progress', event => {
+        bodyMoved = event.loaded > 0;
         handlers.onProgress?.(event.loaded, blob.size);
-        armIdleTimer();
+        armIdle();
       });
       xhr.upload.addEventListener('load', () => {
         bodySent = true;
@@ -417,46 +544,103 @@ export class UploadClient {
         idleTimer = null;
         handlers.onProgress?.(blob.size, blob.size);
         setPhase(UploadState.PROCESSING);
-        armResponseTimer();
+        armAck();
       });
       xhr.upload.addEventListener('error', () => {
-        finish(reject, new UploadError('Upload connection failed', { code: 'NETWORK', retryable: true }));
+        finish(
+          reject,
+          new UploadError('The proxy dropped the upload request', {
+            code: bodyMoved ? 'NETWORK' : 'TRANSPORT_DROPPED',
+            retryable: true,
+            transport,
+          }),
+        );
       });
       xhr.addEventListener('abort', () => {
-        finish(reject, new UploadError('Upload aborted', { code: 'ABORTED', retryable: !bodySent }));
+        finish(
+          reject,
+          new UploadError('Upload aborted', {
+            code: 'ABORTED',
+            retryable: !bodySent,
+            transport,
+          }),
+        );
       });
       xhr.addEventListener('error', () => {
-        finish(reject, new UploadError('Upload connection failed', { code: 'NETWORK', retryable: true }));
+        finish(
+          reject,
+          new UploadError(
+            bodyMoved
+              ? 'Upload connection failed'
+              : 'The proxy dropped the upload request',
+            {
+              code: bodyMoved ? 'NETWORK' : 'TRANSPORT_DROPPED',
+              retryable: true,
+              transport,
+            },
+          ),
+        );
       });
       xhr.addEventListener('timeout', () => {
-        finish(reject, new UploadError('Upload timed out', { code: 'TIMEOUT', retryable: true }));
+        finish(
+          reject,
+          new UploadError('Upload timed out', {
+            code: 'RESPONSE_TIMEOUT',
+            retryable: true,
+            transport,
+          }),
+        );
+      });
+      // WebKit can finish a dropped request at DONE with status 0 without
+      // dispatching an `error` event. Give the normal `load` handler one turn
+      // to run, then fail with the same retryable reason the other engines use.
+      xhr.addEventListener('readystatechange', () => {
+        if (xhr.readyState !== 4) return;
+        setTimeout(() => {
+          if (settled) return;
+          finish(
+            reject,
+            new UploadError(
+              bodyMoved
+                ? 'Upload connection closed before a response'
+                : 'The proxy dropped the upload request',
+              {
+                code: bodyMoved ? 'NETWORK' : 'TRANSPORT_DROPPED',
+                retryable: true,
+                transport,
+              },
+            ),
+          );
+        }, 0);
       });
       xhr.addEventListener('load', () => {
-        let payload = null;
-        let parsed = false;
-        try {
-          payload = JSON.parse(xhr.responseText);
-          parsed = true;
-        } catch {
-          /* Not our envelope; `parsed` stays false. */
-        }
+        const payload = parsePayload(xhr.responseText);
         if (xhr.status >= 200 && xhr.status < 300) {
-          if (!parsed || payload === null || typeof payload !== 'object') {
-            // A 2xx that is not our JSON envelope usually means an
-            // authentication redirect was followed. Never treat it as success.
+          if (payload === null || typeof payload !== 'object') {
             finish(
               reject,
-              new UploadError('Server returned an unexpected response', {
-                status: xhr.status,
-                code: 'BAD_RESPONSE',
-              }),
+              new UploadError(
+                'The proxy returned a page instead of an upload response',
+                {
+                  status: xhr.status,
+                  code: 'AUTH_REQUIRED',
+                  retryable: false,
+                  transport,
+                },
+              ),
             );
             return;
           }
-          finish(resolve, payload);
+          finish(resolve, {
+            ...payload,
+            transport,
+            protocol: resourceProtocol(url),
+          });
           return;
         }
-        finish(reject, errorFromResponse(xhr.status, payload));
+        const error = errorFromResponse(xhr.status, payload);
+        error.transport = transport;
+        finish(reject, error);
       });
 
       if (signal) {
@@ -464,50 +648,36 @@ export class UploadClient {
           onAbort();
           return;
         }
-        signal.addEventListener('abort', onAbort);
+        signal.addEventListener('abort', onAbort, { once: true });
       }
 
       setPhase(UploadState.UPLOADING);
-      xhr.send(blob);
+      let body = blob;
+      if (transport === 'multipart_post') {
+        body = new FormData();
+        body.set('offset', String(offset));
+        body.set('length', String(blob.size));
+        body.set('sha256', digest);
+        body.set('request_id', requestId);
+        body.set('file', blob, filename);
+      }
+      xhr.send(body);
     });
   }
 }
 
-function sleep(ms, signal) {
-  return new Promise((resolve, reject) => {
-    if (signal && signal.aborted) {
-      reject(new UploadError('Upload cancelled', { code: 'ABORTED' }));
-      return;
-    }
-    const timer = setTimeout(() => {
-      if (signal) signal.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    function onAbort() {
-      clearTimeout(timer);
-      reject(new UploadError('Upload cancelled', { code: 'ABORTED' }));
-    }
-    if (signal) signal.addEventListener('abort', onAbort);
-  });
-}
-
-function clampChunkSize(value, min, max) {
-  if (!Number.isFinite(value) || value <= 0) return DEFAULT_CHUNK_BYTES;
-  return Math.max(min, Math.min(max, Math.floor(value)));
+class ShrinkWindow extends Error {
+  constructor(bytes) {
+    super('The proxy rejected the upload window');
+    this.bytes = bytes;
+  }
 }
 
 /**
- * Upload one blob through the shared protocol.
+ * Upload one blob through the v2 protocol.
  *
- * Returns `{ok, path, bytes, uploadId, restarted}`. Progress and phase changes
- * arrive through `callbacks`:
- *   `onState(state)`               - see `UploadState`
- *   `onProgress(committed, total)` - committed bytes, monotonic per attempt span
- *   `onSession(info)`              - fired on init so the caller can persist it
- */
-/**
- * @param {UploadFileOptions} options
- * @returns {Promise<{ok: boolean, path: string, bytes: number, uploadId: string, restarted: boolean}>}
+ * @param {object} options
+ * @returns {Promise<object>}
  */
 export async function uploadFile({
   client,
@@ -515,6 +685,9 @@ export async function uploadFile({
   filename = null,
   destDir = '/',
   session = null,
+  uploadKey = null,
+  fingerprint = null,
+  transports = null,
   chunkSize = null,
   concurrency = null,
   minChunkBytes = DEFAULT_MIN_CHUNK_BYTES,
@@ -522,239 +695,441 @@ export async function uploadFile({
   maxAttempts = DEFAULT_MAX_ATTEMPTS,
   backoffMs = DEFAULT_BACKOFF_MS,
   idleTimeoutMs = DEFAULT_IDLE_TIMEOUT_MS,
-  responseTimeoutMs = DEFAULT_RESPONSE_TIMEOUT_MS,
+  ackTimeoutMs = DEFAULT_RESPONSE_TIMEOUT_MS,
   restartOnSessionLoss = true,
   callbacks = {},
   signal = null,
 }) {
   const size = file.size;
-  const name = filename || file.name;
-  let info = session && session.uploadId ? session : null;
-  let restarted = false;
+  const name = filename || file.name || 'upload';
+  const key = uploadKey || session?.uploadKey || makeClientKey();
+  const print = fingerprint || {
+    name,
+    size,
+    last_modified: Number(file.lastModified || 0),
+  };
+
+  let info = null;
+  let ranges = [];
+  let highWater = 0;
   let restartUsed = false;
+  let restarted = false;
+  // The caller supplies the largest window the destination permits. The first
+  // request is a canary at the server's advertised initial size, never that
+  // ceiling, so a DLP appliance sees a small classified body first.
+  const offeredMax = clampChunkSize(
+    Math.min(maxChunkBytes, chunkSize || session?.chunkSize || maxChunkBytes),
+    minChunkBytes,
+    maxChunkBytes,
+  );
+  let windowSize = clampChunkSize(
+    session?.chunkSize || DEFAULT_INITIAL_CHUNK_BYTES,
+    minChunkBytes,
+    offeredMax,
+  );
+  let maxWindow = offeredMax;
+  let maxWorkers = Math.max(1, concurrency || session?.concurrency || DEFAULT_CONCURRENCY);
+  let workers = 1;
+  let transportOrder = normalizeTransports(transports || session?.transports);
+  const transportState = {
+    chosen: session?.transport || null,
+    index: 0,
+  };
+  let consecutiveTransportFailures = 0;
+  let transportRotations = 0;
+  let lastProtocol = null;
+  const digestCache = new Map();
+  const inFlight = new Map();
 
   const setState = state => callbacks.onState?.(state);
-  let highWater = 0;
-  const reportProgress = (ranges, inFlight) => {
+  const reportProgress = pending => {
     if (!callbacks.onProgress) return;
-    const committed = committedBytes(ranges) + (inFlight || 0);
+    const committed = committedBytes(ranges) + (pending || 0);
     highWater = Math.max(highWater, Math.min(size, committed));
     callbacks.onProgress(highWater, size);
   };
-  // Emitted on init and after every accepted request so the caller can keep
-  // the session for a later resume instead of starting over.
+  const reportInFlight = () => {
+    let pending = 0;
+    for (const loaded of inFlight.values()) pending += loaded;
+    reportProgress(pending);
+  };
   const publishSession = () => {
     callbacks.onSession?.({
       uploadId: info.uploadId,
+      uploadKey: key,
       chunkSize: windowSize,
       concurrency: workers,
       ranges,
       size,
+      transport: transportState.chosen,
+    });
+  };
+  const diagnostic = event => {
+    callbacks.onDiagnostic?.({
+      ...event,
+      upload_id: info?.uploadId || null,
+      filename: name,
+      size,
+      chunk_bytes: windowSize,
+      concurrency: workers,
+      transport: transportState.chosen,
+      protocol: lastProtocol,
     });
   };
 
   const initSession = async () => {
-    const created = await client.initWithRetry({
-      filename: name,
-      size,
-      dir: destDir,
-    });
+    const created = await client.initWithRetry(
+      {
+        upload_key: key,
+        filename: name,
+        size,
+        dir: destDir,
+        fingerprint: print,
+      },
+      { attempts: Math.min(4, maxAttempts), backoffMs },
+    );
+    if (created.ignored) return created;
     info = {
       uploadId: created.upload_id,
-      chunkSize: created.chunk_size,
-      concurrency: created.concurrency,
+      chunkSize: created.chunk_policy?.initial_bytes || created.chunk_size || session?.chunkSize,
+      concurrency:
+        created.chunk_policy?.max_concurrency || created.concurrency || session?.concurrency,
       ranges: Array.isArray(created.ranges) ? created.ranges : [],
-      size: created.size,
+      size: created.size ?? size,
+      state: created.state || 'open',
+      transportOrder: created.transport_order,
+      ackTimeoutMs: created.ack_timeout_ms,
     };
-    return info;
+    ranges = info.ranges;
+    transportOrder = normalizeTransports(
+      transports || info.transportOrder || transportOrder,
+    );
+    const advertisedMax =
+      created.chunk_policy?.max_bytes || created.chunk_size || maxChunkBytes;
+    maxWindow = clampChunkSize(
+      Math.min(offeredMax, advertisedMax),
+      minChunkBytes,
+      maxChunkBytes,
+    );
+    const advertisedInitial =
+      created.chunk_policy?.initial_bytes ||
+      info.chunkSize ||
+      DEFAULT_INITIAL_CHUNK_BYTES;
+    windowSize = clampChunkSize(
+      Math.min(session?.chunkSize || advertisedInitial, advertisedInitial, maxWindow),
+      minChunkBytes,
+      maxWindow,
+    );
+    maxWorkers = Math.max(
+      1,
+      Math.min(
+        concurrency || maxWorkers,
+        created.chunk_policy?.max_concurrency || created.concurrency || maxWorkers,
+      ),
+    );
+    if (!transportState.chosen && transportOrder.length) {
+      transportState.index = 0;
+    }
+    if (session?.uploadId && session.uploadId !== info.uploadId) restarted = true;
+    return created;
   };
 
   setState(UploadState.PREPARING);
-  if (!info) await initSession();
-  let ranges = Array.isArray(info.ranges) ? info.ranges : [];
-  let windowSize = clampChunkSize(
-    chunkSize || info.chunkSize || DEFAULT_CHUNK_BYTES,
-    minChunkBytes,
-    maxChunkBytes,
-  );
-  const workers = Math.max(1, concurrency || info.concurrency || DEFAULT_CONCURRENCY);
+  const created = await initSession();
+  if (created.ignored) {
+    setState(UploadState.DONE);
+    return {
+      ok: true,
+      ignored: true,
+      path: name,
+      bytes: 0,
+      uploadId: null,
+      restarted: false,
+    };
+  }
+  if (created.state === 'complete') {
+    setState(UploadState.DONE);
+    return {
+      ok: true,
+      path: created.path || name,
+      bytes: size,
+      uploadId: info.uploadId,
+      restarted,
+      transport: transportState.chosen,
+    };
+  }
   publishSession();
 
-  let queue = planWindows(ranges, size, windowSize);
-  let nextIndex = 0;
-  const inFlight = new Map();
-
-  const replanPendingWindows = startIndex => {
-    const pending = [];
-    for (const [start, end] of queue.slice(startIndex)) {
-      for (let offset = start; offset < end; offset += windowSize) {
-        pending.push([offset, Math.min(end, offset + windowSize)]);
-      }
+  async function digestFor(start, end) {
+    const cacheKey = `${start}-${end}`;
+    let digest = digestCache.get(cacheKey);
+    if (!digest) {
+      digest = await sha256Blob(file.slice(start, end, 'application/octet-stream'));
+      digestCache.set(cacheKey, digest);
     }
-    queue.splice(startIndex, queue.length - startIndex, ...pending);
-  };
+    return digest;
+  }
 
-  const reportInFlight = () => {
-    let total = 0;
-    for (const loaded of inFlight.values()) total += loaded;
-    reportProgress(ranges, total);
-  };
+  async function runWindow(start, end) {
+    let attempts = 0;
+    let transportFailures = 0;
+    const digest = await digestFor(start, end);
 
-  // A lost session means the server dropped every staged byte, so the whole
-  // file restarts from zero. Allowed once: a second loss is a real failure.
-  const handleSessionLoss = async () => {
-    if (!restartOnSessionLoss || restartUsed) return false;
-    restartUsed = true;
-    restarted = true;
-    await initSession();
-    ranges = [];
-    queue = planWindows(ranges, size, windowSize);
-    highWater = 0;
-    return true;
-  };
-
-  const runWindow = async (start, end) => {
-    let windowStart = start;
-    let windowEnd = end;
-    let tries = 0;
     for (;;) {
-      if (signal && signal.aborted) throw new UploadError('Upload cancelled', { code: 'ABORTED' });
-      const key = `${windowStart}-${windowEnd}-${tries}`;
+      if (signal?.aborted) throw new UploadError('Upload cancelled', { code: 'ABORTED' });
+      const transport =
+        transportState.chosen ||
+        transportOrder[transportState.index] ||
+        TRANSPORTS[0];
+      const keyForProgress = `${start}-${end}-${transport}-${attempts}`;
       try {
-        const result = await client.put(
+        const result = await client.sendChunk(
           info.uploadId,
-          windowStart,
-          file.slice(windowStart, windowEnd),
+          start,
+          file.slice(start, end, 'application/octet-stream'),
+          digest,
+          transport,
           {
             idleTimeoutMs,
-            responseTimeoutMs,
+            ackTimeoutMs: info.ackTimeoutMs || ackTimeoutMs,
+            filename: name,
             signal,
             onProgress: loaded => {
-              inFlight.set(key, Math.min(loaded, windowEnd - windowStart));
+              inFlight.set(keyForProgress, Math.min(loaded, end - start));
               reportInFlight();
             },
             onPhase: phase => {
-              if (phase === UploadState.PROCESSING) setState(UploadState.PROCESSING);
-              else setState(UploadState.UPLOADING);
+              setState(phase === UploadState.PROCESSING ? UploadState.PROCESSING : UploadState.UPLOADING);
             },
           },
         );
-        inFlight.delete(key);
+        inFlight.delete(keyForProgress);
+        reportInFlight();
+        transportState.chosen = result.transport || transport;
+        consecutiveTransportFailures = 0;
+        transportRotations = 0;
+        lastProtocol = result.protocol || lastProtocol;
         if (Array.isArray(result.ranges)) {
           ranges = result.ranges;
         } else {
-          ranges.push([windowStart, windowStart + (result.received || windowEnd - windowStart)]);
+          ranges = [...ranges, [start, start + (result.received || end - start)]];
         }
         publishSession();
-        reportInFlight();
-        return true;
+        diagnostic({
+          event: 'chunk-ok',
+          status: 200,
+          attempts,
+          retries: attempts,
+          transport,
+        });
+        return result;
       } catch (error) {
-        inFlight.delete(key);
+        inFlight.delete(keyForProgress);
         reportInFlight();
-        const uploadError =
-          error instanceof UploadError
-            ? error
-            : new UploadError(error?.message || 'Upload failed', { retryable: true });
-        if (uploadError.code === 'SESSION_LOST' || uploadError.code === 'ABORTED') {
+        const uploadError = error instanceof UploadError
+          ? error
+          : new UploadError(error?.message || 'Upload failed', { retryable: true });
+        uploadError.transport = uploadError.transport || transport;
+
+        if (
+          uploadError.code === 'ABORTED' ||
+          uploadError.code === 'AUTH_REQUIRED' ||
+          uploadError.code === 'NOT_OWNER'
+        ) {
           throw uploadError;
         }
-        if (uploadError.status === 413) {
-          const requestBytes = windowEnd - windowStart;
-          if (requestBytes <= minChunkBytes) throw uploadError;
-          const previousEnd = windowEnd;
-          const smallerWindow = Math.max(
-            minChunkBytes,
-            Math.min(windowSize, Math.floor(requestBytes / 2)),
+        if (uploadError.status === 413 || uploadError.code === 'CHUNK_TOO_LARGE') {
+          const windowBytes = end - start;
+          if (windowBytes <= minChunkBytes) throw uploadError;
+          throw new ShrinkWindow(
+            Math.max(minChunkBytes, Math.floor(windowBytes / 2)),
           );
-          if (smallerWindow >= requestBytes) throw uploadError;
-          windowSize = smallerWindow;
-          windowEnd = Math.min(previousEnd, windowStart + windowSize);
-          queue.splice(nextIndex, 0, [windowEnd, previousEnd]);
-          replanPendingWindows(nextIndex + 1);
-          tries = 0;
-          publishSession();
+        }
+
+        const transportFailure =
+          TRANSPORT_CODES.has(uploadError.code) ||
+          uploadError.status === 405 ||
+          uploadError.code === 'UPLOAD_FAILED' && uploadError.status === 0;
+        if (transportFailure) consecutiveTransportFailures += 1;
+        if (transportFailure) transportFailures += 1;
+        if (
+          transportFailure &&
+          transportFailures > transportOrder.length &&
+          end - start > minChunkBytes
+        ) {
+          // Every request shape was dropped at this size. Halve the window
+          // before spending the full retry budget on a body the proxy is
+          // refusing to pass.
+          throw new ShrinkWindow(
+            Math.max(minChunkBytes, Math.floor((end - start) / 2)),
+          );
+        }
+        if (
+          transportFailure &&
+          transportOrder.length > 1 &&
+          transportRotations < transportOrder.length * 2 &&
+          (!transportState.chosen || consecutiveTransportFailures >= 2)
+        ) {
+          const currentIndex = Math.max(0, transportOrder.indexOf(transport));
+          transportState.index = (currentIndex + 1) % transportOrder.length;
+          transportState.chosen = null;
+          transportRotations += 1;
+          consecutiveTransportFailures = 0;
           callbacks.onRetry?.({
-            attempt: 1,
+            attempt: transportRotations,
+            code: 'TRANSPORT_FALLBACK',
+            message: `${transport.replaceAll('_', ' ')} was blocked; trying ${transportOrder[transportState.index].replaceAll('_', ' ')}`,
+            transport: transportOrder[transportState.index],
+          });
+          diagnostic({
+            event: 'transport-fallback',
+            status: uploadError.status,
             code: uploadError.code,
             message: uploadError.message,
+            attempts: transportRotations,
+            retries: transportRotations,
+            transport,
           });
           setState(UploadState.UPLOADING);
           continue;
         }
-        tries += 1;
-        if (!uploadError.retryable || tries >= maxAttempts) throw uploadError;
-        if (tries % 2 === 0) {
-          const length = Math.max(minChunkBytes, Math.floor((windowEnd - windowStart) / 2));
-          const previousEnd = windowEnd;
-          windowEnd = Math.min(windowEnd, windowStart + length);
-          // The tail this window gave up is the next thing to send. Leaving it
-          // for the next pass lets the other workers race ahead of a gap, and a
-          // sink that must write in order (SFTP) then blocks every one of them
-          // once its reorder buffer fills, with nobody left to fill the gap.
-          if (windowEnd < previousEnd) queue.splice(nextIndex, 0, [windowEnd, previousEnd]);
-        }
+
+        attempts += 1;
+        if (!uploadError.retryable && !transportFailure) throw uploadError;
+        if (attempts >= maxAttempts) throw uploadError;
         callbacks.onRetry?.({
-          attempt: tries,
+          attempt: attempts,
           code: uploadError.code,
           message: uploadError.message,
+          transport,
+        });
+        diagnostic({
+          event: 'chunk-retry',
+          status: uploadError.status,
+          code: uploadError.code,
+          message: uploadError.message,
+          attempts,
+          retries: attempts,
+          transport,
         });
         setState(UploadState.UPLOADING);
-        await sleep(backoffMs[Math.min(tries - 1, backoffMs.length - 1)], signal);
+        await sleep(backoffDelay(backoffMs, attempts), signal);
       }
     }
-  };
+  }
 
-  const worker = async () => {
-    for (;;) {
-      const index = nextIndex;
-      if (index >= queue.length) return;
-      nextIndex += 1;
-      const [start, end] = queue[index];
-      await runWindow(start, end);
-    }
-  };
+  async function runPass(limitWindows = null) {
+    const queue = planWindows(ranges, size, windowSize);
+    if (limitWindows !== null) queue.length = Math.min(queue.length, limitWindows);
+    if (!queue.length) return { done: true };
+    return new Promise((resolve, reject) => {
+      let nextIndex = 0;
+      let active = 0;
+      let fatal = null;
+      let shrink = null;
+      let successes = 0;
+      let finished = false;
+      const settle = () => {
+        if (finished) return;
+        finished = true;
+        if (fatal) reject(fatal);
+        else if (shrink) resolve({ shrink: shrink.bytes });
+        else resolve({ done: missingRanges(ranges, size).length === 0 });
+      };
+      const launch = () => {
+        if (finished) return;
+        if (!fatal && !shrink) {
+          while (active < workers && nextIndex < queue.length) {
+            const [start, end] = queue[nextIndex];
+            nextIndex += 1;
+            if (windowCovered(ranges, start, end)) continue;
+            active += 1;
+            runWindow(start, end)
+              .then(() => {
+                successes += 1;
+                if (successes % 2 === 0) workers = Math.min(maxWorkers, workers + 1);
+              })
+              .catch(error => {
+                if (error instanceof ShrinkWindow) {
+                  if (!shrink) shrink = error;
+                } else if (!fatal) {
+                  fatal = error;
+                }
+              })
+              .finally(() => {
+                active -= 1;
+                if (active === 0 && (fatal || shrink || nextIndex >= queue.length)) {
+                  settle();
+                } else {
+                  launch();
+                }
+              });
+          }
+        }
+        if (active === 0 && (fatal || shrink || nextIndex >= queue.length)) settle();
+      };
+      launch();
+    });
+  }
 
-  const completeWithRetries = async () => {
-    let attempts = 0;
-    for (;;) {
+  async function runPasses() {
+    let lastCommitted = committedBytes(ranges);
+    let grow = true;
+    for (let pass = 0; pass < MAX_PASSES; pass += 1) {
+      if (!missingRanges(ranges, size).length) return;
+      setState(UploadState.UPLOADING);
+      const canGrow = grow && windowSize < maxWindow;
+      let outcome;
       try {
-        return await client.complete(info.uploadId);
+        outcome = await runPass(canGrow ? 1 : null);
       } catch (error) {
-        const uploadError =
-          error instanceof UploadError ? error : new UploadError(String(error), {});
-        attempts += 1;
-        // A 500 from /complete means finalize failed and the server already
-        // dropped the session; a retry would only surface "session not found"
-        // and restart the whole upload, hiding the real reason.
+        const uploadError = error instanceof UploadError
+          ? error
+          : new UploadError(error?.message || 'Upload failed', {});
         if (
-          uploadError.code === 'SESSION_LOST' ||
-          uploadError.status === 500 ||
-          !uploadError.retryable ||
-          attempts >= maxAttempts
+          uploadError.code === 'ABORTED' ||
+          uploadError.code === 'AUTH_REQUIRED' ||
+          uploadError.code === 'NOT_OWNER' ||
+          uploadError.code === 'SESSION_LOST'
         ) {
           throw uploadError;
         }
-        await sleep(backoffMs[Math.min(attempts - 1, backoffMs.length - 1)], signal);
-        setState(UploadState.FINALIZING);
+        const refreshed = await client.status(info.uploadId).catch(() => null);
+        if (refreshed?.ranges) ranges = refreshed.ranges;
+        const committed = committedBytes(ranges);
+        if (committed <= lastCommitted || pass + 1 >= MAX_PASSES) throw uploadError;
+        lastCommitted = committed;
+        callbacks.onRetry?.({
+          attempt: pass + 2,
+          code: 'INCOMPLETE',
+          message: 'Some upload windows still need another pass',
+        });
+        continue;
       }
-    }
-  };
-
-  /**
-   * Upload every byte the server is still missing.
-   *
-   * A pass re-plans from the server's committed ranges, so a response that
-   * credits only part of a window is caught and the remainder is resent rather
-   * than silently completing a short file.
-   */
-  const runPasses = async () => {
-    for (let pass = 0; pass < MAX_PASSES; pass += 1) {
-      queue = planWindows(ranges, size, windowSize);
-      if (queue.length === 0) return;
-      nextIndex = 0;
-      setState(UploadState.UPLOADING);
-      await Promise.all(Array.from({ length: Math.min(workers, queue.length) }, worker));
-      if (missingRanges(ranges, size).length === 0) return;
+      if (outcome?.shrink) {
+        grow = false;
+        windowSize = clampChunkSize(outcome.shrink, minChunkBytes, maxWindow);
+        workers = Math.max(1, Math.floor(workers / 2));
+        callbacks.onRetry?.({
+          attempt: pass + 2,
+          code: 'CHUNK_TOO_LARGE',
+          message: `The proxy rejected a ${Math.round(windowSize / 1024)} KiB window`,
+        });
+        publishSession();
+        continue;
+      }
+      if (!missingRanges(ranges, size).length) return;
+      if (canGrow) {
+        const grown = clampChunkSize(windowSize * 2, minChunkBytes, maxWindow);
+        if (grown > windowSize) {
+          windowSize = grown;
+          workers = Math.min(maxWorkers, Math.max(2, workers));
+          publishSession();
+          continue;
+        }
+        grow = false;
+      }
+      if (pass + 1 >= MAX_PASSES) break;
       callbacks.onRetry?.({
         attempt: pass + 2,
         code: 'INCOMPLETE',
@@ -763,43 +1138,86 @@ export async function uploadFile({
     }
     throw new UploadError('Server never accepted every byte of the upload', {
       code: 'INCOMPLETE',
+      retryable: true,
     });
-  };
+  }
 
-  const runEverything = async () => {
+  async function completeWithRetries() {
+    let attempts = 0;
+    for (;;) {
+      try {
+        return await client.complete(info.uploadId);
+      } catch (error) {
+        const uploadError = error instanceof UploadError
+          ? error
+          : new UploadError(String(error), {});
+        attempts += 1;
+        if (
+          uploadError.code === 'ABORTED' ||
+          uploadError.code === 'AUTH_REQUIRED' ||
+          uploadError.code === 'SESSION_LOST' ||
+          !uploadError.retryable ||
+          attempts >= Math.min(3, maxAttempts)
+        ) {
+          throw uploadError;
+        }
+        await sleep(backoffDelay(backoffMs, attempts), signal);
+        setState(UploadState.FINALIZING);
+      }
+    }
+  }
+
+  async function runEverything() {
     await runPasses();
     setState(UploadState.FINALIZING);
     return completeWithRetries();
-  };
+  }
 
   try {
     let result;
     try {
       result = await runEverything();
     } catch (error) {
-      const uploadError =
-        error instanceof UploadError ? error : new UploadError(error?.message || 'Upload failed', {});
-      if (uploadError.code !== 'SESSION_LOST' || !(await handleSessionLoss())) {
+      const uploadError = error instanceof UploadError
+        ? error
+        : new UploadError(error?.message || 'Upload failed', {});
+      if (uploadError.code !== 'SESSION_LOST' || !restartOnSessionLoss || restartUsed) {
         throw uploadError;
       }
-      result = await runEverything();
+      restartUsed = true;
+      restarted = true;
+      await initSession();
+      result = info.state === 'complete'
+        ? { path: name, verified: true }
+        : await runEverything();
     }
     setState(UploadState.DONE);
+    diagnostic({ event: 'complete', status: 200, attempts: 0, retries: 0 });
     return {
       ok: true,
       path: result?.path ?? name,
       bytes: size,
       uploadId: info.uploadId,
       restarted,
+      transport: transportState.chosen,
+      protocol: lastProtocol,
+      verified: result?.verified ?? false,
     };
   } catch (error) {
-    const uploadError =
-      error instanceof UploadError ? error : new UploadError(error?.message || 'Upload failed', {});
-    if (uploadError.code !== 'ABORTED') {
-      // Re-anchor the caller's progress bar on what the server actually holds
-      // so a failed upload can be retried from the right offset.
+    const uploadError = error instanceof UploadError
+      ? error
+      : new UploadError(error?.message || 'Upload failed', {});
+    if (uploadError.code !== 'ABORTED' && info?.uploadId) {
       const status = await client.status(info.uploadId).catch(() => null);
-      if (status) reportProgress(status.ranges || ranges, 0);
+      if (status?.ranges) reportProgress(status.ranges, 0);
+      diagnostic({
+        event: 'failed',
+        status: uploadError.status,
+        code: uploadError.code,
+        message: uploadError.message,
+        attempts: 1,
+        retries: 1,
+      });
     }
     setState(UploadState.ERROR);
     throw uploadError;

@@ -1,8 +1,8 @@
-"""Xwing's adapter over the shared chunked upload engine.
+"""X-wing's adapter over the durable chunked upload engine.
 
 Everything protocol-level (sessions, byte ranges, retry semantics, resume)
-lives in :mod:`xwing.upload_engine`, which is vendored byte-identical into
-torrus. This module only supplies what is xwing-specific:
+lives in :mod:`xwing.upload_engine`. This module only supplies what is
+xwing-specific:
 
 * :class:`LocalFileSink` - staged writes to the destination filesystem via
   ``os.pwrite``, published with ``os.replace``.
@@ -17,12 +17,14 @@ import logging
 import os
 import stat
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote
 
 import anyio
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from . import audit_store
 from .auth import get_user, require_perm
@@ -61,9 +63,12 @@ def _read_umask() -> int:
 _UMASK = _read_umask()
 
 
-def _open_staging(path: Path) -> int:
+def _open_staging(path: Path, *, truncate: bool = False) -> int:
     # Private while it is being written; _publish gives it its final mode.
-    return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    flags = os.O_WRONLY | os.O_CREAT
+    if truncate:
+        flags |= os.O_TRUNC
+    return os.open(path, flags, 0o600)
 
 
 def _publish(fd: int, staged: Path, destination: Path) -> None:
@@ -142,7 +147,8 @@ class LocalFileSink:
         fd = self._take_descriptor()
         try:
             if fd is None:
-                # An empty upload never wrote, so the staging file does not exist yet.
+                # A resumed or empty upload may already have a staging file. Never
+                # truncate it: the bytes it holds are the reason the session resumed.
                 fd = await anyio.to_thread.run_sync(_open_staging, self._staged)
             await anyio.to_thread.run_sync(
                 _publish, fd, self._staged, self._destination
@@ -168,9 +174,11 @@ class LocalFileSink:
 def build_upload_store(settings: Settings) -> UploadStore:
     """Session table sized from application settings."""
     return UploadStore(
+        state_dir=settings.upload_state_dir,
         ttl_seconds=settings.session_ttl_seconds,
-        chunk_size=settings.max_chunk_bytes,
+        max_request_bytes=settings.max_chunk_bytes,
         max_session_bytes=settings.max_upload_bytes,
+        concurrency=settings.upload_concurrency,
     )
 
 
@@ -236,6 +244,9 @@ def create_upload_router(settings: Settings, store: UploadStore) -> APIRouter:
             directory=str(dest_dir),
             filename=filename,
             size=size,
+            staged_path=dest_dir / staging_name(filename, str(body["session_id"])),
+            upload_key=str(body.get("upload_key", "")),
+            fingerprint=dict(body.get("fingerprint") or {}),
             extra={"dest_dir": str(dest_dir)},
         )
 
@@ -244,7 +255,11 @@ def create_upload_router(settings: Settings, store: UploadStore) -> APIRouter:
         destination = dest_dir / target.filename
         if not is_within_root(settings.root_dir, destination):
             raise HTTPException(status_code=403, detail="Forbidden destination")
-        staged = dest_dir / staging_name(target.filename, target.session_id)
+        staged = target.staged_path or dest_dir / staging_name(
+            target.filename, target.session_id
+        )
+        if not is_within_root(settings.root_dir, staged):
+            raise HTTPException(status_code=403, detail="Forbidden staging path")
         return LocalFileSink(staged, destination)
 
     async def on_complete(session, destination: str) -> None:
@@ -267,6 +282,70 @@ def create_upload_router(settings: Settings, store: UploadStore) -> APIRouter:
         open_sink=open_sink,
         on_complete=on_complete,
     )
+
+
+def create_upload_diagnostics_router(settings: Settings) -> APIRouter:
+    """Receive bounded browser upload reports and expose them to administrators."""
+    router = APIRouter(prefix="/_upload")
+    reports: deque[dict[str, Any]] = deque(maxlen=50)
+    allowed = (
+        "event",
+        "upload_id",
+        "filename",
+        "size",
+        "chunk_bytes",
+        "concurrency",
+        "transport",
+        "protocol",
+        "status",
+        "code",
+        "message",
+        "attempts",
+        "retries",
+        "elapsed_ms",
+    )
+
+    @router.post("/diagnostics")
+    async def record_diagnostics(request: Request) -> JSONResponse:
+        user = get_user(request, settings)
+        require_perm(user, "write", settings)
+        raw_length = request.headers.get("content-length")
+        if raw_length is not None:
+            try:
+                if int(raw_length) > 16 * 1024:
+                    raise HTTPException(status_code=413, detail="Diagnostic report is too large")
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid Content-Length") from None
+        try:
+            payload = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid JSON") from None
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="JSON body must be an object")
+
+        report: dict[str, Any] = {
+            key: payload.get(key)
+            for key in allowed
+            if isinstance(payload.get(key), (str, int, float, bool, type(None)))
+        }
+        for key, value in list(report.items()):
+            if isinstance(value, str):
+                report[key] = value[:512]
+        report["user"] = user
+        report["user_agent"] = request.headers.get("user-agent", "")[:512]
+        report["received_at"] = time.time()
+        reports.append(report)
+        logger.info("upload diagnostics %s", json.dumps(report, ensure_ascii=False)[:4000])
+        return JSONResponse({"ok": True})
+
+    @router.get("/diagnostics")
+    async def list_diagnostics(request: Request) -> JSONResponse:
+        user = get_user(request, settings)
+        if not settings.is_admin_user(user):
+            raise HTTPException(status_code=403, detail="Administrator access required")
+        return JSONResponse({"reports": list(reports)})
+
+    return router
 
 
 async def _record_upload_audit(

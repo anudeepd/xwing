@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { UploadManager } from "../../xwing/frontend/src/upload-manager";
+import { saveResumeSession } from "../../xwing/frontend/src/upload-resume";
 import { AUTH_ACTIVITY_EVENT, resetAuthActivityForTests } from "../../xwing/frontend/src/shared.js";
 
 /**
@@ -16,6 +17,8 @@ interface EngineCallbacks {
 
 interface EngineCallOptions {
   destDir: string;
+  uploadKey: string;
+  fingerprint: { name: string; size: number; last_modified: number };
   chunkSize: number;
   concurrency: number;
   session?: unknown;
@@ -56,6 +59,7 @@ vi.mock("../../xwing/frontend/src/upload-engine", () => ({
       return 0;
     }
   },
+  newUploadKey: vi.fn(() => "generated-upload-key"),
   uploadFile: (options: EngineCallOptions) => engine.uploadFile(options),
 }));
 
@@ -83,6 +87,28 @@ function managerWith(fetcher = vi.fn(async () => okResponse())) {
     vi.fn(),
   );
   return { manager, fetcher };
+}
+
+class MemoryStorage implements Storage {
+  private values = new Map<string, string>();
+  get length(): number {
+    return this.values.size;
+  }
+  clear(): void {
+    this.values.clear();
+  }
+  getItem(key: string): string | null {
+    return this.values.get(key) ?? null;
+  }
+  key(index: number): string | null {
+    return [...this.values.keys()][index] ?? null;
+  }
+  removeItem(key: string): void {
+    this.values.delete(key);
+  }
+  setItem(key: string, value: string): void {
+    this.values.set(key, value);
+  }
 }
 
 beforeEach(() => {
@@ -125,7 +151,12 @@ describe("UploadManager scheduling", () => {
       size: 5,
     });
     const call = await pendingCall(0);
-    expect(call.options).toMatchObject({ destDir: "/docs", chunkSize: 1024 });
+    expect(call.options).toMatchObject({
+      destDir: "/docs",
+      chunkSize: 1024,
+      uploadKey: "generated-upload-key",
+      fingerprint: { name: "hello.txt", size: 5, last_modified: expect.any(Number) },
+    });
 
     call.options.callbacks.onState("uploading");
     call.options.callbacks.onProgress(3, 5);
@@ -230,6 +261,46 @@ describe("UploadManager scheduling", () => {
     expect(retried.options.session).toMatchObject({ uploadId: "abc123", ranges: [[0, 4096]] });
     retried.resolve({ ok: true });
     await vi.waitFor(() => expect(manager.getSnapshot().items[0]?.status).toBe("completed"));
+  });
+
+  it("resumes a dropped file in a new page from stored session state", async () => {
+    const storage = new MemoryStorage();
+    const file = new File(["hello"], "hello.txt", { lastModified: 123 });
+    saveResumeSession(
+      file,
+      "/",
+      {
+        uploadKey: "stored-key",
+        uploadId: "stored-upload",
+        ranges: [[0, 2]],
+        chunkSize: 1024,
+        concurrency: 1,
+        size: 5,
+        transport: "multipart_post",
+      },
+      storage,
+    );
+    const manager = new UploadManager(
+      vi.fn(async () => okResponse()) as unknown as typeof fetch,
+      callback => {
+        queueMicrotask(() => callback(0));
+        return 1;
+      },
+      vi.fn(),
+      storage,
+    );
+
+    manager.add([file], "/", 1024);
+    const call = await pendingCall(0);
+    expect(call.options.uploadKey).toBe("stored-key");
+    expect(call.options.session).toMatchObject({
+      uploadId: "stored-upload",
+      ranges: [[0, 2]],
+      transport: "multipart_post",
+    });
+    call.resolve({ ok: true });
+    await vi.waitFor(() => expect(manager.getSnapshot().items[0]?.status).toBe("completed"));
+    expect(storage.length).toBe(0);
   });
 
   it("surfaces a retry to the UI", async () => {
@@ -364,7 +435,7 @@ describe("UploadManager scheduling", () => {
 
     const snapshot = manager.getSnapshot();
     expect(snapshot.active).toBe(1);
-    expect(snapshot.parallel).toBe(4);
+    expect(snapshot.parallel).toBe(2);
   });
 
   it("publishes the finalizing phase", async () => {

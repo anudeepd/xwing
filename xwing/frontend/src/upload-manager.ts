@@ -1,5 +1,16 @@
 import type { Parallelism } from "./types";
-import { SpeedTracker, UploadClient, UploadState, uploadFile } from "./upload-engine";
+import {
+  SpeedTracker,
+  UploadClient,
+  UploadState,
+  newUploadKey,
+  uploadFile,
+} from "./upload-engine";
+import {
+  clearResumeSession,
+  loadResumeSession,
+  saveResumeSession,
+} from "./upload-resume";
 import { noteAuthActivity } from "./shared.js";
 
 export type UploadStatus =
@@ -36,14 +47,18 @@ export interface UploadItem {
   status: UploadStatus;
   phase?: UploadPhase | undefined;
   error?: string | undefined;
+  transport?: string | undefined;
+  protocol?: string | undefined;
 }
 
 interface UploadSession {
   uploadId: string;
+  uploadKey?: string;
   chunkSize: number;
   concurrency: number;
   ranges: number[][];
   size: number;
+  transport?: string | null | undefined;
 }
 
 interface InternalItem extends UploadItem {
@@ -51,6 +66,10 @@ interface InternalItem extends UploadItem {
   controller: AbortController;
   tracker: SpeedTracker;
   chunkSize: number;
+  uploadKey: string;
+  fingerprint: { name: string; size: number; last_modified: number };
+  resumeDestination: string;
+  lastDiagnostic?: Record<string, unknown> | undefined;
   /** Last server-confirmed session, reused so a retry resumes instead of restarting. */
   session?: UploadSession | undefined;
 }
@@ -83,22 +102,23 @@ function uploadId(): string {
 /**
  * Schedules file uploads and exposes their progress to React.
  *
- * Chunking, retries, resume and request timeouts live in the shared upload
- * engine; this class owns the queue, the per-item state machine and the
- * snapshot the UI renders.
+ * Chunking, retries, resume and request timeouts live in the upload engine;
+ * this class owns the queue, the per-item state machine and the snapshot the
+ * UI renders.
  */
 export class UploadManager {
   private readonly items = new Map<string, InternalItem>();
   private readonly listeners = new Set<() => void>();
-  private parallel: Parallelism = 4;
+  private parallel: Parallelism = 2;
   private running = 0;
   private frame: number | null = null;
-  private snapshot: UploadSnapshot = { items: [], active: 0, parallel: 4 };
+  private snapshot: UploadSnapshot = { items: [], active: 0, parallel: 2 };
 
   constructor(
     private readonly fetcher: Fetch = globalThis.fetch.bind(globalThis),
     private readonly requestFrame: (callback: FrameRequestCallback) => number = globalThis.requestAnimationFrame.bind(globalThis),
     private readonly cancelFrame: (handle: number) => void = globalThis.cancelAnimationFrame.bind(globalThis),
+    private readonly storage: Storage | null | undefined = undefined,
   ) {}
 
   subscribe = (listener: () => void): (() => void) => {
@@ -127,6 +147,19 @@ export class UploadManager {
         (candidate instanceof File ? "" : candidate.relativePath) ||
         file.webkitRelativePath ||
         file.name;
+      const finalDestination = this.destinationFor(relativePath, destination);
+      if (
+        [...this.items.values()].some(
+          item =>
+            item.resumeDestination === finalDestination &&
+            item.name === file.name &&
+            item.size === file.size &&
+            !["completed", "cancelled"].includes(item.status),
+        )
+      ) {
+        continue;
+      }
+      const resume = loadResumeSession(file, finalDestination, this.storage);
       const id = uploadId();
       this.items.set(id, {
         id,
@@ -138,9 +171,29 @@ export class UploadManager {
         status: "queued",
         file,
         destination,
+        resumeDestination: finalDestination,
         controller: new AbortController(),
         tracker: new SpeedTracker(5000),
         chunkSize,
+        uploadKey: resume?.uploadKey ?? newUploadKey(),
+        fingerprint: {
+          name: file.name,
+          size: file.size,
+          last_modified: Number(file.lastModified || 0),
+        },
+        ...(resume
+          ? {
+              session: {
+                uploadId: resume.uploadId,
+                uploadKey: resume.uploadKey,
+                chunkSize: resume.chunkSize,
+                concurrency: resume.concurrency,
+                ranges: resume.ranges,
+                size: resume.size,
+                transport: resume.transport,
+              },
+            }
+          : {}),
       });
     }
     noteAuthActivity();
@@ -152,6 +205,10 @@ export class UploadManager {
     const item = this.items.get(id);
     if (!item || item.status === "completed") return;
     item.controller.abort();
+    if (item.session?.uploadId) {
+      void new UploadClient({ fetchImpl: this.fetcher }).cancel(item.session.uploadId);
+    }
+    clearResumeSession(item.file, item.resumeDestination, this.storage);
     item.status = "cancelled";
     item.speed = 0;
     this.flush(true);
@@ -163,6 +220,7 @@ export class UploadManager {
     item.controller = new AbortController();
     item.error = undefined;
     item.speed = 0;
+    item.phase = undefined;
     item.status = "queued";
     this.flush(true);
     void this.prepareQueued();
@@ -207,10 +265,7 @@ export class UploadManager {
     this.flush();
     this.running += 1;
     try {
-      const directoryParts = item.relativePath.split("/").slice(0, -1);
-      const destination = directoryParts.length
-        ? `${item.destination.replace(/\/$/, "")}/${directoryParts.join("/")}`
-        : item.destination;
+      const destination = this.destinationFor(item.relativePath, item.destination);
       await this.ensureDirectories(destination, item.destination, item.controller.signal);
 
       // The client only builds paths under the app's own /_upload route. The
@@ -224,6 +279,8 @@ export class UploadManager {
         file: item.file,
         destDir: destination,
         session: item.session ?? null,
+        uploadKey: item.uploadKey,
+        fingerprint: item.fingerprint,
         chunkSize: item.chunkSize,
         concurrency: this.concurrencyForFile(),
         signal: item.controller.signal,
@@ -240,12 +297,28 @@ export class UploadManager {
             this.flush();
           },
           onSession: (session: UploadSession) => {
+            session.uploadKey = item.uploadKey;
             item.session = session;
+            saveResumeSession(item.file, item.resumeDestination, {
+              uploadKey: item.uploadKey,
+              uploadId: session.uploadId,
+              ranges: session.ranges,
+              chunkSize: session.chunkSize,
+              concurrency: session.concurrency,
+              size: session.size,
+              transport: session.transport ?? null,
+            }, this.storage);
           },
-          onRetry: () => {
+          onRetry: (retry: { code: string; message: string; transport?: string | null }) => {
             noteAuthActivity();
             item.status = "retrying";
+            if (retry.transport) item.transport = retry.transport;
             this.flush(true);
+          },
+          onDiagnostic: (report: Record<string, unknown>) => {
+            item.lastDiagnostic = report;
+            if (typeof report.transport === "string") item.transport = report.transport;
+            if (typeof report.protocol === "string") item.protocol = report.protocol;
           },
         },
       });
@@ -254,12 +327,16 @@ export class UploadManager {
       item.speed = 0;
       item.phase = undefined;
       item.session = undefined;
+      clearResumeSession(item.file, item.resumeDestination, this.storage);
+      this.reportDiagnostics(item, "success");
     } catch (error) {
       if (item.controller.signal.aborted) {
         item.status = "cancelled";
+        clearResumeSession(item.file, item.resumeDestination, this.storage);
       } else {
         item.status = "failed";
         item.error = error instanceof Error ? error.message : "Upload failed";
+        this.reportDiagnostics(item, "failed");
       }
       item.speed = 0;
       item.phase = undefined;
@@ -267,6 +344,13 @@ export class UploadManager {
       this.running -= 1;
     }
     this.flush(true);
+  }
+
+  private destinationFor(relativePath: string, base: string): string {
+    const directoryParts = relativePath.split("/").slice(0, -1);
+    return directoryParts.length
+      ? `${base.replace(/\/$/, "")}/${directoryParts.join("/")}`
+      : base;
   }
 
   private applyState(item: InternalItem, state: string): void {
@@ -287,12 +371,53 @@ export class UploadManager {
     const segments = path.split("/").filter(Boolean);
     for (let index = baseSegments.length; index < segments.length; index += 1) {
       const target = `/${segments.slice(0, index + 1).map(encodeURIComponent).join("/")}/`;
-      const response = await this.fetcher(target, { method: "MKCOL", signal });
+      const response = await this.fetchWithRetry(target, { method: "MKCOL", signal });
       if (!response.ok && response.status !== 405) {
         throw new Error(`Could not create folder (${response.status})`);
       }
       noteAuthActivity();
     }
+  }
+
+  private async fetchWithRetry(
+    url: string,
+    init: RequestInit,
+    attempts = 3,
+  ): Promise<Response> {
+    let lastError: unknown = null;
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        return await this.fetcher(url, init);
+      } catch (error) {
+        lastError = error;
+        if (init.signal?.aborted || attempt >= attempts) break;
+        await new Promise(resolve => setTimeout(resolve, 200 * attempt));
+      }
+    }
+    throw lastError instanceof Error
+      ? lastError
+      : new Error("Could not reach the server");
+  }
+
+  private reportDiagnostics(item: InternalItem, event: string): void {
+    const report = item.lastDiagnostic;
+    if (!report) return;
+    const payload = JSON.stringify({
+      ...report,
+      event,
+      filename: item.relativePath,
+      size: item.size,
+      upload_id: item.session?.uploadId ?? report.upload_id ?? null,
+      transport: item.transport ?? report.transport ?? null,
+      protocol: item.protocol ?? report.protocol ?? null,
+    });
+    void this.fetcher("/_upload/diagnostics", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: payload,
+    }).catch(() => {
+      /* Diagnostics must never change the upload result. */
+    });
   }
 
   private flush(immediate = false): void {
@@ -325,6 +450,8 @@ export class UploadManager {
       };
       if (item.phase !== undefined) published.phase = item.phase;
       if (item.error !== undefined) published.error = item.error;
+      if (item.transport !== undefined) published.transport = item.transport;
+      if (item.protocol !== undefined) published.protocol = item.protocol;
       return published;
     });
     this.snapshot = {

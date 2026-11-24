@@ -1,9 +1,8 @@
 /**
- * Folder-aware drag-and-drop traversal, shared by xwing and torrus.
+ * Folder-aware drag-and-drop traversal shared with torrus.
  *
- * This file is vendored verbatim into both repositories; keep the two copies
- * byte-identical (the parity test pins the digest). It has no imports and no
- * framework dependency.
+ * It has no imports and no framework dependency. X-wing does not pin a digest
+ * of the copy in another repository.
  *
  * Why it exists: `DataTransfer.files` only carries the *top* items of a drop.
  * Dropping a folder yields a single entry for the folder itself, so a naive

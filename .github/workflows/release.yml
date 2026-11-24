@@ -92,9 +92,9 @@ jobs:
           cache-dependency-path: scripts/package-lock.json
       - name: Install Playwright dependencies
         run: npm ci --prefix scripts
-      - name: Install Chromium and Firefox
+      - name: Install Chromium, Firefox and WebKit
         working-directory: scripts
-        run: npx playwright install --with-deps chromium firefox
+        run: npx playwright install --with-deps chromium firefox webkit
       - name: Run the Playwright suite
         run: npm --prefix scripts run test:e2e
 

@@ -8,7 +8,7 @@ const payload = {
   user: { name: "alice", authenticated: true },
   permissions: { read: true, write: true, delete: true },
   files: [{ name: "</script> 日本語.txt", path: "/%3C%2Fscript%3E%20%E6%97%A5%E6%9C%AC%E8%AA%9E.txt", kind: "file", size: 4, modified: null, editable: true }],
-  upload: { chunkSize: 1024, parallelDefault: 4 },
+  upload: { chunkSize: 1024, parallelDefault: 2 },
 };
 
 describe("directory contract", () => {

@@ -184,15 +184,13 @@ def test_put_out_of_space_is_507(fs_client, monkeypatch):
 
 
 def test_chunked_upload_permission_is_403(fs_client, root):
-    started = fs_client.post(
-        "/_upload/init", json={"filename": "blocked.bin", "size": 1, "dir": "/"}
-    )
-    assert started.status_code == 200
-    upload_id = started.json()["upload_id"]
+    from test_upload import init_upload, send_chunk
+
+    upload_id = init_upload(fs_client, "blocked.bin", 1)["upload_id"]
 
     try:
         with path_mode(root, 0o555):
-            response = fs_client.put(f"/_upload/{upload_id}?offset=0", content=b"x")
+            response = send_chunk(fs_client, upload_id, 0, b"x")
         assert response.status_code == 403
         assert response.json() == {"detail": "Permission denied"}
     finally:
@@ -200,18 +198,16 @@ def test_chunked_upload_permission_is_403(fs_client, root):
 
 
 def test_chunked_upload_write_permission_is_403(fs_client, monkeypatch):
-    started = fs_client.post(
-        "/_upload/init", json={"filename": "blocked.bin", "size": 1, "dir": "/"}
-    )
-    assert started.status_code == 200
-    upload_id = started.json()["upload_id"]
+    from test_upload import init_upload, send_chunk
+
+    upload_id = init_upload(fs_client, "blocked.bin", 1)["upload_id"]
 
     def deny(*args):
         raise PermissionError(errno.EACCES, "Permission denied")
 
     monkeypatch.setattr(upload_module, "_pwrite_all", deny)
     try:
-        response = fs_client.put(f"/_upload/{upload_id}?offset=0", content=b"x")
+        response = send_chunk(fs_client, upload_id, 0, b"x")
         assert response.status_code == 403
         assert response.json() == {"detail": "Permission denied"}
     finally:
@@ -240,15 +236,10 @@ def test_upload_init_destination_stat_permission_is_403(
 
 
 def test_chunked_upload_finalize_permission_is_403(fs_client, root):
-    started = fs_client.post(
-        "/_upload/init", json={"filename": "blocked.bin", "size": 1, "dir": "/"}
-    )
-    assert started.status_code == 200
-    upload_id = started.json()["upload_id"]
-    assert (
-        fs_client.put(f"/_upload/{upload_id}?offset=0", content=b"x").status_code
-        == 200
-    )
+    from test_upload import init_upload, send_chunk
+
+    upload_id = init_upload(fs_client, "blocked.bin", 1)["upload_id"]
+    assert send_chunk(fs_client, upload_id, 0, b"x").status_code == 200
 
     try:
         with path_mode(root, 0o555):

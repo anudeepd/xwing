@@ -15,16 +15,16 @@ from typing import Optional
 import yaml
 from pydantic import BaseModel, PrivateAttr, model_validator
 
+from .upload_engine import STATE_DIR_NAME
+
 logger = logging.getLogger(__name__)
 
 # Chunked upload defaults
 DEFAULT_MAX_UPLOAD_BYTES = 10 * 1024 * 1024 * 1024  # 10 GB
-# Upload window and editor save chunk. One window is one request, so this is
-# the knob that decides how many round trips (and how many proxy holds) a
-# multi-gigabyte upload pays for. Measured through a proxy that holds each
-# request body for 200 ms: 32 MB windows 163 MB/s, 64 MB windows 193 MB/s;
-# on a direct path both measure the same.
-DEFAULT_MAX_CHUNK_SIZE = 64 * 1024 * 1024  # 64 MB per chunk
+# Upload window and editor save chunk. V2 starts at a smaller window and grows
+# only after clean acknowledgements. This is the ceiling, not the first request.
+DEFAULT_MAX_CHUNK_SIZE = 16 * 1024 * 1024  # 16 MB per chunk
+DEFAULT_UPLOAD_CONCURRENCY = 2
 DEFAULT_MAX_CHUNKS = 10_000
 DEFAULT_SESSION_TTL_SECONDS = 3600  # 1 hour
 DEFAULT_CHUNK_READ_SIZE = 16 * 1024 * 1024  # 16 MB
@@ -154,6 +154,7 @@ class Settings(BaseModel):
     tmp_dir: Optional[Path] = None
     max_upload_bytes: int = DEFAULT_MAX_UPLOAD_BYTES
     max_chunk_bytes: int = DEFAULT_MAX_CHUNK_SIZE
+    upload_concurrency: int = DEFAULT_UPLOAD_CONCURRENCY
     max_chunks: int = DEFAULT_MAX_CHUNKS
     session_ttl_seconds: int = DEFAULT_SESSION_TTL_SECONDS
     chunk_read_size: int = DEFAULT_CHUNK_READ_SIZE
@@ -212,6 +213,10 @@ class Settings(BaseModel):
     def trash_dir(self) -> Path:
         return self.root_dir / ".xwing-trash"
 
+    @property
+    def upload_state_dir(self) -> Path:
+        return self.root_dir / STATE_DIR_NAME
+
     def is_internal_path(self, path: Path) -> bool:
         """True for X-wing's own files: tmp dir, trash, and its config/audit files.
 
@@ -227,7 +232,11 @@ class Settings(BaseModel):
         ]
         if resolved in files:
             return True
-        for directory in (tmp_dir, self.trash_dir.resolve()):
+        for directory in (
+            tmp_dir,
+            self.trash_dir.resolve(),
+            self.upload_state_dir.resolve(),
+        ):
             if directory is not None and (
                 resolved == directory or directory in resolved.parents
             ):

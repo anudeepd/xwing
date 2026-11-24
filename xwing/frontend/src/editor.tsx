@@ -237,8 +237,8 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
   };
 
   /**
-   * Save a large document through the shared upload engine: `init` → ranged
-   * PUTs → `complete`, which replaces the file atomically. A failed request
+   * Save a large document through the upload engine: `init` -> verified
+   * chunks -> `complete`, which replaces the file atomically. A failed request
    * retries from whatever the server already holds instead of resending the
    * whole document, and a DLP scan shows as "waiting for server" rather than a
    * killed save.
@@ -289,6 +289,7 @@ function EditorApp({ boot }: { boot: EditorBootstrap }): React.JSX.Element {
       const authRequired = error instanceof UploadError && (
         error.status === 401 ||
         error.code === "BAD_RESPONSE" ||
+        error.code === "AUTH_REQUIRED" ||
         (error.status === 403 && /authentication required/i.test(error.message))
       );
       if (authRequired) {

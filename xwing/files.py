@@ -19,6 +19,7 @@ _IGNORED_SYSTEM_NAMES = {
     ".temporaryitems",
     ".trashes",
     ".fseventsd",
+    ".xwing-uploads",
 }
 
 

@@ -128,6 +128,8 @@ def test_authenticated_text_write_is_audited_as_upload(
 def test_authenticated_chunked_upload_audits_final_path_not_session_hash(
     root, tmp_dir, users_yaml, tmp_path
 ):
+    from test_upload import init_upload, send_chunk
+
     db_path = tmp_path / "audit.db"
     settings = Settings(
         root_dir=root,
@@ -139,29 +141,11 @@ def test_authenticated_chunked_upload_audits_final_path_not_session_hash(
     )
     headers = {"X-Forwarded-User": "alice"}
     with TestClient(create_app(settings)) as client:
-        init = client.post(
-            "/_upload/init",
-            json={"filename": "final.txt", "size": 11, "dir": "/"},
-            headers=headers,
-        )
-        assert init.status_code == 200
-        upload_id = init.json()["upload_id"]
-        assert (
-            client.put(
-                f"/_upload/{upload_id}?offset=0",
-                content=b"hello ",
-                headers=headers,
-            ).status_code
-            == 200
-        )
-        assert (
-            client.put(
-                f"/_upload/{upload_id}?offset=6",
-                content=b"world",
-                headers=headers,
-            ).status_code
-            == 200
-        )
+        upload_id = init_upload(
+            client, "final.txt", 11, headers=headers
+        )["upload_id"]
+        assert send_chunk(client, upload_id, 0, b"hello ", headers=headers).status_code == 200
+        assert send_chunk(client, upload_id, 6, b"world", headers=headers).status_code == 200
         response = client.post(f"/_upload/{upload_id}/complete", headers=headers)
 
     assert response.status_code == 200

@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -16,7 +17,6 @@ from xwing.upload_engine import (
     UploadSink,
     UploadStore,
     UploadTarget,
-    _abort_session,
     _clamp_chunk_size,
     stream_to_sink,
 )
@@ -266,6 +266,8 @@ def test_upload_init_rejects_non_string_dir(client):
 
 
 def test_upload_open_sink_rejects_directory_outside_root(monkeypatch, root, tmp_dir, users_yaml):
+    from test_upload import init_upload, send_chunk
+
     outside = root.parent / "outside"
     outside.mkdir()
     original = upload.safe_path
@@ -275,12 +277,8 @@ def test_upload_open_sink_rejects_directory_outside_root(monkeypatch, root, tmp_
         app = FastAPI()
         app.include_router(upload.create_upload_router(settings, upload.build_upload_store(settings)))
         with TestClient(app) as client:
-            init = client.post(
-                "/_upload/init",
-                json={"filename": "x.txt", "size": 1, "dir": "/"},
-            )
-            assert init.status_code == 200
-            put = client.put(f"/_upload/{init.json()['upload_id']}?offset=0", content=b"x")
+            init = init_upload(client, "x.txt", 1)
+            put = send_chunk(client, init["upload_id"], 0, b"x")
             assert put.status_code == 403
     finally:
         monkeypatch.setattr(upload, "safe_path", original)
@@ -321,27 +319,22 @@ def test_upload_engine_edges(tmp_path):
     tracker = RangeTracker([[10, 20]])
     tracker.add(1, 5)
     assert tracker.spans() == [(1, 5), (10, 20)]
-    assert _clamp_chunk_size("bad") == 32 * 1024 * 1024
-    store = UploadStore(ttl_seconds=1)
+    assert _clamp_chunk_size("bad", 16 * 1024 * 1024) == 4 * 1024 * 1024
+    store = UploadStore(state_dir=tmp_path / "state", ttl_seconds=1)
     asyncio.run(store.drop("missing"))
     assert store.user_session_count(None) == 0
-    asyncio.run(_abort_session(SimpleNamespace(sink=None), enabled=True))
-
-    class BadSink:
-        async def abort(self):
-            raise RuntimeError("abort")
-    asyncio.run(_abort_session(SimpleNamespace(sink=BadSink(), session_id="x"), enabled=True))
 
 
 @pytest.mark.asyncio
 async def test_upload_store_expiry_and_missing_drop(tmp_path):
-    store = UploadStore(ttl_seconds=1)
+    store = UploadStore(state_dir=tmp_path / "state", ttl_seconds=1)
     target = UploadTarget(
         session_id="a" * 32,
         user=None,
         directory=str(tmp_path),
         filename="x.txt",
         size=1,
+        upload_key="expiry-key",
     )
     session = await store.register(target, user=None)
     session.updated_at = 0
@@ -359,19 +352,24 @@ def _router_client(settings):
 def test_upload_router_closing_max_bytes_and_finalize_errors(
     root, tmp_dir, users_yaml
 ):
+    from test_upload import send_chunk
+
     settings = Settings(root_dir=root, tmp_dir=tmp_dir, users_config=users_yaml)
     client, store = _router_client(settings)
     with client:
-        init = client.post("/_upload/init", json={"filename": "x.txt", "size": 1, "dir": "/"})
+        init = client.post(
+            "/_upload/init",
+            json={"upload_key": "edge-key-one", "filename": "x.txt", "size": 1, "dir": "/"},
+        )
         upload_id = init.json()["upload_id"]
         session = store.get(upload_id)
         session.closing = True
-        assert client.put(f"/_upload/{upload_id}?offset=0", content=b"x").status_code == 409
+        assert send_chunk(client, upload_id, 0, b"x").status_code == 409
         session.closing = False
 
-        store.max_session_bytes = 0
-        assert client.put(f"/_upload/{upload_id}?offset=0", content=b"x").status_code == 413
-        store.max_session_bytes = 10
+        store.max_request_bytes = 1
+        assert send_chunk(client, upload_id, 0, b"xy").status_code == 413
+        store.max_request_bytes = 16 * 1024 * 1024
 
         session.closing = True
         assert client.post(f"/_upload/{upload_id}/complete").status_code == 409
@@ -385,23 +383,35 @@ def test_upload_router_closing_max_bytes_and_finalize_errors(
             async def abort(self):
                 pass
         session.sink = Sink()
-        assert client.put(f"/_upload/{upload_id}?offset=0", content=b"x").status_code == 409
+        assert send_chunk(client, upload_id, 0, b"x").status_code == 409
 
-        init = client.post("/_upload/init", json={"filename": "none.txt", "size": 1, "dir": "/"})
+        init = client.post(
+            "/_upload/init",
+            json={"upload_key": "edge-key-two", "filename": "none.txt", "size": 1, "dir": "/"},
+        )
         upload_id = init.json()["upload_id"]
         session = store.get(upload_id)
         session.sink = None
         session.ranges.add(0, 1)
-        assert client.post(f"/_upload/{upload_id}/complete").status_code == 400
+        assert client.post(f"/_upload/{upload_id}/complete").status_code == 409
 
 
 def test_upload_complete_http_and_internal_errors(root, tmp_dir, users_yaml, monkeypatch):
     from fastapi import HTTPException
+
     settings = Settings(root_dir=root, tmp_dir=tmp_dir, users_config=users_yaml)
     client, store = _router_client(settings)
     with client:
         for error, expected in ((HTTPException(status_code=409, detail="close"), 409), (OSError("finalize"), 500)):
-            init = client.post("/_upload/init", json={"filename": "bad.txt", "size": 1, "dir": "/"})
+            init = client.post(
+                "/_upload/init",
+                json={
+                    "upload_key": f"edge-error-{expected}",
+                    "filename": "bad.txt",
+                    "size": 1,
+                    "dir": "/",
+                },
+            )
             upload_id = init.json()["upload_id"]
             session = store.get(upload_id)
             class Sink:
@@ -413,18 +423,28 @@ def test_upload_complete_http_and_internal_errors(root, tmp_dir, users_yaml, mon
                     pass
             session.sink = Sink()
             session.ranges.add(0, 1)
+            session.staged_path = None
             assert client.post(f"/_upload/{upload_id}/complete").status_code == expected
 
-        init = client.post("/_upload/init", json={"filename": "empty.txt", "size": 0, "dir": "/"})
+        init = client.post(
+            "/_upload/init",
+            json={"upload_key": "edge-empty", "filename": "empty.txt", "size": 0, "dir": "/"},
+        )
         upload_id = init.json()["upload_id"]
         assert client.post(f"/_upload/{upload_id}/complete").status_code == 200
 
-        init = client.post("/_upload/init", json={"filename": "outside.txt", "size": 0, "dir": "/"})
+        init = client.post(
+            "/_upload/init",
+            json={"upload_key": "edge-outside", "filename": "outside.txt", "size": 0, "dir": "/"},
+        )
         upload_id = init.json()["upload_id"]
         store.get(upload_id).target.directory = str(root.parent / "outside-empty")
         assert client.post(f"/_upload/{upload_id}/complete").status_code == 403
 
-        init = client.post("/_upload/init", json={"filename": "hook.txt", "size": 0, "dir": "/"})
+        init = client.post(
+            "/_upload/init",
+            json={"upload_key": "edge-hook", "filename": "hook.txt", "size": 0, "dir": "/"},
+        )
         upload_id = init.json()["upload_id"]
         async def fail(*args, **kwargs):
             raise RuntimeError("hook")
@@ -460,8 +480,23 @@ def test_upload_router_rejects_bad_json_and_offsets(client):
     assert client.post("/_upload/init", json=[]).status_code == 400
     init = client.post("/_upload/init", json={"filename": "x.txt", "size": 4, "dir": "/"})
     upload_id = init.json()["upload_id"]
-    assert client.put(f"/_upload/{upload_id}?offset=no", content=b"x").status_code == 400
-    assert client.put(f"/_upload/{upload_id}?offset=9", content=b"x").status_code == 400
+    sha = hashlib.sha256(b"x").hexdigest()
+    assert (
+        client.post(
+            f"/_upload/{upload_id}/chunk",
+            params={"offset": "no", "sha256": sha},
+            content=b"x",
+        ).status_code
+        == 400
+    )
+    assert (
+        client.post(
+            f"/_upload/{upload_id}/chunk",
+            params={"offset": "9", "sha256": sha},
+            content=b"x",
+        ).status_code
+        == 400
+    )
 
 
 def test_webdav_propfind_and_copy_edges(tmp_path, monkeypatch):

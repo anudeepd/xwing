@@ -45,7 +45,8 @@ Opens the file browser at `http://127.0.0.1:8989` and launches your default brow
 --port INTEGER             Bind port. [default: 8989]
 --open / --no-open         Open browser on startup. [default: open]
 --max-upload-gb FLOAT      Max upload size in GB. [default: 10]
---max-chunk-mb INTEGER     Upload window in MB. [default: 64]
+--max-chunk-mb INTEGER     Maximum upload window in MB. [default: 16]
+--upload-concurrency INT   Max parallel windows per file. [default: 2]
 --max-chunks INTEGER       Max chunks per upload session. [default: 10000]
 --session-ttl-minutes INT  Upload session expiry in minutes. [default: 60]
 --require-auth             Require authentication header (403 if missing).
@@ -94,20 +95,34 @@ WebDAV-capable client such as [WinSCP](https://winscp.net/).
 ### Resumable Upload (Chunked)
 
 The protocol tracks **committed byte ranges**, not chunk indices, so a client
-may change its chunk size mid-upload and may retry any range: whatever the
-server already holds is credited and never re-sent.
+may change its window size mid-upload and may retry any range. Every chunk
+carries a SHA-256 digest. The server credits a range only after the bytes
+match, and a staged manifest survives a server restart.
+
+The browser starts with a 4 MiB typed `POST` canary. If a corporate proxy drops
+that request, the same bytes are retried as a multipart upload and then as a
+WebDAV `PUT`. The transport that works is kept for the rest of the file. Clean
+canaries grow the window to the configured ceiling; a 413 or repeated transport
+drop shrinks both the window and concurrency instead of failing the file.
 
 ```bash
-# 1. Init session (size is the exact byte length)
+# 1. Init session. upload_key makes a retry return the same session.
 curl -X POST http://localhost:8989/_upload/init \
   -H "Content-Type: application/json" \
-  -d '{"filename": "big.iso", "size": 3221225472, "dir": "/"}'
-# -> {"upload_id": "...", "chunk_size": 33554432, "concurrency": 4, "size": 3221225472, ...}
+  -d '{"upload_key": "client-stable-key", "filename": "big.iso", "size": 3221225472, "dir": "/", "fingerprint": {"name": "big.iso", "size": 3221225472, "last_modified": 0}}'
+# -> {"upload_id": "...", "ranges": [], "chunk_policy": {"initial_bytes": 4194304, "max_bytes": 16777216, "max_concurrency": 2}, ...}
 
-# 2. Upload any byte range; the response reports what the server now holds
-curl -X PUT "http://localhost:8989/_upload/<upload_id>?offset=0" \
+# 2. Upload one verified window. Repeat for every missing range.
+SHA=$(sha256sum range.part | cut -d' ' -f1)
+LEN=$(wc -c < range.part)
+curl -X POST "http://localhost:8989/_upload/<upload_id>/chunk?offset=0&sha256=$SHA&length=$LEN" \
+  -H "Content-Type: application/octet-stream" \
   --data-binary @range.part
-# -> {"received": 33554432, "ranges": [[0, 33554432]], "next_offset": 33554432}
+# -> {"received": 4194304, "ranges": [[0, 4194304]], "next_offset": 4194304}
+
+# The same endpoint accepts multipart/form-data when a proxy rejects raw bodies.
+curl -X POST "http://localhost:8989/_upload/<upload_id>/chunk?offset=4194304" \
+  -F offset=4194304 -F length=$LEN -F sha256=$SHA -F file=@range.part
 
 # 3. Ask what is still missing (for a resume)
 curl "http://localhost:8989/_upload/<upload_id>"
@@ -120,31 +135,35 @@ curl -X DELETE http://localhost:8989/_upload/<upload_id>
 ```
 
 Staged bytes live beside the destination as `.<name>.upload-part-<upload_id>`
-and are hidden from directory listings; the destination only changes when
-`complete` succeeds. Abandoned sessions are reclaimed after
-`--session-ttl-minutes`, and a staging file whose owner is gone is removed the
-next time its directory is listed. Limits: `--max-upload-gb`, `--max-chunk-mb`,
+and are hidden from directory listings. Session manifests live in the hidden
+`.xwing-uploads` directory at the served root, so a process restart can resume
+from the bytes already committed. The destination only changes when `complete`
+succeeds. Abandoned sessions are reclaimed after `--session-ttl-minutes`, and a
+staging file whose owner is gone is removed the next time its directory is
+listed. Limits: `--max-upload-gb`, `--max-chunk-mb`, `--upload-concurrency`,
 `--max-chunks`, `--session-ttl-minutes`.
 
 Behind LDAPGate, keep `proxy.max_body_size` at or above the window: the gate
 rejects any larger request body with a bare 413 before it reaches the upload
-router. Its default is 10 MB, so with the 64 MiB default window set:
+router. Its default is 10 MB, so with the 16 MiB default ceiling set:
 
 ```yaml
 proxy:
-    max_body_size: 67108864   # 64 MiB, matching --max-chunk-mb 64
+    max_body_size: 16777216   # 16 MiB, matching --max-chunk-mb 16
 ```
 
 X-wing caps the window at that limit on startup and logs a warning, so uploads
-still work — they just shift less data per request. Raise both together, or
-lower both to 16 MiB if you would rather retry smaller windows on a flaky link.
+still work, they just shift less data per request. Raise both together, or
+lower both to 8 MiB if you would rather retry smaller windows on a flaky link.
 Any reverse proxy in front of LDAPGate needs a limit at least as large
-(`client_max_body_size 64m` on nginx, whose default is 1 MB).
+(`client_max_body_size 16m` on nginx, whose default is 1 MB).
 
-The browser client is shared with Torrus (`xwing/frontend/src/upload-engine.js`)
-and abandons a request only after a period with no byte movement, so a DLP
-scanner holding a body shows as "waiting for server" instead of a failed
-upload.
+The browser abandons a request only after a bounded period with no byte
+movement, or after the server acknowledges the body. A DLP scan shows as
+"waiting for server" while it runs, not as a five-minute hang. Proxy drops,
+proxy body caps, HTML login pages, browser reloads and server restarts have
+explicit recovery paths. The repeatable fault matrix is documented in
+[`docs/upload-reliability-plan.md`](docs/upload-reliability-plan.md).
 
 ## Access Control
 

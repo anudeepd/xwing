@@ -68,7 +68,13 @@ def _configure_logging(log_file: Path | None) -> None:
     "--max-chunk-mb",
     default=None,
     type=int,
-    help="Max chunk size in MB [default: 64].",
+    help="Max upload window in MB [default: 16].",
+)
+@click.option(
+    "--upload-concurrency",
+    default=None,
+    type=click.IntRange(1, 8),
+    help="Max parallel upload windows per file [default: 2].",
 )
 @click.option(
     "--max-chunks",
@@ -134,6 +140,7 @@ def serve(
     open_browser,
     max_upload_gb,
     max_chunk_mb,
+    upload_concurrency,
     max_chunks,
     session_ttl_minutes,
     require_auth,
@@ -204,6 +211,8 @@ def serve(
         kwargs["max_upload_bytes"] = int(max_upload_gb * 1024**3)
     if max_chunk_mb is not None:
         kwargs["max_chunk_bytes"] = max_chunk_mb * 1024**2
+    if upload_concurrency is not None:
+        kwargs["upload_concurrency"] = upload_concurrency
     if max_chunks is not None:
         kwargs["max_chunks"] = max_chunks
     if session_ttl_minutes is not None:
@@ -230,6 +239,8 @@ def serve(
             os.environ["XWING_MAX_UPLOAD_GB"] = str(max_upload_gb)
         if max_chunk_mb is not None:
             os.environ["XWING_MAX_CHUNK_MB"] = str(max_chunk_mb)
+        if upload_concurrency is not None:
+            os.environ["XWING_UPLOAD_CONCURRENCY"] = str(upload_concurrency)
         if max_chunks is not None:
             os.environ["XWING_MAX_CHUNKS"] = str(max_chunks)
         if session_ttl_minutes is not None:
