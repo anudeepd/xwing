@@ -65,6 +65,8 @@ def test_reload_exports_every_setting(monkeypatch, tmp_path):
         "2",
         "--max-chunk-mb",
         "8",
+        "--upload-concurrency",
+        "3",
         "--max-chunks",
         "9",
         "--session-ttl-minutes",
@@ -87,6 +89,7 @@ def test_reload_exports_every_setting(monkeypatch, tmp_path):
     assert result.exit_code == 0, result.output
     assert os.environ["XWING_MAX_UPLOAD_GB"] == "2.0"
     assert os.environ["XWING_MAX_CHUNK_MB"] == "8"
+    assert os.environ["XWING_UPLOAD_CONCURRENCY"] == "3"
     assert os.environ["XWING_MAX_CHUNKS"] == "9"
     assert os.environ["XWING_SESSION_TTL_MINUTES"] == "7"
     assert os.environ["XWING_USER_HEADER"] == "X-User"

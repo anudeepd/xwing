@@ -179,6 +179,7 @@ def build_upload_store(settings: Settings) -> UploadStore:
         max_request_bytes=settings.max_chunk_bytes,
         max_session_bytes=settings.max_upload_bytes,
         concurrency=settings.upload_concurrency,
+        storage_root=settings.root_dir,
     )
 
 

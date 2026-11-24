@@ -43,8 +43,9 @@ PR-01 through PR-05 are implemented in the working tree as of 2026-11-24.
 
 Verification completed locally:
 
-- Python: 482 passed, 8 skipped.
-- Frontend: 301 passed; TypeScript, ESLint and Ruff passed.
+- Python: 505 passed, 8 skipped, with 100% line coverage enforced.
+- Frontend: 323 passed, with 100% line coverage enforced; TypeScript, ESLint
+  and Ruff passed.
 - Browser fault matrix: 10 passed on Chromium 140 and WebKit 26. Chrome fell
   back to multipart; WebKit kept binary `POST`; both completed a 1 MiB proxy
   ceiling, a held body, a real reload from committed ranges, and the
@@ -65,6 +66,9 @@ Verification completed locally:
   61 MiB after warm-up and stayed between 61 and 62 MiB for the transfer.
 - Full Playwright suite: 150 passed, 4 skipped across Chromium, Firefox and
   WebKit projects.
+- The Sonar follow-up validates manifest-derived paths against the storage
+  root, reconstructs staging paths from validated fields, removes path-bearing
+  log messages, and fixes stale-progress handling and resume-record pruning.
 - The daily workflow asserts the new default of 2. The older visual baselines
   explicitly select 4 before their screenshots, so they continue to protect
   layout rather than a product default.

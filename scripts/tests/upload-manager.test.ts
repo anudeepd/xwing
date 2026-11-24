@@ -216,6 +216,36 @@ describe("UploadManager scheduling", () => {
     expect(engine.calls[0]!.options.destDir).toBe("/root/trip/photos");
   });
 
+  it("retries folder creation after transient network failures", async () => {
+    const fetcher = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("drop one"))
+      .mockRejectedValueOnce(new Error("drop two"))
+      .mockResolvedValue(okResponse());
+    const { manager } = managerWith(fetcher);
+    const file = new File(["hi"], "note.txt");
+    Object.defineProperty(file, "webkitRelativePath", { value: "trip/note.txt" });
+    manager.add([file], "/", 1024);
+    await pendingCall(0);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
+  it("turns repeated non-Error folder failures into a plain message", async () => {
+    const fetcher = vi.fn(async () => {
+      throw "offline";
+    });
+    const { manager } = managerWith(fetcher);
+    const file = new File(["hi"], "note.txt");
+    Object.defineProperty(file, "webkitRelativePath", { value: "trip/note.txt" });
+    manager.add([file], "/", 1024);
+    await vi.waitFor(() =>
+      expect(manager.getSnapshot().items[0]).toMatchObject({
+        status: "failed",
+        error: "Could not reach the server",
+      }),
+    );
+  });
+
   it("splits the parallel budget across the files running at once", async () => {
     const { manager } = managerWith();
     manager.setParallel(4);
@@ -236,6 +266,14 @@ describe("UploadManager scheduling", () => {
 
     const call = await pendingCall(0);
     expect(call.options.concurrency).toBe(4);
+  });
+
+  it("ignores a duplicate file that is already queued or running", async () => {
+    const { manager } = managerWith();
+    const subject = new File(["same"], "same.txt");
+    manager.add([subject], "/", 1024);
+    manager.add([subject], "/", 1024);
+    expect(manager.getSnapshot().items).toHaveLength(1);
   });
 
   it("records the session so a retry resumes instead of restarting", async () => {

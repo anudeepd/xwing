@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import time
 import uuid
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from xwing.upload_engine import (
     UploadStore,
     UploadTarget,
     create_upload_router,
+    staging_name,
 )
 
 
@@ -398,6 +400,59 @@ class TestUploadLifecycle:
             assert response.status_code == 200
             assert response.json()["state"] == "open"
 
+    def test_chunk_requests_after_completion_are_idempotent(self, harness):
+        client, _, _, _ = harness
+        upload_id = init_upload(client, "done.bin", 4)["upload_id"]
+        assert send_chunk(client, upload_id, 0, b"done").status_code == 200
+        assert client.post(f"/_upload/{upload_id}/complete").status_code == 200
+        response = send_chunk(client, upload_id, 0, b"done")
+        assert response.status_code == 200
+        assert response.json()["state"] == "complete"
+
+    @pytest.mark.parametrize(
+        "query, body, expected",
+        [
+            ("", b"x", 400),
+            ("offset=0", b"x", 400),
+            ("offset=0&sha256=" + "0" * 64 + "&length=-1", b"x", 400),
+            ("offset=0&sha256=" + "0" * 64, b"", 400),
+        ],
+    )
+    def test_chunk_rejects_missing_or_invalid_metadata(
+        self, harness, query, body, expected
+    ):
+        client, _, _, _ = harness
+        upload_id = init_upload(client, "a.bin", 4)["upload_id"]
+        response = client.post(
+            f"/_upload/{upload_id}/chunk?{query}",
+            content=body,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        assert response.status_code == expected
+
+    def test_multipart_chunk_requires_the_file_part(self, harness):
+        client, _, _, _ = harness
+        upload_id = init_upload(client, "a.bin", 4)["upload_id"]
+        response = client.post(
+            f"/_upload/{upload_id}/chunk",
+            data={"offset": "0", "sha256": "0" * 64, "length": "1"},
+            files={"other": ("other.txt", b"y")},
+        )
+        assert response.status_code == 400
+
+    def test_non_numeric_content_length_is_rejected(self, harness):
+        client, _, _, _ = harness
+        upload_id = init_upload(client, "a.bin", 4)["upload_id"]
+        response = client.post(
+            f"/_upload/{upload_id}/chunk?offset=0&sha256={'0' * 64}",
+            content=b"x",
+            headers={
+                "Content-Type": "application/octet-stream",
+                "Content-Length": "not-a-number",
+            },
+        )
+        assert response.status_code == 400
+
 
 class TestSinkErrors:
     def test_a_sink_error_keeps_the_application_error_code(self, harness):
@@ -479,10 +534,11 @@ class TestSessionTable:
     @pytest.mark.asyncio
     async def test_manifest_survives_a_store_restart(self, tmp_path):
         state_dir = tmp_path / "state"
-        staged = tmp_path / "staged.bin"
         store = UploadStore(state_dir=state_dir)
+        session_id = store.new_session_id()
+        staged = tmp_path / staging_name("a.bin", session_id)
         target = UploadTarget(
-            session_id=store.new_session_id(),
+            session_id=session_id,
             user="alice",
             directory=str(tmp_path),
             filename="a.bin",
@@ -505,3 +561,157 @@ class TestSessionTable:
         assert json.loads((state_dir / f"{session.session_id}.json").read_text())[
             "version"
         ] == 2
+
+    @pytest.mark.asyncio
+    async def test_persist_creates_a_missing_manifest_path(self, tmp_path):
+        store = UploadStore(state_dir=tmp_path / "state")
+        target = UploadTarget(
+            session_id=store.new_session_id(),
+            user="alice",
+            directory=str(tmp_path),
+            filename="a.bin",
+            size=0,
+            upload_key="persist-key",
+        )
+        session = await store.register(target, user="alice")
+        session.manifest_path = None
+        await store.persist(session)
+        assert session.manifest_path is not None
+        assert session.manifest_path.is_file()
+
+    @pytest.mark.asyncio
+    async def test_sink_abort_failure_does_not_block_drop(self, tmp_path):
+        class FailingSink(RecordingSink):
+            async def abort(self) -> None:
+                raise RuntimeError("abort failed")
+
+        store = UploadStore(state_dir=tmp_path / "state")
+        session = await store.register(
+            UploadTarget(
+                session_id=store.new_session_id(),
+                user=None,
+                directory=str(tmp_path),
+                filename="a.bin",
+                size=1,
+                upload_key="abort-key",
+            ),
+            user=None,
+        )
+        session.sink = FailingSink()
+        await store.drop(session.session_id)
+        assert store.get(session.session_id) is None
+
+    def test_manifest_validation_discards_untrusted_paths(self, tmp_path):
+        root = tmp_path / "root"
+        root.mkdir()
+        state = root / ".xwing-uploads"
+        state.mkdir()
+        session_id = "a" * 32
+        staged = root / staging_name("a.bin", session_id)
+        staged.write_bytes(b"")
+        outside = tmp_path / "outside"
+        outside.write_bytes(b"keep")
+        now = time.time()
+        payload = {
+            "version": 2,
+            "upload_id": session_id,
+            "upload_key": "manifest-key",
+            "user": "alice",
+            "directory": str(root),
+            "filename": "a.bin",
+            "size": 0,
+            "staged_path": str(outside),
+            "state": "open",
+            "ranges": [],
+            "fingerprint": {},
+            "created_at": now,
+            "updated_at": now,
+        }
+        manifest = state / f"{session_id}.json"
+        manifest.write_text(json.dumps(payload), encoding="utf-8")
+
+        store = UploadStore(state_dir=state, storage_root=root)
+        restored = store.get(session_id)
+        assert restored is not None
+        assert restored.staged_path == staged
+        assert outside.exists()
+
+    @pytest.mark.parametrize(
+        "patch",
+        [
+            {"version": 1},
+            {"upload_id": "b" * 32},
+            {"directory": "/"},
+            {"filename": "../a.bin"},
+        ],
+    )
+    def test_damaged_manifests_are_removed(self, tmp_path, patch):
+        state = tmp_path / "state"
+        state.mkdir()
+        session_id = "a" * 32
+        payload = {
+            "version": 2,
+            "upload_id": session_id,
+            "upload_key": "manifest-key",
+            "user": "alice",
+            "directory": str(tmp_path),
+            "filename": "a.bin",
+            "size": 0,
+            "staged_path": None,
+            "state": "open",
+            "ranges": [],
+            "fingerprint": {},
+            "created_at": time.time(),
+            "updated_at": time.time(),
+        }
+        payload.update(patch)
+        manifest = state / f"{session_id}.json"
+        manifest.write_text(json.dumps(payload), encoding="utf-8")
+
+        store = UploadStore(state_dir=state, storage_root=tmp_path)
+        assert store.get(session_id) is None
+        assert not manifest.exists()
+
+    def test_expired_and_missing_staged_manifests_are_removed(self, tmp_path):
+        state = tmp_path / "state"
+        state.mkdir()
+        now = time.time()
+        for session_id, staged_exists, age in (
+            ("a" * 32, True, 10),
+            ("b" * 32, False, 0),
+        ):
+            staged = tmp_path / staging_name("a.bin", session_id)
+            if staged_exists:
+                staged.write_bytes(b"")
+            manifest = state / f"{session_id}.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "upload_id": session_id,
+                        "upload_key": "manifest-key",
+                        "user": "alice",
+                        "directory": str(tmp_path),
+                        "filename": "a.bin",
+                        "size": 0,
+                        "staged_path": str(staged),
+                        "state": "open",
+                        "ranges": [],
+                        "fingerprint": {},
+                        "created_at": now - age,
+                        "updated_at": now - age,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            UploadStore(state_dir=state, storage_root=tmp_path, ttl_seconds=1)
+            assert not manifest.exists()
+            assert not staged.exists()
+
+    def test_damaged_json_manifest_is_removed(self, tmp_path):
+        state = tmp_path / "state"
+        state.mkdir()
+        manifest = state / f"{'a' * 32}.json"
+        manifest.write_text("{bad", encoding="utf-8")
+        UploadStore(state_dir=state, storage_root=tmp_path)
+        assert not manifest.exists()

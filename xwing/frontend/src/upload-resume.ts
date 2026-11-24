@@ -101,8 +101,8 @@ export function clearResumeSession(
 
 function pruneResumeSessions(manager: Storage, keepKey: string): void {
   const records: Array<{ key: string; savedAt: number }> = [];
-  for (let index = 0; index < manager.length; index += 1) {
-    const key = manager.key(index);
+  const keys = Array.from({ length: manager.length }, (_, index) => manager.key(index));
+  for (const key of keys) {
     if (!key?.startsWith(PREFIX) || key === keepKey) continue;
     try {
       const parsed = JSON.parse(manager.getItem(key) || "{}") as { savedAt?: number };

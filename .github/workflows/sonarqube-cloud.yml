@@ -30,7 +30,7 @@ jobs:
       - name: Run Python tests with coverage
         run: |
           mkdir -p coverage
-          uv run --frozen pytest --cov=xwing --cov-report=xml:coverage/python-coverage.xml -q
+          uv run --frozen pytest --cov=xwing --cov-report=xml:coverage/python-coverage.xml --cov-fail-under=100 -q
 
       - uses: actions/setup-node@v4
         with:

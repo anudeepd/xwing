@@ -52,6 +52,7 @@ const RETRYABLE_CODES = new Set([
   'UPLOAD_INCOMPLETE',
   'WRITE_FAILED',
 ]);
+let fallbackClientKey = 0;
 const TRANSPORT_CODES = new Set([
   'BAD_RESPONSE',
   'NETWORK',
@@ -227,7 +228,8 @@ function makeClientKey() {
     const bytes = crypto.getRandomValues(new Uint8Array(16));
     return `k-${Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('')}`;
   }
-  return `k-${Date.now().toString(36)}-${Math.floor(Math.random() * 0x7fffffff).toString(36)}`;
+  fallbackClientKey += 1;
+  return `k-${Date.now().toString(36)}-${fallbackClientKey.toString(36)}`;
 }
 
 export function newUploadKey() {
@@ -260,7 +262,11 @@ function sleep(ms, signal) {
 
 function backoffDelay(backoffMs, attempt) {
   const base = backoffMs[Math.min(Math.max(0, attempt - 1), backoffMs.length - 1)] ?? 0;
-  return Math.max(0, Math.round(base * (0.5 + Math.random() * 0.5)));
+  const crypto = globalThis.crypto;
+  const jitter = crypto && typeof crypto.getRandomValues === 'function'
+    ? crypto.getRandomValues(new Uint32Array(1))[0] / 0x100000000
+    : 0.5;
+  return Math.max(0, Math.round(base * (0.5 + jitter * 0.5)));
 }
 
 function resourceProtocol(url) {
@@ -373,8 +379,8 @@ export class UploadClient {
   }
 
   async initWithRetry(body, { attempts = 4, backoffMs = DEFAULT_BACKOFF_MS } = {}) {
-    let lastError = null;
-    for (let attempt = 1; attempt <= Math.max(1, attempts); attempt += 1) {
+    const maximumAttempts = Math.max(1, attempts);
+    for (let attempt = 1; ; attempt += 1) {
       try {
         return await this._requestJson('/init', {
           method: 'POST',
@@ -382,16 +388,19 @@ export class UploadClient {
           body: JSON.stringify(body),
         });
       } catch (error) {
-        lastError = error instanceof UploadError
+        const lastError = error instanceof UploadError
           ? error
           : new UploadError(error?.message || 'Upload setup failed', { retryable: true });
-        if (!lastError.retryable || attempt >= attempts || lastError.code === 'ABORTED') {
+        if (
+          !lastError.retryable ||
+          attempt >= maximumAttempts ||
+          lastError.code === 'ABORTED'
+        ) {
           throw lastError;
         }
         await sleep(backoffDelay(backoffMs, attempt), this.signal);
       }
     }
-    throw lastError;
   }
 
   async status(uploadId) {
@@ -1120,14 +1129,10 @@ export async function uploadFile({
       }
       if (!missingRanges(ranges, size).length) return;
       if (canGrow) {
-        const grown = clampChunkSize(windowSize * 2, minChunkBytes, maxWindow);
-        if (grown > windowSize) {
-          windowSize = grown;
-          workers = Math.min(maxWorkers, Math.max(2, workers));
-          publishSession();
-          continue;
-        }
-        grow = false;
+        windowSize = clampChunkSize(windowSize * 2, minChunkBytes, maxWindow);
+        workers = Math.min(maxWorkers, Math.max(2, workers));
+        publishSession();
+        continue;
       }
       if (pass + 1 >= MAX_PASSES) break;
       callbacks.onRetry?.({
@@ -1209,7 +1214,10 @@ export async function uploadFile({
       : new UploadError(error?.message || 'Upload failed', {});
     if (uploadError.code !== 'ABORTED' && info?.uploadId) {
       const status = await client.status(info.uploadId).catch(() => null);
-      if (status?.ranges) reportProgress(status.ranges, 0);
+      if (status?.ranges) {
+        ranges = status.ranges;
+        reportProgress(0);
+      }
       diagnostic({
         event: 'failed',
         status: uploadError.status,

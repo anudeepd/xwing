@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   clearResumeSession,
@@ -123,5 +123,48 @@ describe("upload resume storage", () => {
       ),
     ).not.toThrow();
     expect(loadResumeSession(subject, "/", null)).toBeNull();
+  });
+
+  it("ignores malformed and unavailable browser storage", () => {
+    storage = new MemoryStorage();
+    const subject = file();
+    storage.setItem(resumeRecordKey(subject, "/"), "{bad");
+    expect(loadResumeSession(subject, "/", storage)).toBeNull();
+
+    const descriptor = Object.getOwnPropertyDescriptor(window, "localStorage");
+    vi.stubGlobal("localStorage", undefined);
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      get() {
+        throw new Error("blocked");
+      },
+    });
+    try {
+      expect(loadResumeSession(subject, "/")).toBeNull();
+    } finally {
+      if (descriptor) Object.defineProperty(window, "localStorage", descriptor);
+      else delete (window as unknown as { localStorage?: Storage }).localStorage;
+    }
+  });
+
+  it("prunes expired and corrupt records before saving", () => {
+    storage = new MemoryStorage();
+    const subject = file();
+    storage.setItem(
+      "xwing.upload.v2.expired",
+      JSON.stringify({ savedAt: Date.now() - 8 * 24 * 60 * 60 * 1000 }),
+    );
+    storage.setItem("xwing.upload.v2.corrupt", "{bad");
+    saveResumeSession(subject, "/", {
+      uploadKey: "new",
+      uploadId: "new",
+      ranges: [],
+      chunkSize: 4,
+      concurrency: 1,
+      size: 8,
+    }, storage);
+    expect(storage.getItem("xwing.upload.v2.expired")).toBeNull();
+    expect(storage.getItem("xwing.upload.v2.corrupt")).toBeNull();
+    expect(loadResumeSession(subject, "/", storage)?.uploadKey).toBe("new");
   });
 });

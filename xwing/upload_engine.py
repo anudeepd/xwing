@@ -112,15 +112,25 @@ def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     _fsync_directory(path.parent)
 
 
-def _remove_file(path: Path | None) -> None:
+def _is_within_root(root: Path, path: Path) -> bool:
+    try:
+        return path.resolve(strict=False).is_relative_to(root.resolve(strict=False))
+    except (OSError, RuntimeError):
+        return False
+
+
+def _remove_file(path: Path | None, root: Path) -> None:
     if path is None:
         return
+    if not _is_within_root(root, path):
+        logger.warning("refusing to remove upload artifact outside its storage root")
+        return
     try:
-        path.unlink()
+        path.resolve(strict=False).unlink()
     except FileNotFoundError:
         pass
     except OSError:
-        logger.warning("could not remove upload artifact %s", path, exc_info=True)
+        logger.warning("could not remove upload artifact", exc_info=True)
 
 
 class RangeTracker:
@@ -268,6 +278,7 @@ class UploadStore:
         concurrency: int = DEFAULT_CONCURRENCY,
         max_sessions: int = DEFAULT_MAX_SESSIONS,
         max_sessions_per_user: int = DEFAULT_MAX_SESSIONS_PER_USER,
+        storage_root: Path | None = None,
     ) -> None:
         self.ttl_seconds = float(ttl_seconds)
         self.max_request_bytes = max(MIN_CHUNK_SIZE, int(max_request_bytes))
@@ -278,8 +289,13 @@ class UploadStore:
         )
         self.max_sessions = int(max_sessions)
         self.max_sessions_per_user = int(max_sessions_per_user)
-        self.state_dir = state_dir or Path(
-            tempfile.mkdtemp(prefix="xwing-upload-state-")
+        self.state_dir = (
+            state_dir or Path(tempfile.mkdtemp(prefix="xwing-upload-state-"))
+        ).resolve()
+        self.storage_root = (
+            storage_root.resolve()
+            if storage_root is not None
+            else self.state_dir.parent
         )
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self._sessions: dict[str, UploadSession] = {}
@@ -314,7 +330,9 @@ class UploadStore:
         if target.staged_path is not None:
             # No manifest existed for this id, so any file with the staging name
             # is an orphan. Remove it before the first write.
-            await anyio.to_thread.run_sync(_remove_file, target.staged_path)
+            await anyio.to_thread.run_sync(
+                _remove_file, target.staged_path, self.storage_root
+            )
         await self.persist(session)
         for stale in evicted:
             await self._drop_session(stale, abort=True)
@@ -400,9 +418,13 @@ class UploadStore:
                     "upload sink abort failed session=%s", session.session_id, exc_info=True
                 )
         if abort:
-            await anyio.to_thread.run_sync(_remove_file, session.staged_path)
+            await anyio.to_thread.run_sync(
+                _remove_file, session.staged_path, self.storage_root
+            )
         if session.manifest_path is not None:
-            await anyio.to_thread.run_sync(_remove_file, session.manifest_path)
+            await anyio.to_thread.run_sync(
+                _remove_file, session.manifest_path, self.state_dir
+            )
 
     def _load_sessions(self) -> None:
         now = time.time()
@@ -411,22 +433,44 @@ class UploadStore:
                 payload = json.loads(path.read_text(encoding="utf-8"))
                 state = payload.get("state")
                 if payload.get("version") != 2 or state not in ("open", "complete"):
-                    _remove_file(path)
+                    _remove_file(path, self.state_dir)
                     continue
-                staged_path = Path(payload["staged_path"]) if payload.get("staged_path") else None
+                session_id = str(payload["upload_id"])
+                if (
+                    not _SESSION_ID_RE.fullmatch(session_id)
+                    or path.name != f"{session_id}.json"
+                ):
+                    raise ValueError("manifest identity does not match its filename")
+                directory = Path(str(payload["directory"])).resolve(strict=False)
+                if not _is_within_root(self.storage_root, directory):
+                    raise ValueError("manifest destination is outside the storage root")
+                filename = str(payload["filename"])
+                if (
+                    not filename
+                    or filename in (".", "..")
+                    or any(char in filename for char in ("/", "\\", "\x00"))
+                ):
+                    raise ValueError("manifest filename is not a basename")
+                staged_path = (
+                    directory / staging_name(filename, session_id)
+                    if state == "open"
+                    else None
+                )
                 updated = float(payload.get("updated_at", 0))
                 if now - updated > self.ttl_seconds:
-                    _remove_file(path)
-                    _remove_file(staged_path)
+                    _remove_file(path, self.state_dir)
+                    _remove_file(staged_path, self.storage_root)
                     continue
-                if state == "open" and (not staged_path or not staged_path.is_file()):
-                    _remove_file(path)
+                # The staged path is reconstructed from validated manifest fields.
+                # This is local startup bookkeeping and never enters a response.
+                if state == "open" and not staged_path.is_file():  # NOSONAR(S6549)
+                    _remove_file(path, self.state_dir)
                     continue
                 target = UploadTarget(
-                    session_id=str(payload["upload_id"]),
+                    session_id=session_id,
                     user=payload.get("user"),
-                    directory=str(payload["directory"]),
-                    filename=str(payload["filename"]),
+                    directory=str(directory),
+                    filename=filename,
                     size=int(payload["size"]),
                     staged_path=staged_path if state == "open" else None,
                     upload_key=str(payload.get("upload_key", "")),
@@ -447,8 +491,8 @@ class UploadStore:
                 )
                 self._sessions[session.session_id] = session
             except Exception:
-                logger.warning("ignoring damaged upload manifest %s", path, exc_info=True)
-                _remove_file(path)
+                logger.warning("ignoring damaged upload manifest %r", path.name, exc_info=True)
+                _remove_file(path, self.state_dir)
 
 
 # ── Streaming helper for single-shot uploads (WebDAV PUT and friends) ─────────
@@ -670,7 +714,7 @@ def create_upload_router(
 
         try:
             if multipart:
-                form = await request.form(max_files=1, max_fields=8, max_part_size=64 * 1024)
+                form = await request.form(max_files=1, max_fields=8)
                 offset_value = form.get("offset", offset_value)
                 sha_value = form.get("sha256", sha_value)
                 request_id = form.get("request_id", request_id)

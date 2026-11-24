@@ -273,6 +273,17 @@ class TestUploadResults:
         listing = client.get("/")
         assert "busy.bin" not in listing.text
 
+    def test_short_staged_file_cannot_be_published(self, client, root):
+        upload_id = init_upload(client, "short.bin", 4)["upload_id"]
+        assert send_chunk(client, upload_id, 0, b"abcd").status_code == 200
+        staged = next(root.glob(".short.bin.upload-part-*"))
+        with staged.open("r+b") as handle:
+            handle.truncate(2)
+
+        response = client.post(f"/_upload/{upload_id}/complete")
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "STAGED_FILE_TRUNCATED"
+
     def test_resume_survives_an_app_restart(self, root, tmp_dir):
         users = tmp_dir / "users.yaml"
         users.write_text('users:\n  "*": rwd\n')
@@ -596,3 +607,17 @@ def test_admin_can_read_upload_diagnostics(root, tmp_dir, users_yaml):
         response = c.get("/_upload/diagnostics", headers=headers)
     assert response.status_code == 200
     assert response.json()["reports"][0]["code"] == "TRANSPORT_DROPPED"
+
+
+def test_upload_diagnostics_rejects_malformed_reports(client):
+    assert client.post(
+        "/_upload/diagnostics",
+        content=b"x" * (16 * 1024 + 1),
+        headers={"Content-Type": "application/json"},
+    ).status_code == 413
+    assert client.post(
+        "/_upload/diagnostics",
+        content=b"{",
+        headers={"Content-Type": "application/json"},
+    ).status_code == 400
+    assert client.post("/_upload/diagnostics", json=[]).status_code == 400

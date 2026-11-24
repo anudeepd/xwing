@@ -77,6 +77,11 @@ def _filesystem_http_error(exc: OSError, fallback: str) -> HTTPException:
     return HTTPException(status_code=failure.status_code, detail=failure.detail)
 
 
+def _check_file_readable(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
+    os.close(descriptor)
+
+
 def _temporary_archive(tmp_dir: Path) -> IO[bytes]:
     return tempfile.TemporaryFile(dir=tmp_dir)
 
@@ -987,8 +992,7 @@ def create_app(settings: Settings) -> FastAPI:
 
         if fspath.is_file():
             try:
-                with fspath.open("rb"):
-                    pass
+                await anyio.to_thread.run_sync(_check_file_readable, fspath)
             except OSError as exc:
                 raise _filesystem_http_error(
                     exc, "Could not open that file"

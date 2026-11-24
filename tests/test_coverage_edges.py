@@ -6,7 +6,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from starlette.requests import Request
 
 from conftest import TestClient
 from xwing import audit_store, config as config_module, files, trash_store, upload
@@ -18,6 +19,10 @@ from xwing.upload_engine import (
     UploadStore,
     UploadTarget,
     _clamp_chunk_size,
+    _fsync_directory,
+    _is_within_root,
+    _remove_file,
+    _valid_sha,
     stream_to_sink,
 )
 from xwing import webdav
@@ -233,6 +238,12 @@ def test_trash_save_cleans_temp_file_after_failure(monkeypatch, tmp_path):
 
 
 def test_local_sink_short_writes_and_abort_errors(tmp_path, monkeypatch):
+    truncate = tmp_path / "truncate"
+    truncate.write_bytes(b"old")
+    descriptor = upload._open_staging(truncate, truncate=True)
+    os.close(descriptor)
+    assert truncate.read_bytes() == b""
+
     with monkeypatch.context() as patch:
         patch.setattr(upload.os, "pwrite", lambda *args: 0)
         with pytest.raises(OSError, match="short write"):
@@ -254,6 +265,55 @@ def test_local_sink_short_writes_and_abort_errors(tmp_path, monkeypatch):
     asyncio.run(closed.finalize())
     with pytest.raises(OSError, match="closed"):
         asyncio.run(closed.write_at(0, b"x"))
+
+
+def test_upload_engine_filesystem_helpers_absorb_expected_errors(tmp_path, monkeypatch):
+    from xwing import upload_engine
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            upload_engine.os,
+            "open",
+            lambda *args, **kwargs: (_ for _ in ()).throw(OSError("denied")),
+        )
+        _fsync_directory(tmp_path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(upload_engine.os, "open", lambda *args, **kwargs: 99)
+        patch.setattr(
+            upload_engine.os,
+            "fsync",
+            lambda fd: (_ for _ in ()).throw(OSError("denied")),
+        )
+        patch.setattr(upload_engine.os, "close", lambda fd: None)
+        _fsync_directory(tmp_path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            Path,
+            "resolve",
+            lambda *args, **kwargs: (_ for _ in ()).throw(OSError("denied")),
+        )
+        assert not _is_within_root(tmp_path, tmp_path / "file")
+
+    root = tmp_path / "root"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.write_bytes(b"keep")
+    _remove_file(outside, root)
+    assert outside.exists()
+
+    unlinkable = root / "unlinkable"
+    unlinkable.write_bytes(b"x")
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            Path,
+            "unlink",
+            lambda self: (_ for _ in ()).throw(OSError("denied")),
+        )
+        _remove_file(unlinkable, root)
+
+    assert _valid_sha(None) is None
 
 
 def test_upload_init_rejects_non_string_dir(client):
@@ -282,6 +342,23 @@ def test_upload_open_sink_rejects_directory_outside_root(monkeypatch, root, tmp_
             assert put.status_code == 403
     finally:
         monkeypatch.setattr(upload, "safe_path", original)
+
+
+def test_upload_open_sink_rejects_staging_path_outside_root(
+    monkeypatch, root, tmp_dir, users_yaml
+):
+    from test_upload import init_upload, send_chunk
+
+    settings = Settings(root_dir=root, tmp_dir=tmp_dir, users_config=users_yaml)
+    store = upload.build_upload_store(settings)
+    app = FastAPI()
+    app.include_router(upload.create_upload_router(settings, store))
+    outside = root.parent / "outside-staging"
+    with TestClient(app) as client:
+        init = init_upload(client, "x.txt", 1)
+        store.get(init["upload_id"]).target.staged_path = outside
+        response = send_chunk(client, init["upload_id"], 0, b"x")
+        assert response.status_code == 403
 
 
 def test_upload_audit_error_is_logged(monkeypatch, tmp_path):
@@ -347,6 +424,107 @@ def _router_client(settings):
     app = FastAPI()
     app.include_router(upload.create_upload_router(settings, store))
     return TestClient(app), store
+
+
+def _call_asgi(app, path, *, headers, messages, query_string=b""):
+    sent = []
+
+    async def receive():
+        if messages:
+            return messages.pop(0)
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "root_path": "",
+        "query_string": query_string,
+        "headers": headers,
+        "client": ("testclient", 50000),
+        "server": ("testserver", 80),
+    }
+    asyncio.run(app(scope, receive, send))
+    return next((item for item in sent if item["type"] == "http.response.start"), None)
+
+
+def test_upload_diagnostics_rejects_invalid_content_length(tmp_path):
+    users = tmp_path / "users.yaml"
+    users.write_text("users:\n  '*': rwd\n")
+    settings = Settings(root_dir=tmp_path, users_config=users)
+    router = upload.create_upload_diagnostics_router(settings)
+    endpoint = next(route.endpoint for route in router.routes if route.path == "/_upload/diagnostics")
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/_upload/diagnostics",
+        "raw_path": b"/_upload/diagnostics",
+        "root_path": "",
+        "query_string": b"",
+        "headers": [(b"content-length", b"not-a-number")],
+        "client": ("testclient", 50000),
+        "server": ("testserver", 80),
+    }
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(endpoint(Request(scope)))
+    assert exc.value.status_code == 400
+
+
+def test_chunk_without_content_length_still_enforces_request_limit(
+    root, tmp_dir, users_yaml
+):
+    settings = Settings(root_dir=root, tmp_dir=tmp_dir, users_config=users_yaml)
+    client, store = _router_client(settings)
+    with client:
+        init = client.post(
+            "/_upload/init",
+            json={"upload_key": "no-length-key", "filename": "x.bin", "size": 4, "dir": "/"},
+        )
+        upload_id = init.json()["upload_id"]
+        store.max_request_bytes = 1
+        result = _call_asgi(
+            client.app,
+            f"/_upload/{upload_id}/chunk",
+            headers=[(b"content-type", b"application/octet-stream")],
+            messages=[{"type": "http.request", "body": b"xy", "more_body": False}],
+            query_string=f"offset=0&sha256={'0' * 64}&length=2".encode(),
+        )
+    assert result is not None
+    assert result["status"] == 413
+
+
+def test_chunk_client_disconnect_returns_499(root, tmp_dir, users_yaml):
+    settings = Settings(root_dir=root, tmp_dir=tmp_dir, users_config=users_yaml)
+    client, _ = _router_client(settings)
+    with client:
+        init = client.post(
+            "/_upload/init",
+            json={"upload_key": "disconnect-key", "filename": "x.bin", "size": 4, "dir": "/"},
+        )
+        upload_id = init.json()["upload_id"]
+        sha = "0" * 64
+        result = _call_asgi(
+            client.app,
+            f"/_upload/{upload_id}/chunk",
+            headers=[(b"content-type", b"application/octet-stream")],
+            messages=[
+                {"type": "http.request", "body": b"x", "more_body": True},
+                {"type": "http.disconnect"},
+            ],
+            query_string=f"offset=0&sha256={sha}&length=1".encode(),
+        )
+    assert result is not None
+    assert result["status"] == 499
 
 
 def test_upload_router_closing_max_bytes_and_finalize_errors(
