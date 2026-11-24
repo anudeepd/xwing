@@ -339,6 +339,9 @@ test("a completed browser upload refreshes the folder automatically", async ({ p
   const upload = page.getByRole("complementary", { name: "Uploads" });
   await expect(upload).toContainText("1 complete");
   await expect(upload).toContainText("Upload complete");
+  const progress = upload.getByRole("progressbar", { name: "browser-upload.txt upload progress" });
+  await expect(progress).toHaveAttribute("value", "100");
+  await expect(progress).toHaveAttribute("max", "100");
   await expect(page.getByRole("row", { name: /^browser-upload\.txt,/ })).toBeVisible();
   await expect(filter).toBeFocused();
   await expect(page.getByText("1 selected", { exact: true })).toBeVisible();
