@@ -642,6 +642,8 @@ class TestSessionTable:
             {"version": 1},
             {"upload_id": "b" * 32},
             {"directory": "/"},
+            {"directory": "relative"},
+            {"directory": None},
             {"filename": "../a.bin"},
         ],
     )
@@ -667,6 +669,36 @@ class TestSessionTable:
         payload.update(patch)
         manifest = state / f"{session_id}.json"
         manifest.write_text(json.dumps(payload), encoding="utf-8")
+
+        store = UploadStore(state_dir=state, storage_root=tmp_path)
+        assert store.get(session_id) is None
+        assert not manifest.exists()
+
+    def test_manifest_directory_rejects_parent_traversal(self, tmp_path):
+        state = tmp_path / "state"
+        state.mkdir()
+        session_id = "a" * 32
+        manifest = state / f"{session_id}.json"
+        manifest.write_text(
+            json.dumps(
+                {
+                    "version": 2,
+                    "upload_id": session_id,
+                    "upload_key": "manifest-key",
+                    "user": "alice",
+                    "directory": str(tmp_path / ".." / "outside"),
+                    "filename": "a.bin",
+                    "size": 0,
+                    "staged_path": None,
+                    "state": "open",
+                    "ranges": [],
+                    "fingerprint": {},
+                    "created_at": time.time(),
+                    "updated_at": time.time(),
+                }
+            ),
+            encoding="utf-8",
+        )
 
         store = UploadStore(state_dir=state, storage_root=tmp_path)
         assert store.get(session_id) is None

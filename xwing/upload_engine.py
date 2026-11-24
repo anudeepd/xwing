@@ -119,6 +119,20 @@ def _is_within_root(root: Path, path: Path) -> bool:
         return False
 
 
+def _manifest_directory(root: Path, raw: object) -> Path:
+    """Rebuild a destination from a manifest without probing the filesystem."""
+    if not isinstance(raw, str) or "\x00" in raw:
+        raise ValueError("manifest directory is not a path string")
+    directory = Path(raw)
+    if not directory.is_absolute() or ".." in directory.parts:
+        raise ValueError("manifest directory is not an absolute path under the root")
+    try:
+        relative = directory.relative_to(root)
+    except ValueError:
+        raise ValueError("manifest destination is outside the storage root") from None
+    return root.joinpath(*relative.parts)
+
+
 def _remove_file(path: Path | None, root: Path) -> None:
     if path is None:
         return
@@ -441,9 +455,9 @@ class UploadStore:
                     or path.name != f"{session_id}.json"
                 ):
                     raise ValueError("manifest identity does not match its filename")
-                directory = Path(str(payload["directory"])).resolve(strict=False)
-                if not _is_within_root(self.storage_root, directory):
-                    raise ValueError("manifest destination is outside the storage root")
+                directory = _manifest_directory(
+                    self.storage_root, payload["directory"]
+                )
                 filename = str(payload["filename"])
                 if (
                     not filename
