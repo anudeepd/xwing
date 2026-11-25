@@ -58,18 +58,23 @@ import type { UploadSnapshot } from "./upload-manager";
 import { uploadItemLabel, uploadSummary, uploadSummaryKind } from "./upload-summary";
 import { renderStartupError } from "./startup-error";
 
-interface PermissionNode {
+interface BasePermissionNode {
   role: string;
   path: string;
-  exists: boolean;
-  kind?: string;
-  owner?: string;
-  group?: string;
-  mode?: string;
-  symbolic?: string;
-  requires?: string[];
-  access?: { read: boolean; write: boolean; execute: boolean };
+  requires: string[];
 }
+
+type PermissionNode =
+  | (BasePermissionNode & { exists: false })
+  | (BasePermissionNode & {
+      exists: true;
+      kind: string;
+      owner: string;
+      group: string;
+      mode: string;
+      symbolic: string;
+      access: { read: boolean; write: boolean; execute: boolean };
+    });
 
 interface PermissionDetails {
   operation: string;
@@ -81,16 +86,16 @@ interface PermissionDetails {
 
 interface FailureNotice {
   message: string;
-  technical?: PermissionDetails;
+  technical: PermissionDetails | undefined;
 }
 
 class Failure extends Error {
-  readonly technical?: PermissionDetails;
+  readonly technical: PermissionDetails | undefined;
 
   constructor(message: string, technical?: PermissionDetails) {
     super(message);
     this.name = "Failure";
-    if (technical) this.technical = technical;
+    this.technical = technical;
   }
 }
 
@@ -639,7 +644,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     };
     const timer = window.setInterval(tick, AUTO_REFRESH_MS);
     // Returning to the tab should show the current state, not wait out the interval.
-    const onVisibilityChange = (): void => { if (document.visibilityState === "visible") tick(); };
+    const onVisibilityChange = (): void => tick();
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => {
       window.clearInterval(timer);
@@ -1448,8 +1453,8 @@ function ErrorDetails({ details, onToggle }: { details?: PermissionDetails | und
           <dt>Owner</dt><dd>{node.owner}</dd>
           <dt>Group</dt><dd>{node.group}</dd>
           <dt>Mode</dt><dd><code>{node.mode}</code> {node.symbolic}</dd>
-          <dt>Requires</dt><dd>{node.requires?.join(" + ") || "none"}</dd>
-          <dt>xwing access</dt><dd>read {node.access?.read ? "yes" : "no"} · write {node.access?.write ? "yes" : "no"} · execute {node.access?.execute ? "yes" : "no"}</dd>
+          <dt>Requires</dt><dd>{node.requires.join(" + ") || "none"}</dd>
+          <dt>xwing access</dt><dd>read {node.access.read ? "yes" : "no"} · write {node.access.write ? "yes" : "no"} · execute {node.access.execute ? "yes" : "no"}</dd>
         </dl> : <p>Missing</p>}
       </section>)}
     </div>
@@ -1491,7 +1496,7 @@ function errorMessage(error: unknown): string { return error instanceof Error ? 
 function errorFailure(error: unknown): FailureNotice {
   return {
     message: errorMessage(error),
-    ...(error instanceof Failure && error.technical ? { technical: error.technical } : {}),
+    technical: error instanceof Failure ? error.technical : undefined,
   };
 }
 async function responseFailure(response: Response): Promise<FailureNotice> {
@@ -1503,10 +1508,13 @@ async function responseFailure(response: Response): Promise<FailureNotice> {
     };
     return {
       message: mapped ?? (body.detail || `Request failed (${response.status})`),
-      ...(body.technical ? { technical: body.technical } : {}),
+      technical: body.technical,
     };
   } catch {
-    return { message: mapped ?? `Request failed (${response.status})` };
+    return {
+      message: mapped ?? `Request failed (${response.status})`,
+      technical: undefined,
+    };
   }
 }
 function downloadBlob(blob: Blob, filename: string): void { const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = filename; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); }

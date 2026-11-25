@@ -520,7 +520,7 @@ describe("file browser coverage edges", () => {
           mode: "0444",
           symbolic: "-r--r--r--",
           requires: [],
-          access: { read: true, write: false, execute: false },
+          access: { read: true, write: true, execute: true },
         },
         {
           role: "Parent",
@@ -533,6 +533,12 @@ describe("file browser coverage edges", () => {
           symbolic: "dr-xr-xr-x",
           requires: ["write", "execute"],
           access: { read: true, write: false, execute: true },
+        },
+        {
+          role: "Missing",
+          path: "/gone",
+          exists: false,
+          requires: ["read"],
         },
       ],
     };
@@ -561,6 +567,8 @@ describe("file browser coverage edges", () => {
     expect(details.textContent).toContain("Technical details");
     expect(details.textContent).toContain("frdvapp");
     expect(details.textContent).toContain("0444");
+    expect(details.textContent).toContain("write yes");
+    expect(details.textContent).toContain("Missing");
     details.open = true;
     details.dispatchEvent(new Event("toggle"));
 
