@@ -281,6 +281,115 @@ def test_unreadable_file_is_403_for_download_and_editor(fs_client, root):
     assert "Permission denied" in editor.text
 
 
+def test_permission_details_explain_an_unreadable_file(fs_client, root):
+    file = root / "secret.txt"
+    file.write_text("secret")
+
+    with path_mode(file, 0):
+        response = fs_client.get(
+            "/secret.txt",
+            headers={"X-Xwing-Error-Details": "1"},
+        )
+
+    assert response.status_code == 403
+    data = response.json()
+    assert data["detail"] == "Permission denied"
+    technical = data["technical"]
+    assert technical["operation"] == "Read file or folder"
+    assert "lacks read" in technical["reason"]
+    assert technical["process"]["user"]
+    target, parent = technical["nodes"][:2]
+    assert target["path"] == "/secret.txt"
+    assert target["mode"] == "0000"
+    assert target["access"]["read"] is False
+    assert parent["path"] == "/"
+    assert parent["requires"] == ["execute"]
+
+
+def test_permission_details_explain_a_delete_denial(fs_client, root):
+    folder = root / "other-user-folder"
+    folder.mkdir()
+    (root / ".xwing-trash").mkdir()
+
+    with path_mode(root, 0o555):
+        response = fs_client.delete(
+            "/other-user-folder/",
+            headers={"X-Xwing-Error-Details": "1"},
+        )
+
+    assert response.status_code == 403
+    technical = response.json()["technical"]
+    assert technical["operation"] == "Delete"
+    assert "lacks write" in technical["reason"]
+    nodes = {node["role"]: node for node in technical["nodes"]}
+    assert nodes["Target"]["mode"] == "0755"
+    assert nodes["Parent"]["mode"] == "0555"
+    assert nodes["Parent"]["access"]["write"] is False
+    assert "xwing trash" in nodes
+
+
+def test_permission_details_cover_bulk_delete_and_mkcol(fs_client, root):
+    folder = root / "other-user-folder"
+    folder.mkdir()
+
+    with path_mode(root, 0o555):
+        bulk = fs_client.post(
+            "/_bulk/delete",
+            json={"paths": ["/other-user-folder/"]},
+            headers={"X-Xwing-Error-Details": "1"},
+        )
+        mkcol = fs_client.request(
+            "MKCOL",
+            "/new-folder/",
+            headers={"X-Xwing-Error-Details": "1"},
+        )
+
+    assert bulk.status_code == 403
+    assert bulk.json()["technical"]["operation"] == "Delete"
+    assert mkcol.status_code == 403
+    mkcol_details = mkcol.json()["technical"]
+    assert mkcol_details["operation"] == "Create folder"
+    assert mkcol_details["nodes"][0]["role"] == "Parent"
+
+
+def test_permission_details_cover_put_move_and_copy(fs_client, root):
+    source = root / "source.txt"
+    source.write_text("source")
+
+    with path_mode(root, 0o555):
+        upload = fs_client.put(
+            "/upload.txt",
+            content=b"data",
+            headers={"X-Xwing-Error-Details": "1"},
+        )
+        moved = fs_client.request(
+            "MOVE",
+            "/source.txt",
+            headers={
+                "Destination": "/moved.txt",
+                "Overwrite": "F",
+                "X-Xwing-Error-Details": "1",
+            },
+        )
+        copied = fs_client.request(
+            "COPY",
+            "/source.txt",
+            headers={
+                "Destination": "/copied.txt",
+                "Overwrite": "F",
+                "X-Xwing-Error-Details": "1",
+            },
+        )
+
+    assert upload.status_code == 403
+    assert upload.json()["technical"]["nodes"][0]["role"] == "Destination folder"
+    assert moved.status_code == 403
+    assert moved.json()["technical"]["operation"] == "Move"
+    assert copied.status_code == 403
+    assert copied.json()["technical"]["operation"] == "Copy"
+    assert copied.json()["technical"]["nodes"][-1]["role"] == "Destination parent"
+
+
 def test_editor_read_permission_is_403(fs_client, root, monkeypatch):
     file = root / "secret.txt"
     file.write_text("secret")
@@ -291,6 +400,9 @@ def test_editor_read_permission_is_403(fs_client, root, monkeypatch):
 
     assert response.status_code == 403
     assert "Permission denied" in response.text
+    assert "Technical details" in response.text
+    assert "secret.txt" in response.text
+    assert "xwing process" in response.text
 
 
 class SurrogateEntry:

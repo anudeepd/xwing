@@ -58,17 +58,54 @@ import type { UploadSnapshot } from "./upload-manager";
 import { uploadItemLabel, uploadSummary, uploadSummaryKind } from "./upload-summary";
 import { renderStartupError } from "./startup-error";
 
+interface PermissionNode {
+  role: string;
+  path: string;
+  exists: boolean;
+  kind?: string;
+  owner?: string;
+  group?: string;
+  mode?: string;
+  symbolic?: string;
+  requires?: string[];
+  access?: { read: boolean; write: boolean; execute: boolean };
+}
+
+interface PermissionDetails {
+  operation: string;
+  requirement: string;
+  reason: string;
+  process: { user: string; group: string; groups?: string[] };
+  nodes: PermissionNode[];
+}
+
+interface FailureNotice {
+  message: string;
+  technical?: PermissionDetails;
+}
+
+class Failure extends Error {
+  readonly technical?: PermissionDetails;
+
+  constructor(message: string, technical?: PermissionDetails) {
+    super(message);
+    this.name = "Failure";
+    if (technical) this.technical = technical;
+  }
+}
+
 interface Toast {
   id: number;
   message: string;
   kind: "success" | "error" | "deleted" | "restored";
   duration: number;
   action?: { label: string; run: () => void };
+  technical?: PermissionDetails;
 }
 type Dialog =
-  | { kind: "mkdir"; value: string; pending: boolean; error?: string | undefined }
-  | { kind: "delete"; paths: string[]; pending: boolean; error?: string | undefined }
-  | { kind: "rename"; path: string; name: string; value: string; pending: boolean; error?: string | undefined }
+  | { kind: "mkdir"; value: string; pending: boolean; error?: string | undefined; technical?: PermissionDetails | undefined }
+  | { kind: "delete"; paths: string[]; pending: boolean; error?: string | undefined; technical?: PermissionDetails | undefined }
+  | { kind: "rename"; path: string; name: string; value: string; pending: boolean; error?: string | undefined; technical?: PermissionDetails | undefined }
   | null;
 
 type DropWaitState = "preparing" | "delayed" | null;
@@ -238,6 +275,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   const [directory, setDirectory] = useState(initial);
   const [directoryState, setDirectoryState] = useState<"ready" | "loading" | "error">("ready");
   const [directoryError, setDirectoryError] = useState("");
+  const [directoryTechnical, setDirectoryTechnical] = useState<PermissionDetails | undefined>(undefined);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [lastSelected, setLastSelected] = useState<string | null>(null);
   // Roving tabindex for the listing: exactly one row is a tab stop, so a
@@ -378,13 +416,29 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     return () => document.removeEventListener("keydown", handleGlobalKey);
   }, [accountOpen, closeParallel, directory.permissions.delete, parallelOpen, selected]);
 
-  const addToast = (message: string, kind: Toast["kind"] = "success", action?: Toast["action"], duration = 5200): void => {
+  const addToast = (message: string, kind: Toast["kind"] = "success", action?: Toast["action"], duration = 5200, technical?: PermissionDetails): void => {
     const id = Date.now() + Math.random();
-    const toast: Toast = action ? { id, message, kind, action, duration } : { id, message, kind, duration };
+    const toast: Toast = {
+      id,
+      message,
+      kind,
+      duration,
+      ...(action ? { action } : {}),
+      ...(technical ? { technical } : {}),
+    };
     setToasts(current => [...current.slice(-2), toast]);
   };
 
   const dismissToast = (id: number): void => setToasts(current => current.filter(item => item.id !== id));
+  const addFailureToast = (failure: FailureNotice): void => {
+    addToast(
+      failure.message,
+      "error",
+      undefined,
+      failure.technical ? 15000 : 5200,
+      failure.technical,
+    );
+  };
 
   /** SPA links keep real hrefs: a modifier-click or middle-click must reach
    *  the browser instead of the in-app fade, so a new tab still works. */
@@ -420,12 +474,16 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
       abort.current = controller;
       setDirectoryState("loading");
       setDirectoryError("");
+      setDirectoryTechnical(undefined);
       try {
         const target = encodePath(path);
         const response = await authFetch(target, {
           headers: { Accept: DIRECTORY_MEDIA_TYPE }, signal: controller.signal,
         });
-        if (!response.ok) throw new Error(await responseError(response));
+        if (!response.ok) {
+          const failure = await responseFailure(response);
+          throw new Failure(failure.message, failure.technical);
+        }
         if (!response.headers.get("content-type")?.includes(DIRECTORY_MEDIA_TYPE)) throw new Error("The server returned an unexpected response");
         const next = parseBootstrap(await response.json());
         setDirectory(next);
@@ -445,7 +503,9 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
       } catch (error) {
         if (controller.signal.aborted) return;
         setDirectoryState("error");
-        setDirectoryError(errorMessage(error));
+        const failure = errorFailure(error);
+        setDirectoryError(failure.message);
+        setDirectoryTechnical(failure.technical);
         if (animate) setListLeaving(false);
       }
     } finally {
@@ -634,13 +694,21 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     const current = dialog as Extract<Dialog, { kind: "mkdir" }>;
     if (current.pending) return;
     const value = current.value.trim();
-    if (!value || value.includes("/") || value === "." || value === "..") { setDialog({ ...current, error: "Enter one valid folder name." }); return; }
+    if (!value || value.includes("/") || value === "." || value === "..") { setDialog({ ...current, error: "Enter one valid folder name.", technical: undefined }); return; }
     const target = `${directory.path === "/" ? "" : directory.path}/${encodeURIComponent(value)}/`;
-    setDialog({ ...current, pending: true, error: undefined });
+    setDialog({ ...current, pending: true, error: undefined, technical: undefined });
     let response: Response;
     try { response = await authFetch(target, { method: "MKCOL" }); }
-    catch (error) { setDialog({ ...current, pending: false, error: errorMessage(error) }); return; }
-    if (!response.ok) { setDialog({ ...current, pending: false, error: await responseError(response) }); return; }
+    catch (error) {
+      const failure = errorFailure(error);
+      setDialog({ ...current, pending: false, error: failure.message, technical: failure.technical });
+      return;
+    }
+    if (!response.ok) {
+      const failure = await responseFailure(response);
+      setDialog({ ...current, pending: false, error: failure.message, technical: failure.technical });
+      return;
+    }
     setDialog(null); addToast(`Created ${value}`);
     // Focus follows the folder the user just made, wherever the sort puts it,
     // not whichever row happens to be first.
@@ -654,14 +722,22 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     const current = dialog as Extract<Dialog, { kind: "rename" }>;
     if (current.pending) return;
     const value = current.value.trim();
-    if (!value || value.includes("/")) { setDialog({ ...current, error: "Enter one valid name." }); return; }
+    if (!value || value.includes("/")) { setDialog({ ...current, error: "Enter one valid name.", technical: undefined }); return; }
     if (value === current.name) { setDialog(null); return; }
     const destination = renameDestination(current.path, value);
-    setDialog({ ...current, pending: true, error: undefined });
+    setDialog({ ...current, pending: true, error: undefined, technical: undefined });
     let response: Response;
     try { response = await authFetch(current.path, { method: "MOVE", headers: { Destination: destination, Overwrite: "F" } }); }
-    catch (error) { setDialog({ ...current, pending: false, error: errorMessage(error) }); return; }
-    if (!response.ok) { setDialog({ ...current, pending: false, error: await responseError(response) }); return; }
+    catch (error) {
+      const failure = errorFailure(error);
+      setDialog({ ...current, pending: false, error: failure.message, technical: failure.technical });
+      return;
+    }
+    if (!response.ok) {
+      const failure = await responseFailure(response);
+      setDialog({ ...current, pending: false, error: failure.message, technical: failure.technical });
+      return;
+    }
     setDialog(null); addToast(`Renamed to ${value}`, "success");
     await refresh({ kind: "name", name: value });
   };
@@ -670,17 +746,22 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     const current = dialog as Extract<Dialog, { kind: "delete" }>;
     if (current.pending) return;
     const focusAfterDelete = nearestSurvivor(files, current.paths);
-    setDialog({ ...current, pending: true, error: undefined });
+    setDialog({ ...current, pending: true, error: undefined, technical: undefined });
     let response: Response;
     try {
       response = current.paths.length === 1
         ? await authFetch(current.paths[0]!, { method: "DELETE" })
         : await authFetch("/_bulk/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paths: current.paths }) });
     } catch (error) {
-      setDialog({ ...current, pending: false, error: errorMessage(error) });
+      const failure = errorFailure(error);
+      setDialog({ ...current, pending: false, error: failure.message, technical: failure.technical });
       return;
     }
-    if (!response.ok) { setDialog({ ...current, pending: false, error: await responseError(response) }); return; }
+    if (!response.ok) {
+      const failure = await responseFailure(response);
+      setDialog({ ...current, pending: false, error: failure.message, technical: failure.technical });
+      return;
+    }
     const data = await response.json().catch(() => ({})) as { transaction_id?: string };
     setDialog(null); setSelected(new Set());
     addToast(`${current.paths.length} item${current.paths.length === 1 ? "" : "s"} deleted`, "deleted", data.transaction_id ? {
@@ -691,7 +772,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
 
   const restore = async (transaction: string): Promise<void> => {
     const response = await authFetch(`/api/restore/${transaction}`, { method: "POST" });
-    if (!response.ok) addToast(await responseError(response), "error");
+    if (!response.ok) addFailureToast(await responseFailure(response));
     else {
       const data = await response.json().catch(() => ({})) as { restored?: number };
       const count = data.restored ?? 0;
@@ -708,10 +789,12 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
     const stopHeartbeat = startAuthActivityHeartbeat();
     try {
       const response = await authFetch("/_bulk/zip", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ paths, base: directory.path }) });
-      if (!response.ok) { addToast(await responseError(response), "error"); return; }
+      if (!response.ok) { addFailureToast(await responseFailure(response)); return; }
       downloadBlob(await response.blob(), contentDispositionFilename(response.headers.get("content-disposition")) || "xwing-selection.zip");
     } catch (error) {
-      if (!(error instanceof Error && error.message === "authentication required")) addToast(errorMessage(error), "error");
+      if (!(error instanceof Error && error.message === "authentication required")) {
+        addFailureToast(errorFailure(error));
+      }
     } finally {
       stopHeartbeat();
       setZipPending(0);
@@ -920,7 +1003,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
           initial={listEntrance.current && !reduced ? { opacity: 0, y: 6 } : false}
           animate={listLeaving ? { opacity: 0, y: -4 } : { opacity: 1, y: 0 }}
           transition={listLeaving ? { duration: presenceDuration(reduced, LIST_LEAVE_MS / 1000), ease: "easeIn" } : { duration: presenceDuration(reduced, 0.24), ease: [0.16, 1, 0.3, 1] }}>
-          {directoryState === "error" && <div className="state-panel h-full min-h-[220px] flex flex-col items-center justify-center gap-2 text-xw-muted text-pretty"><strong>Couldn’t open this folder</strong><span>{directoryError}</span><button className={cn("button", BTN)} onClick={() => void refresh()}>Retry</button></div>}
+          {directoryState === "error" && <div className="state-panel h-full min-h-[220px] flex flex-col items-center justify-center gap-2 text-xw-muted text-pretty"><strong>Couldn’t open this folder</strong><span>{directoryError}</span><ErrorDetails details={directoryTechnical}/><button className={cn("button", BTN)} onClick={() => void refresh()}>Retry</button></div>}
           {emptyState}
           {files.map((file, index) => <FileRow key={file.path} file={file} index={index} selected={selected.has(file.path)} loading={directoryState === "loading"} arriving={arrivingNames.has(file.name)} tabStop={file.path === anchorPath} onFocusRow={setRovingPath} actionsOpen={actionsPath === file.path} actionsAnchor={actionsPath === file.path ? actionsAnchor : null} onToggleActions={() => { const next = actionsPath === file.path ? null : file.path; setActionsPath(next); if (next) setActionsAnchor(null); }} onOpenActions={() => { setActionsPath(file.path); setActionsAnchor(null); }} onOpenActionsAt={point => { setActionsPath(file.path); setActionsAnchor(point); }} onCloseActions={() => { setActionsPath(current => current === file.path ? null : current); }} permissions={directory.permissions} policyHint={policyHint} onSelect={(gesture) => toggleSelection(file, index, gesture)} onOpen={() => file.kind === "directory" ? void navigate(file.path) : openDocument(`${file.path}${file.editable ? "?edit" : ""}`, file.editable)} onRename={() => { if (directory.permissions.write && directory.permissions.delete) setDialog({ kind: "rename", path: file.path, name: file.name, value: file.name, pending: false }); }} onDelete={() => setDialog({ kind: "delete", paths: [file.path], pending: false })} onDeleteKey={() => { if (directory.permissions.delete) setDialog({ kind: "delete", paths: selected.size ? [...selected] : [file.path], pending: false }); }} onClear={() => { setSelected(new Set()); setLastSelected(null); }}/>) }
           {/* Space the rail's height, so the last rows can scroll clear of it. */}
@@ -959,6 +1042,7 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
 function ToastView({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }): React.JSX.Element {
   const reduced = prefersReducedMotion();
   const dismissing = useRef(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const onDismissRef = useRef(onDismiss);
   onDismissRef.current = onDismiss;
 
@@ -971,9 +1055,10 @@ function ToastView({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
   }, []);
 
   useEffect(() => {
+    if (detailsOpen) return;
     const timer = window.setTimeout(dismiss, toast.duration);
     return () => window.clearTimeout(timer);
-  }, [toast.id, toast.duration, dismiss]);
+  }, [toast.id, toast.duration, dismiss, detailsOpen]);
 
   // An error gets an alert glyph; the trash can means "deleted" and nothing else.
   const icon = toast.kind === "error" ? "alert" : toast.kind === "deleted" ? "trash" : "check";
@@ -982,7 +1067,8 @@ function ToastView({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
     <span className={TOAST_ICON}><Icon name={icon}/></span>
     <span className={TOAST_MESSAGE}>{toast.message}</span>
     {toast.action && <button className="toast-action flex-none h-7 min-h-7 min-w-7 px-2 py-1 border border-solid border-[rgba(124,58,237,.58)] rounded-md bg-xw-accent-lo text-[#ddd6fe] cursor-pointer text-[11px] font-medium leading-none uppercase hover:border-xw-accent-border hover:bg-[rgba(124,58,237,.26)] focus-visible:border-xw-accent-border focus-visible:bg-[rgba(124,58,237,.26)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-[#c4b5fd]" onClick={() => { dismiss(); toast.action?.run(); }}>{toast.action.label}</button>}
-    <span className={TOAST_TIMER} aria-hidden="true" style={{ animationDuration: `${toast.duration}ms` }}/>
+    {toast.technical && <div className="col-span-3"><ErrorDetails details={toast.technical} onToggle={setDetailsOpen}/></div>}
+    <span key={detailsOpen ? "paused" : `running-${toast.id}`} className={TOAST_TIMER} aria-hidden="true" style={{ animationDuration: `${toast.duration}ms`, animationPlayState: detailsOpen ? "paused" : "running" }}/>
   </m.div>;
 }
 
@@ -1339,14 +1425,41 @@ function DialogView({ dialog, setDialog, focusHandedOff, onMkdir, onRename, onDe
     <m.form className="modal" initial={cardInitial} animate={{ opacity: 1, y: 0, scale: 1 }} exit={cardExit} transition={{ duration: presenceDuration(reduced) }} role="dialog" aria-modal="true" aria-labelledby="dialog-title" aria-describedby="dialog-description" onSubmit={event => { event.preventDefault(); if (kind === "mkdir") onMkdir(); else if (kind === "rename") onRename(); else onDelete(); }}>
     <h2 id="dialog-title">{title}</h2>
     <p id="dialog-description">{description}</p>
-    {"value" in dialog && <label>{kind === "mkdir" ? "Folder name" : "New name"}<input data-autofocus value={dialog.value} readOnly={pending} aria-invalid={dialog.error ? "true" : undefined} aria-describedby={dialog.error ? "dialog-error" : undefined} onChange={event => setDialog({ ...dialog, value: event.target.value, error: undefined })}/></label>}
-    {dialog.error && <div id="dialog-error" className="dialog-error" role="alert">{dialog.error}</div>}
+    {"value" in dialog && <label>{kind === "mkdir" ? "Folder name" : "New name"}<input data-autofocus value={dialog.value} readOnly={pending} aria-invalid={dialog.error ? "true" : undefined} aria-describedby={dialog.error ? "dialog-error" : undefined} onChange={event => setDialog({ ...dialog, value: event.target.value, error: undefined, technical: undefined })}/></label>}
+    {dialog.error && <div id="dialog-error" className="dialog-error" role="alert">{dialog.error}<ErrorDetails details={dialog.technical}/></div>}
     <div className="modal-actions"><button ref={cancelRef} type="button" className={cn("button", BTN)} data-autofocus={kind === "delete" ? "" : undefined} disabled={pending} onClick={close}>Cancel</button><button ref={confirmRef} className={cn("button", BTN, textDialog ? BTN_PRIMARY : BTN_DANGER)} disabled={pending}>{submitLabel}</button></div>
     </m.form></m.div>;
 }
 
+function ErrorDetails({ details, onToggle }: { details?: PermissionDetails | undefined; onToggle?: (open: boolean) => void }): React.JSX.Element | null {
+  if (!details) return null;
+  return <details className="error-details" onToggle={event => onToggle?.(event.currentTarget.open)}>
+    <summary>Technical details</summary>
+    <div className="error-details-body">
+      <dl>
+        <dt>Operation</dt><dd>{details.operation}</dd>
+        <dt>Requirement</dt><dd>{details.requirement}</dd>
+        <dt>Why</dt><dd>{details.reason}</dd>
+        <dt>xwing process</dt><dd>{details.process.user} · {details.process.group}</dd>
+      </dl>
+      {details.nodes.map(node => <section className="error-detail-node" key={`${node.role}-${node.path}`}>
+        <strong>{node.role} · <code>{node.path}</code></strong>
+        {node.exists ? <dl>
+          <dt>Owner</dt><dd>{node.owner}</dd>
+          <dt>Group</dt><dd>{node.group}</dd>
+          <dt>Mode</dt><dd><code>{node.mode}</code> {node.symbolic}</dd>
+          <dt>Requires</dt><dd>{node.requires?.join(" + ") || "none"}</dd>
+          <dt>xwing access</dt><dd>read {node.access?.read ? "yes" : "no"} · write {node.access?.write ? "yes" : "no"} · execute {node.access?.execute ? "yes" : "no"}</dd>
+        </dl> : <p>Missing</p>}
+      </section>)}
+    </div>
+  </details>;
+}
+
 async function authFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-  const response = await fetch(input, init);
+  const headers = new Headers(init?.headers);
+  headers.set("X-Xwing-Error-Details", "1");
+  const response = await fetch(input, { ...init, headers });
   if (response.status === 401 || new URL(response.url || location.href, location.href).pathname === "/_auth/login") {
     beginAuthRedirect();
     throw new Error("authentication required");
@@ -1375,12 +1488,26 @@ const STATUS_COPY: Record<number, string> = {
   507: "Not enough space on the server.",
 };
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : "Something went wrong"; }
-async function responseError(response: Response): Promise<string> {
+function errorFailure(error: unknown): FailureNotice {
+  return {
+    message: errorMessage(error),
+    ...(error instanceof Failure && error.technical ? { technical: error.technical } : {}),
+  };
+}
+async function responseFailure(response: Response): Promise<FailureNotice> {
   const mapped = STATUS_COPY[response.status];
   try {
-    const body = await response.json() as { detail?: string };
-    return mapped ?? (body.detail || `Request failed (${response.status})`);
-  } catch { return mapped ?? `Request failed (${response.status})`; }
+    const body = await response.json() as {
+      detail?: string;
+      technical?: PermissionDetails;
+    };
+    return {
+      message: mapped ?? (body.detail || `Request failed (${response.status})`),
+      ...(body.technical ? { technical: body.technical } : {}),
+    };
+  } catch {
+    return { message: mapped ?? `Request failed (${response.status})` };
+  }
 }
 function downloadBlob(blob: Blob, filename: string): void { const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = filename; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); }
 function contentDispositionFilename(header: string | null): string | null { const match = header?.match(/filename\*?=(?:UTF-8'')?"?([^";]+)"?/i); return match?.[1] ? decodeURIComponent(match[1]) : null; }

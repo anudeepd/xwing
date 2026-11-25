@@ -91,7 +91,7 @@ function installFetch(overrides = {}) {
       if (typeof override === "object" && "ok" in override) return override;
       return response(override.body ?? override, override.status ?? 200, `${url.origin}${url.pathname}`);
     }
-    if (method === "GET" && (init.headers?.Accept ?? init.headers?.accept)?.includes("application/vnd.xwing.directory+json")) {
+    if (method === "GET" && new Headers(init.headers).get("accept")?.includes("application/vnd.xwing.directory+json")) {
       const directoryResponse = url.pathname === "/docs/"
         ? response({ ...bootstrap, path: "/docs/", breadcrumbs: [...bootstrap.breadcrumbs, { name: "docs", path: "/docs/" }], files: [] })
         : response(bootstrap);
@@ -501,6 +501,80 @@ describe("file browser coverage edges", () => {
       [...document.querySelectorAll(".toast")].some(toast => toast.textContent.includes("4 items deleted")),
     ).toBe(true));
     expect([...document.querySelectorAll(".toast")].find(toast => toast.textContent.includes("4 items deleted"))?.querySelector(".toast-action")).toBeNull();
+  });
+
+  it("shows collapsed permission diagnostics in dialogs and toasts", async () => {
+    const technical = {
+      operation: "Delete",
+      requirement: "Write and execute permission on the parent folder.",
+      reason: "The xwing process account 'frdvapp' lacks write permission on the parent /.",
+      process: { user: "frdvapp", group: "shared", groups: ["shared"] },
+      nodes: [
+        {
+          role: "Target",
+          path: "/alpha.txt",
+          exists: true,
+          kind: "file",
+          owner: "alice",
+          group: "shared",
+          mode: "0444",
+          symbolic: "-r--r--r--",
+          requires: [],
+          access: { read: true, write: false, execute: false },
+        },
+        {
+          role: "Parent",
+          path: "/",
+          exists: true,
+          kind: "directory",
+          owner: "frdvapp",
+          group: "shared",
+          mode: "0555",
+          symbolic: "dr-xr-xr-x",
+          requires: ["write", "execute"],
+          access: { read: true, write: false, execute: true },
+        },
+      ],
+    };
+    await mount({
+      overrides: {
+        "DELETE /alpha.txt": {
+          status: 403,
+          body: { detail: "Permission denied", technical },
+        },
+        "POST /_bulk/zip": {
+          status: 403,
+          body: { detail: "Permission denied", technical },
+        },
+      },
+    });
+
+    click(document.querySelector('[data-path="/alpha.txt"]'));
+    await waitFor(() => expect(document.querySelector(".selection-pill")?.textContent).toBe("1 selected"));
+    click(document.querySelector('[aria-label="Delete selected"]'));
+    await waitFor(() => expect(document.querySelector(".modal")).not.toBeNull());
+    click(confirmModal());
+    await waitFor(() => expect(document.querySelector(".dialog-error .error-details")).not.toBeNull());
+
+    let details = document.querySelector(".dialog-error .error-details");
+    expect(details.open).toBe(false);
+    expect(details.textContent).toContain("Technical details");
+    expect(details.textContent).toContain("frdvapp");
+    expect(details.textContent).toContain("0444");
+    details.open = true;
+    details.dispatchEvent(new Event("toggle"));
+
+    click([...document.querySelectorAll(".modal-actions button")].find(button => button.textContent === "Cancel"));
+    await waitFor(() => expect(document.querySelector(".modal")).toBeNull());
+    click(document.querySelector('[aria-label="Download selected as zip"]'));
+    await waitFor(() => expect(document.querySelector(".toast .error-details")).not.toBeNull());
+
+    details = document.querySelector(".toast .error-details");
+    expect(details.open).toBe(false);
+    expect(details.textContent).toContain("xwing process");
+    details.open = true;
+    details.dispatchEvent(new Event("toggle"));
+    expect(document.querySelector(".toast .error-details")).toBe(details);
   });
 
   it("animates navigation, handles bad responses and retries", async () => {

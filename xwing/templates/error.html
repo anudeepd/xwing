@@ -12,6 +12,35 @@
   <main class="boot-error" role="alert">
     <strong>{{ title }}</strong>
     <p>{{ message }}</p>
+    {% if technical %}
+    <details class="error-details">
+      <summary>Technical details</summary>
+      <div class="error-details-body">
+        <dl>
+          <dt>Operation</dt><dd>{{ technical.operation }}</dd>
+          <dt>Requirement</dt><dd>{{ technical.requirement }}</dd>
+          <dt>Why</dt><dd>{{ technical.reason }}</dd>
+          <dt>xwing process</dt><dd>{{ technical.process.user }} · {{ technical.process.group }}</dd>
+        </dl>
+        {% for node in technical.nodes %}
+        <div class="error-detail-node">
+          <strong>{{ node.role }} · <code>{{ node.path }}</code></strong>
+          {% if node.exists %}
+          <dl>
+            <dt>Owner</dt><dd>{{ node.owner }}</dd>
+            <dt>Group</dt><dd>{{ node.group }}</dd>
+            <dt>Mode</dt><dd><code>{{ node.mode }}</code> {{ node.symbolic }}</dd>
+            <dt>Requires</dt><dd>{{ node.requires | join(" + ") or "none" }}</dd>
+            <dt>xwing access</dt><dd>read {{ "yes" if node.access.read else "no" }} · write {{ "yes" if node.access.write else "no" }} · execute {{ "yes" if node.access.execute else "no" }}</dd>
+          </dl>
+          {% else %}
+          <p>Missing</p>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+    </details>
+    {% endif %}
     <a class="button" href="/">Back to files</a>
   </main>
 </body>

@@ -1,7 +1,10 @@
+import os
 import pytest
 
+from xwing import files as files_module
 from xwing.files import (
     InvalidPath,
+    filesystem_permission_context,
     human_size,
     is_editable,
     is_ignored_system_file,
@@ -162,3 +165,71 @@ class TestSafePathFinalComponent:
     def test_nul_byte_is_invalid(self, tmp_path):
         with pytest.raises(InvalidPath):
             safe_path(tmp_path, "a\x00b")
+
+
+class TestFilesystemPermissionContext:
+    def test_records_nodes_and_skips_missing_entries(self, tmp_path):
+        target = tmp_path / "target.txt"
+        target.write_text("x")
+        link = tmp_path / "link"
+        link.symlink_to(target)
+        fifo = tmp_path / "pipe"
+        os.mkfifo(fifo)
+
+        context = filesystem_permission_context(
+            tmp_path,
+            operation="Inspect",
+            requirement="Read access.",
+            nodes=[
+                ("Missing", tmp_path / "missing", ("read",)),
+                ("Target", target, ("read",)),
+                ("Link", link, ()),
+                ("Pipe", fifo, ()),
+            ],
+        )
+
+        assert context["operation"] == "Inspect"
+        assert context["process"]["user"]
+        assert context["nodes"][0]["exists"] is False
+        assert context["nodes"][1]["mode"] == "0644"
+        assert context["nodes"][1]["access"]["read"] is True
+        assert context["nodes"][2]["kind"] == "symlink"
+        assert context["nodes"][3]["kind"] == "other"
+
+    def test_account_lookup_falls_back_to_the_numeric_id(self, monkeypatch):
+        monkeypatch.setattr(
+            files_module.pwd,
+            "getpwuid",
+            lambda _uid: (_ for _ in ()).throw(KeyError()),
+        )
+        assert files_module._user_name(12345) == "12345"
+
+    def test_group_lookup_falls_back_to_the_numeric_id(self, monkeypatch):
+        monkeypatch.setattr(
+            files_module.grp,
+            "getgrgid",
+            lambda _gid: (_ for _ in ()).throw(KeyError()),
+        )
+        assert files_module._group_name(12345) == "12345"
+
+    def test_access_falls_back_when_effective_ids_are_unsupported(
+        self, monkeypatch, tmp_path
+    ):
+        calls = []
+
+        def access(path, bit, effective_ids=False):
+            calls.append(effective_ids)
+            if effective_ids:
+                raise NotImplementedError
+            return True
+
+        monkeypatch.setattr(files_module.os, "access", access)
+        assert files_module._can_access(tmp_path, os.R_OK) is True
+        assert calls == [True, False]
+
+    def test_access_failure_is_reported_as_denied(self, monkeypatch, tmp_path):
+        def deny(*_args, **_kwargs):
+            raise OSError("denied")
+
+        monkeypatch.setattr(files_module.os, "access", deny)
+        assert files_module._can_access(tmp_path, os.R_OK) is False
