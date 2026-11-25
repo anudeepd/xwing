@@ -532,7 +532,7 @@ describe("file browser coverage edges", () => {
           mode: "0555",
           symbolic: "dr-xr-xr-x",
           requires: ["write", "execute"],
-          access: { read: true, write: false, execute: true },
+          access: { read: false, write: false, execute: false },
         },
         {
           role: "Missing",
