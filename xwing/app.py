@@ -10,7 +10,7 @@ import tempfile
 import time
 import uuid
 import zipfile
-from typing import IO
+from typing import IO, Any
 from http.client import responses as _http_reasons
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -34,6 +34,7 @@ from .files import (
     DEFAULT_STALE_STAGING_SECONDS,
     EDITOR_FULL_EDIT_MAX,
     EDITOR_PREVIEW_BYTES,
+    filesystem_permission_context,
     filesystem_failure,
     human_size,
     InvalidPath,
@@ -41,6 +42,7 @@ from .files import (
     is_ignored_system_file,
     is_within_root,
     list_dir,
+    PERMISSION_DENIED,
     safe_path,
 )
 from .upload import (
@@ -62,6 +64,18 @@ from .webdav import (
 
 logger = logging.getLogger(__name__)
 
+ERROR_DETAILS_HEADER = "x-xwing-error-details"
+READ = ("read",)
+EXECUTE = ("execute",)
+READ_EXECUTE = ("read", "execute")
+WRITE_EXECUTE = ("write", "execute")
+ROLE_TARGET = "Target"
+ROLE_PARENT = "Parent"
+
+PermissionSpec = tuple[
+    str, str, list[tuple[str, Path, tuple[str, ...]]]
+]
+
 _LOG_CONTROL_CHARS = str.maketrans(
     {chr(code): f"\\x{code:02x}" for code in range(32)}
     | {"\n": "\\n", "\r": "\\r", "\t": "\\t", chr(127): "\\x7f"}
@@ -72,9 +86,30 @@ def _log_field(value: object) -> str:
     return str(value).translate(_LOG_CONTROL_CHARS)
 
 
-def _filesystem_http_error(exc: OSError, fallback: str) -> HTTPException:
+def _http_error(
+    status_code: int,
+    detail: Any,
+    *,
+    technical: dict[str, Any] | None = None,
+) -> HTTPException:
+    error = HTTPException(status_code=status_code, detail=detail)
+    if technical is not None:
+        setattr(error, "technical", technical)
+    return error
+
+
+def _filesystem_http_error(
+    exc: OSError,
+    fallback: str,
+    *,
+    technical: dict[str, Any] | None = None,
+) -> HTTPException:
     failure = filesystem_failure(exc, fallback)
-    return HTTPException(status_code=failure.status_code, detail=failure.detail)
+    return _http_error(
+        failure.status_code,
+        failure.detail,
+        technical=technical,
+    )
 
 
 def _check_file_readable(path: Path) -> None:
@@ -588,12 +623,165 @@ def create_app(settings: Settings) -> FastAPI:
     templates.env.filters["human_size"] = human_size
     templates.env.globals["asset"] = asset
 
+    def _delete_permission_spec(target: Path) -> PermissionSpec:
+        return (
+            "Delete",
+            "Write and execute permission on the item's parent folder, and a "
+            "writable xwing trash folder.",
+            [
+                (ROLE_TARGET, target, ()),
+                (ROLE_PARENT, target.parent, WRITE_EXECUTE),
+                ("xwing trash", settings.trash_dir, WRITE_EXECUTE),
+            ],
+        )
+
+    def _mkcol_permission_spec(target: Path) -> PermissionSpec:
+        return (
+            "Create folder",
+            "Write and execute permission on the folder's parent.",
+            [(ROLE_PARENT, target.parent, WRITE_EXECUTE)],
+        )
+
+    def _put_permission_spec(target: Path) -> PermissionSpec:
+        return (
+            "Upload",
+            "Write and execute permission on the destination folder.",
+            [("Destination folder", target.parent, WRITE_EXECUTE)],
+        )
+
+    def _transfer_permission_spec(
+        method: str,
+        target: Path,
+        destination: str | None,
+    ) -> PermissionSpec:
+        nodes = [
+            ("Source", target, READ),
+            ("Source parent", target.parent, WRITE_EXECUTE),
+        ]
+        if destination:
+            parsed = urlparse(destination)
+            raw_destination = (
+                parsed.path if parsed.scheme or parsed.netloc else destination
+            )
+            try:
+                dest = safe_path(
+                    settings.root_dir,
+                    unquote(raw_destination),
+                    follow_final=False,
+                )
+            except (OSError, ValueError):  # pragma: no cover
+                dest = None
+            if dest is not None and not settings.is_internal_path(dest):
+                nodes.append(
+                    ("Destination parent", dest.parent, WRITE_EXECUTE)
+                )
+        return (
+            "Move" if method == "MOVE" else "Copy",
+            "Write and execute permission on the source and destination parent "
+            "folders.",
+            nodes,
+        )
+
+    def _read_permission_spec(target: Path) -> PermissionSpec:
+        return (
+            "Read file or folder",
+            "Read permission on the target, and execute permission on its "
+            "parent.",
+            [
+                (ROLE_TARGET, target, READ_EXECUTE if target.is_dir() else READ),
+                (ROLE_PARENT, target.parent, EXECUTE),
+            ],
+        )
+
+    def _permission_details(
+        method: str,
+        raw_path: str,
+        destination: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Describe the filesystem entries involved in a permission denial."""
+        method = method.upper()
+        target: Path | None = None
+        if not raw_path.startswith(
+            ("/api/", "/_", "/static/", "/admin")
+        ):  # pragma: no cover
+            try:
+                target = safe_path(
+                    settings.root_dir, unquote(raw_path), follow_final=False
+                )
+            except (OSError, ValueError):  # pragma: no cover
+                pass
+        if target is None or settings.is_internal_path(
+            target
+        ):  # pragma: no cover
+            return None
+
+        spec: PermissionSpec | None = None
+        if method == "DELETE":
+            spec = _delete_permission_spec(target)
+        elif method == "MKCOL":
+            spec = _mkcol_permission_spec(target)
+        elif method == "PUT":
+            spec = _put_permission_spec(target)
+        elif method in {"MOVE", "COPY"}:
+            spec = _transfer_permission_spec(method, target, destination)
+        elif method in {"GET", "HEAD"}:
+            spec = _read_permission_spec(target)
+        if spec is None:  # pragma: no cover - methods without file access
+            return None
+        operation, requirement, nodes = spec
+        return filesystem_permission_context(
+            settings.root_dir,
+            operation=operation,
+            requirement=requirement,
+            nodes=nodes,
+        )
+
+    def _wants_error_details(request: Request) -> bool:
+        return request.headers.get(ERROR_DETAILS_HEADER) == "1"
+
+    def _permission_denied_response(
+        request: Request, method: str
+    ) -> JSONResponse:
+        return JSONResponse(
+            {
+                "detail": PERMISSION_DENIED,
+                "technical": _permission_details(
+                    method,
+                    request.url.path,
+                    request.headers.get("destination"),
+                ),
+            },
+            status_code=403,
+        )
+
     @app.exception_handler(HTTPException)
     async def http_exception_handler(request: Request, exc: HTTPException):
         """Browsers get a page; API and WebDAV clients keep the JSON body."""
         accepts_html = "text/html" in request.headers.get("accept", "")
+        technical = getattr(exc, "technical", None)
+        if (
+            technical is None
+            and exc.status_code == 403
+            and exc.detail == PERMISSION_DENIED
+            and (
+                accepts_html
+                or _wants_error_details(request)
+            )
+        ):
+            technical = await anyio.to_thread.run_sync(
+                _permission_details,
+                request.method,
+                request.url.path,
+                request.headers.get("destination"),
+            )
         if not accepts_html or request.method not in {"GET", "HEAD"}:
-            return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+            body: dict[str, Any] = {"detail": exc.detail}
+            if (
+                technical is not None
+                and _wants_error_details(request)
+            ):
+                body["technical"] = technical
+            return JSONResponse(body, status_code=exc.status_code)
         status = exc.status_code
         title, fallback = _ERROR_COPY.get(status, _ERROR_COPY[500])
         detail = exc.detail if isinstance(exc.detail, str) and exc.detail else ""
@@ -605,7 +793,12 @@ def create_app(settings: Settings) -> FastAPI:
         return templates.TemplateResponse(
             request,
             "error.html",
-            {"status": status, "title": title, "message": detail or fallback},
+            {
+                "status": status,
+                "title": title,
+                "message": detail or fallback,
+                "technical": technical,
+            },
             status_code=status,
         )
 
@@ -778,7 +971,26 @@ def create_app(settings: Settings) -> FastAPI:
                 lambda: trash_dir.mkdir(parents=True, exist_ok=True)
             )
         except OSError as exc:
-            raise _filesystem_http_error(exc, "Could not prepare the trash") from exc
+            raise _filesystem_http_error(
+                exc,
+                "Could not prepare the trash",
+                technical=filesystem_permission_context(
+                    settings.root_dir,
+                    operation="Delete",
+                    requirement=(
+                        "Write and execute permission on the storage root and "
+                        "a writable xwing trash folder."
+                    ),
+                    nodes=[
+                        (
+                            "Storage root",
+                            settings.root_dir,
+                            WRITE_EXECUTE,
+                        ),
+                        ("xwing trash", trash_dir, WRITE_EXECUTE),
+                    ],
+                ),
+            ) from exc
         paths_to_delete = _top_level_paths(paths)
         for fspath in paths_to_delete:
             if not os.path.lexists(fspath):
@@ -797,7 +1009,13 @@ def create_app(settings: Settings) -> FastAPI:
                         shutil.move, str(fspath), str(trash_path)
                     )
                 except OSError as exc:
-                    raise _filesystem_http_error(exc, "Delete failed") from exc
+                    raise _filesystem_http_error(
+                        exc,
+                        "Delete failed",
+                        technical=_permission_details(
+                            "DELETE", _to_rel_path(fspath)
+                        ),
+                    ) from exc
                 items.append(
                     {
                         "original": original,
@@ -2234,6 +2452,11 @@ def create_app(settings: Settings) -> FastAPI:
                 return Response(status_code=201)
             _reject_sensitive_path(fspath)
             response = mkcol_response(fspath)
+            if (
+                response.status_code == 403
+                and _wants_error_details(request)
+            ):
+                response = _permission_denied_response(request, "MKCOL")
             await _record_semantic_audit(
                 user=user,
                 operation="mkdir",
@@ -2259,6 +2482,11 @@ def create_app(settings: Settings) -> FastAPI:
             response = await copy_response(
                 fspath, dest, overwrite, dispose=_trash_displaced(dest, user)
             )
+            if (
+                response.status_code == 403
+                and _wants_error_details(request)
+            ):
+                response = _permission_denied_response(request, "COPY")
             await _record_semantic_audit(
                 user=user,
                 operation="copy",
@@ -2288,6 +2516,11 @@ def create_app(settings: Settings) -> FastAPI:
             response = await move_response(
                 fspath, dest, overwrite, dispose=_trash_displaced(dest, user)
             )
+            if (
+                response.status_code == 403
+                and _wants_error_details(request)
+            ):
+                response = _permission_denied_response(request, "MOVE")
             await _record_semantic_audit(
                 user=user,
                 operation="move",
