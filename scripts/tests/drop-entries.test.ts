@@ -209,6 +209,21 @@ describe("collectDroppedEntries", () => {
     await expect(collectDroppedEntries(transfer)).resolves.toEqual({ entries: [], skipped: 1 });
   });
 
+  it("falls back to the FileList when every item slot is stripped", async () => {
+    const transfer = {
+      items: [{
+        kind: "file",
+        webkitGetAsEntry: () => null,
+        getAsFile: () => null,
+      }],
+      files: [new File(["real"], "real.txt")],
+    } as unknown as DataTransfer;
+
+    await expect(collectDroppedEntries(transfer)).resolves.toMatchObject({
+      entries: [{ relativePath: "real.txt" }],
+    });
+  });
+
   it("drops a malformed file from the fallback FileList", async () => {
     const transfer = {
       items: [],
@@ -236,7 +251,30 @@ describe("collectDroppedEntries", () => {
 
     await expect(collectDroppedEntries(dataTransferFrom({ entries: [throws, rejects] }))).resolves.toEqual({
       entries: [],
-      skipped: 0,
+      skipped: 2,
+    });
+  });
+
+  it("uses the FileList when a file entry cannot be read", async () => {
+    const blocked = {
+      isFile: true,
+      isDirectory: false,
+      name: "blocked.txt",
+      file: (_resolve: (file: File) => void, reject: (error: unknown) => void) => {
+        reject(new Error("blocked by extension"));
+      },
+    };
+    const transfer = {
+      items: [{
+        kind: "file",
+        webkitGetAsEntry: () => blocked,
+        getAsFile: () => null,
+      }],
+      files: [new File(["real"], "blocked.txt")],
+    } as unknown as DataTransfer;
+
+    await expect(collectDroppedEntries(transfer)).resolves.toMatchObject({
+      entries: [{ relativePath: "blocked.txt" }],
     });
   });
 

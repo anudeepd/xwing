@@ -708,6 +708,35 @@ test("dropping files queues them, and an unreadable drop explains itself", async
   await expect(upload).toContainText("1 complete");
 });
 
+test("a drop with a stripped item still uploads from the FileList fallback", async ({ page }) => {
+  await page.goto("/");
+  await page.route("**/_upload/**", async route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === "/_upload/init") {
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ upload_id: "fallback", chunk_size: 8 * 1024 * 1024, concurrency: 4, size: 12 }) });
+    }
+    if (path.endsWith("/complete")) {
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ path: "fallback.txt", size: 12 }) });
+    }
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ received: 12, ranges: [[0, 12]], next_offset: 12 }) });
+  });
+
+  await page.evaluate(() => {
+    const event = new Event("drop", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "dataTransfer", {
+      value: {
+        items: [{ kind: "file", webkitGetAsEntry: () => null, getAsFile: () => null }],
+        files: [new File(["fallbackbody"], "fallback.txt", { type: "text/plain" })],
+      },
+    });
+    document.querySelector(".xw-app")!.dispatchEvent(event);
+  });
+
+  const upload = page.getByRole("complementary", { name: "Uploads" });
+  await expect(upload).toContainText("fallback.txt");
+  await expect(upload).toContainText("1 complete");
+});
+
 test("a cancelled upload can be cleared from the dock", async ({ page }) => {
   await page.goto("/");
   await page.route("**/_upload/**", async route => {

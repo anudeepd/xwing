@@ -99,6 +99,28 @@ function uploadId(): string {
   return `${timestamp}-${fallbackUploadId.toString(36)}`;
 }
 
+function fileFromCandidate(candidate: File | UploadCandidate): File | null {
+  const direct = candidate as File;
+  if (
+    direct &&
+    typeof direct.name === "string" &&
+    typeof direct.size === "number" &&
+    typeof direct.slice === "function"
+  ) {
+    return direct;
+  }
+  const nested = (candidate as UploadCandidate)?.file;
+  if (
+    nested &&
+    typeof nested.name === "string" &&
+    typeof nested.size === "number" &&
+    typeof nested.slice === "function"
+  ) {
+    return nested;
+  }
+  return null;
+}
+
 /**
  * Schedules file uploads and exposes their progress to React.
  *
@@ -141,10 +163,10 @@ export class UploadManager {
       // content scripts can leave null or half-formed entries in a dropped
       // FileList. Reading `.name` off one would abort the whole drop, so skip
       // them instead.
-      const file = candidate instanceof File ? candidate : candidate?.file;
-      if (!file || typeof file.name !== "string") continue;
+      const file = fileFromCandidate(candidate);
+      if (!file) continue;
       const relativePath =
-        (candidate instanceof File ? "" : candidate.relativePath) ||
+        (candidate === file ? "" : (candidate as UploadCandidate).relativePath) ||
         file.webkitRelativePath ||
         file.name;
       const finalDestination = this.destinationFor(relativePath, destination);

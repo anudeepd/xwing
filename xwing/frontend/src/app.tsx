@@ -852,7 +852,11 @@ function App({ initial }: { initial: XwingBootstrapV1 }): React.JSX.Element {
   }, [clearDropFeedback]);
 
   const queueFiles = (list: FileList | File[]): void => {
-    if (!directory.permissions.write || !list.length) return;
+    if (!directory.permissions.write) return;
+    if (!list.length) {
+      addToast("That selection contained no files. Try again, or drag the file into the page.", "error");
+      return;
+    }
     uploadManager.add(Array.from(list), directory.path, directory.upload.chunkSize);
   };
 

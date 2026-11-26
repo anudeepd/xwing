@@ -276,6 +276,24 @@ describe("UploadManager scheduling", () => {
     expect(manager.getSnapshot().items).toHaveLength(1);
   });
 
+  it("accepts a file-like object from another browser realm", async () => {
+    const { manager } = managerWith();
+    const foreign = {
+      name: "foreign.txt",
+      size: 7,
+      lastModified: 123,
+      slice: () => new Blob(["foreign"]),
+    } as unknown as File;
+
+    manager.add([foreign], "/", 1024);
+
+    expect(manager.getSnapshot().items[0]).toMatchObject({
+      name: "foreign.txt",
+      size: 7,
+      status: "queued",
+    });
+  });
+
   it("records the session so a retry resumes instead of restarting", async () => {
     const { manager } = managerWith();
     manager.add([new File(["hello"], "a.txt")], "/", 1024);

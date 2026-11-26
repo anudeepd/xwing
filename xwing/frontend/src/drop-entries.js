@@ -27,11 +27,14 @@ const ENTRY_ACCESSOR = 'webkitGetAsEntry';
  *
  * @param {DataTransfer | null | undefined} dataTransfer
  * @returns {Promise<{entries: DroppedEntry[], skipped: number}>} `skipped`
- *   counts directories that could not be traversed, so the caller can explain
- *   why a drop produced nothing.
+ *   counts entries that could not be traversed or read, so the caller can
+ *   explain why a drop produced nothing.
  */
 export async function collectDroppedEntries(dataTransfer) {
   const roots = takeRoots(dataTransfer);
+  // Snapshot the FileList before the first await too. Some extensions block
+  // FileSystemEntry.file() while leaving the plain File objects intact.
+  const fallbackFiles = takeFiles(dataTransfer);
   const entries = [];
   let skipped = 0;
 
@@ -44,6 +47,16 @@ export async function collectDroppedEntries(dataTransfer) {
       entries.push({ file: root.file, relativePath: root.file.name });
     } else {
       skipped += 1;
+    }
+  }
+  if (
+    entries.length === 0 &&
+    skipped > 0 &&
+    roots.every(root => !root.entry?.isDirectory) &&
+    fallbackFiles.length > 0
+  ) {
+    for (const file of fallbackFiles) {
+      entries.push({ file, relativePath: file.name });
     }
   }
   return { entries, skipped };
@@ -75,13 +88,29 @@ function takeRoots(dataTransfer) {
     const file = typeof item.getAsFile === 'function' ? item.getAsFile() : null;
     roots.push({ entry: null, file: file && typeof file.name === 'string' ? file : null });
   }
-  if (roots.length > 0) return roots;
+  // A content script can leave a placeholder item that has no entry and no
+  // file while the FileList still has the real file. Only treat the item
+  // snapshot as usable when at least one slot can actually produce a file.
+  if (roots.some(root => root.file || root.entry?.isFile || root.entry?.isDirectory)) {
+    return roots;
+  }
 
   const files = dataTransfer && dataTransfer.files ? Array.from(dataTransfer.files) : [];
   for (const file of files) {
     if (file && typeof file.name === 'string') roots.push({ entry: null, file });
   }
   return roots;
+}
+
+/**
+ * Snapshot the top-level files independently of the File System API.
+ *
+ * @param {DataTransfer | null | undefined} dataTransfer
+ * @returns {File[]}
+ */
+function takeFiles(dataTransfer) {
+  const files = dataTransfer && dataTransfer.files ? Array.from(dataTransfer.files) : [];
+  return files.filter(file => file && typeof file.name === 'string');
 }
 
 /**
@@ -95,6 +124,7 @@ async function walk(entry, prefix, out, onSkipped) {
   if (entry.isFile) {
     const file = await readFile(entry);
     if (file) out.push({ file, relativePath: prefix + file.name });
+    else onSkipped();
     return;
   }
   if (entry.isDirectory) {

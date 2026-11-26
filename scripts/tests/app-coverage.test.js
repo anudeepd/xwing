@@ -1828,6 +1828,16 @@ describe("file browser coverage edges", () => {
     app.dispatchEvent(new Event("dragover", { bubbles: true, cancelable: true }));
   });
 
+  it("reports an empty file selection when writing is allowed", async () => {
+    await mount();
+    const input = document.querySelector('input[type="file"]:not([webkitdirectory])');
+    Object.defineProperty(input, "files", { configurable: true, value: [] });
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+    await waitFor(() =>
+      expect(document.querySelector(".toast-stack")?.textContent).toContain("That selection contained no files"),
+    );
+  });
+
   it("covers empty-state uploads, breadcrumb navigation and direct row keys", async () => {
     await mount({ bootstrapData: { ...bootstrap, files: [] } });
     const fileClick = vi.spyOn(HTMLInputElement.prototype, "click");
