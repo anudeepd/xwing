@@ -67,6 +67,7 @@ jobs:
         run: node scripts/e2e/coverage-to-lcov.mjs
 
       - name: Authenticate to SonarQube Cloud
+        id: sonar-auth
         uses: SonarSource/sonarqube-auth-action@v1
 
       - name: SonarQube Cloud scan
@@ -75,3 +76,13 @@ jobs:
           skipSignatureVerification: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Wait for SonarQube Cloud quality gate
+        uses: SonarSource/sonarqube-quality-gate-action@v1
+        with:
+          pollingTimeoutSec: 600
+
+      - name: Require 100% coverage and zero duplication
+        run: node scripts/check-sonar-quality.mjs
+        env:
+          SONAR_PROJECT_KEY: ${{ steps.sonar-auth.outputs.project-key }}

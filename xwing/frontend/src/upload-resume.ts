@@ -17,8 +17,7 @@ export function resumeRecordKey(file: File, destination: string): string {
   return `${PREFIX}${encodeURIComponent(destination)}|${encodeURIComponent(file.name)}|${file.size}|${Number(file.lastModified || 0)}`;
 }
 
-function storageOrNull(storage?: Storage | null): Storage | null {
-  if (storage) return storage;
+function storageOrNull(): Storage | null {
   try {
     return globalThis.window?.localStorage ?? globalThis.localStorage ?? null;
   } catch {

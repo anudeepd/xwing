@@ -60,4 +60,20 @@ describe("upload chunk hashing", () => {
       sha256Blob({ arrayBuffer: undefined } as unknown as Blob, null),
     ).rejects.toThrow("read failed");
   });
+
+  it("uses a fallback message when FileReader reports no error", async () => {
+    class Reader {
+      result: ArrayBuffer | null = null;
+      error = null;
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      readAsArrayBuffer(): void {
+        queueMicrotask(() => this.onerror?.());
+      }
+    }
+    vi.stubGlobal("FileReader", Reader);
+    await expect(
+      sha256Blob({ arrayBuffer: undefined } as unknown as Blob, null),
+    ).rejects.toThrow("Could not read upload chunk");
+  });
 });

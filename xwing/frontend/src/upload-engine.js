@@ -142,7 +142,7 @@ export function committedBytes(ranges) {
 }
 
 function windowCovered(ranges, start, end) {
-  return (ranges || []).some(([left, right]) => {
+  return ranges.some(([left, right]) => {
     const spanStart = Number(left);
     const spanEnd = Number(right);
     return Number.isFinite(spanStart) && Number.isFinite(spanEnd)
@@ -202,7 +202,7 @@ export function errorFromResponse(status, payload, fallback) {
     return new UploadError(message, { status, code: 'SESSION_LOST', retryable: true });
   }
   if (status === 400 && (code === 'UPLOAD_INCOMPLETE' || code === 'STAGED_FILE_TRUNCATED')) {
-    return new UploadError(message, { status, code: code || 'UPLOAD_INCOMPLETE', retryable: true });
+    return new UploadError(message, { status, code, retryable: true });
   }
   if (status === 409 && code !== 'UPLOAD_INCOMPLETE') {
     return new UploadError(message, { status, code: code || 'SESSION_LOST', retryable: true });
@@ -217,7 +217,7 @@ export function errorFromResponse(status, payload, fallback) {
 function clampChunkSize(value, min, max) {
   const floor = Math.max(1, Math.floor(min));
   const ceiling = Math.max(floor, Math.floor(max));
-  if (!Number.isFinite(value) || value <= 0) return floor;
+  if (!Number.isFinite(value)) return floor;
   return Math.max(floor, Math.min(ceiling, Math.floor(value)));
 }
 
@@ -488,7 +488,7 @@ export class UploadClient {
         handlers.onPhase?.(next);
       };
       const armIdle = () => {
-        if (idleTimer) clearTimeout(idleTimer);
+        clearTimeout(idleTimer);
         idleTimer = setTimeout(() => {
           failWith(
             new UploadError(
@@ -505,7 +505,7 @@ export class UploadClient {
         }, idleTimeoutMs);
       };
       const armAck = () => {
-        if (ackTimer) clearTimeout(ackTimer);
+        clearTimeout(ackTimer);
         ackTimer = setTimeout(() => {
           failWith(
             new UploadError('The proxy held the upload response too long', {
@@ -549,7 +549,7 @@ export class UploadClient {
       });
       xhr.upload.addEventListener('load', () => {
         bodySent = true;
-        if (idleTimer) clearTimeout(idleTimer);
+        clearTimeout(idleTimer);
         idleTimer = null;
         handlers.onProgress?.(blob.size, blob.size);
         setPhase(UploadState.PROCESSING);
@@ -752,10 +752,9 @@ export async function uploadFile({
 
   const setState = state => callbacks.onState?.(state);
   const reportProgress = pending => {
-    if (!callbacks.onProgress) return;
     const committed = committedBytes(ranges) + (pending || 0);
     highWater = Math.max(highWater, Math.min(size, committed));
-    callbacks.onProgress(highWater, size);
+    callbacks.onProgress?.(highWater, size);
   };
   const reportInFlight = () => {
     let pending = 0;
@@ -776,7 +775,7 @@ export async function uploadFile({
   const diagnostic = event => {
     callbacks.onDiagnostic?.({
       ...event,
-      upload_id: info?.uploadId || null,
+      upload_id: info.uploadId,
       filename: name,
       size,
       chunk_bytes: windowSize,
@@ -888,8 +887,7 @@ export async function uploadFile({
       if (signal?.aborted) throw new UploadError('Upload cancelled', { code: 'ABORTED' });
       const transport =
         transportState.chosen ||
-        transportOrder[transportState.index] ||
-        TRANSPORTS[0];
+        transportOrder[transportState.index];
       const keyForProgress = `${start}-${end}-${transport}-${attempts}`;
       try {
         const result = await client.sendChunk(
@@ -908,13 +906,13 @@ export async function uploadFile({
               reportInFlight();
             },
             onPhase: phase => {
-              setState(phase === UploadState.PROCESSING ? UploadState.PROCESSING : UploadState.UPLOADING);
+              setState(phase);
             },
           },
         );
         inFlight.delete(keyForProgress);
         reportInFlight();
-        transportState.chosen = result.transport || transport;
+        transportState.chosen = result.transport;
         consecutiveTransportFailures = 0;
         transportRotations = 0;
         lastProtocol = result.protocol || lastProtocol;
@@ -1030,55 +1028,27 @@ export async function uploadFile({
   async function runPass(limitWindows = null) {
     const queue = planWindows(ranges, size, windowSize);
     if (limitWindows !== null) queue.length = Math.min(queue.length, limitWindows);
-    if (!queue.length) return { done: true };
-    return new Promise((resolve, reject) => {
-      let nextIndex = 0;
-      let active = 0;
-      let fatal = null;
-      let shrink = null;
-      let successes = 0;
-      let finished = false;
-      const settle = () => {
-        if (finished) return;
-        finished = true;
-        if (fatal) reject(fatal);
-        else if (shrink) resolve({ shrink: shrink.bytes });
-        else resolve({ done: missingRanges(ranges, size).length === 0 });
-      };
-      const launch = () => {
-        if (finished) return;
-        if (!fatal && !shrink) {
-          while (active < workers && nextIndex < queue.length) {
-            const [start, end] = queue[nextIndex];
-            nextIndex += 1;
-            if (windowCovered(ranges, start, end)) continue;
-            active += 1;
-            runWindow(start, end)
-              .then(() => {
-                successes += 1;
-                if (successes % 2 === 0) workers = Math.min(maxWorkers, workers + 1);
-              })
-              .catch(error => {
-                if (error instanceof ShrinkWindow) {
-                  if (!shrink) shrink = error;
-                } else if (!fatal) {
-                  fatal = error;
-                }
-              })
-              .finally(() => {
-                active -= 1;
-                if (active === 0 && (fatal || shrink || nextIndex >= queue.length)) {
-                  settle();
-                } else {
-                  launch();
-                }
-              });
-          }
+    let nextIndex = 0;
+    let fatal = null;
+    let shrink = null;
+    const worker = async () => {
+      while (!fatal && !shrink && nextIndex < queue.length) {
+        const [start, end] = queue[nextIndex];
+        nextIndex += 1;
+        if (windowCovered(ranges, start, end)) continue;
+        try {
+          await runWindow(start, end);
+        } catch (error) {
+          if (error instanceof ShrinkWindow) shrink = error;
+          else fatal = error;
+          return;
         }
-        if (active === 0 && (fatal || shrink || nextIndex >= queue.length)) settle();
-      };
-      launch();
-    });
+      }
+    };
+    await Promise.all(Array.from({ length: workers }, worker));
+    if (fatal) throw fatal;
+    if (shrink) return { shrink: shrink.bytes };
+    return { done: missingRanges(ranges, size).length === 0 };
   }
 
   async function runPasses() {
@@ -1092,9 +1062,7 @@ export async function uploadFile({
       try {
         outcome = await runPass(canGrow ? 1 : null);
       } catch (error) {
-        const uploadError = error instanceof UploadError
-          ? error
-          : new UploadError(error?.message || 'Upload failed', {});
+        const uploadError = error;
         if (
           uploadError.code === 'ABORTED' ||
           uploadError.code === 'AUTH_REQUIRED' ||
@@ -1183,9 +1151,7 @@ export async function uploadFile({
     try {
       result = await runEverything();
     } catch (error) {
-      const uploadError = error instanceof UploadError
-        ? error
-        : new UploadError(error?.message || 'Upload failed', {});
+      const uploadError = error;
       if (uploadError.code !== 'SESSION_LOST' || !restartOnSessionLoss || restartUsed) {
         throw uploadError;
       }
@@ -1209,9 +1175,7 @@ export async function uploadFile({
       verified: result?.verified ?? false,
     };
   } catch (error) {
-    const uploadError = error instanceof UploadError
-      ? error
-      : new UploadError(error?.message || 'Upload failed', {});
+    const uploadError = error;
     if (uploadError.code !== 'ABORTED' && info?.uploadId) {
       const status = await client.status(info.uploadId).catch(() => null);
       if (status?.ranges) {

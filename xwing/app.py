@@ -1707,27 +1707,9 @@ def create_app(settings: Settings) -> FastAPI:
         # instead of racing this loop's shutil.move calls against the same files.
         delete_transactions.pop(transaction_id, None)
 
-        restored = 0
-        restored_paths = []
         try:
-            for item in transaction["items"]:
-                trash_path: Path = item["trash"]
-                original_path: Path = item["original"]
-                if not os.path.lexists(trash_path):
-                    continue
-                target = _restore_candidate(original_path, item["kind"])
-                try:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    await anyio.to_thread.run_sync(
-                        shutil.move, str(trash_path), str(target)
-                    )
-                except OSError as exc:
-                    raise _filesystem_http_error(
-                        exc, "Could not restore that item"
-                    ) from exc
-                restored += 1
-                restored_paths.append(_to_rel_path(target))
-
+            restored_paths = await _restore_transaction_items(transaction)
+            restored = len(restored_paths)
             await _persist_trash()
         except BaseException:
             delete_transactions[transaction_id] = transaction

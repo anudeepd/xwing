@@ -246,6 +246,22 @@ describe("UploadManager scheduling", () => {
     );
   });
 
+  it("preserves repeated Error folder failures", async () => {
+    const fetcher = vi.fn(async () => {
+      throw new Error("offline");
+    });
+    const { manager } = managerWith(fetcher);
+    const file = new File(["hi"], "note.txt");
+    Object.defineProperty(file, "webkitRelativePath", { value: "trip/note.txt" });
+    manager.add([file], "/", 1024);
+    await vi.waitFor(() =>
+      expect(manager.getSnapshot().items[0]).toMatchObject({
+        status: "failed",
+        error: "offline",
+      }),
+    );
+  });
+
   it("splits the parallel budget across the files running at once", async () => {
     const { manager } = managerWith();
     manager.setParallel(4);
@@ -291,6 +307,28 @@ describe("UploadManager scheduling", () => {
       name: "foreign.txt",
       size: 7,
       status: "queued",
+    });
+  });
+
+  it("covers zero modification time and diagnostic fallbacks", async () => {
+    const { manager, fetcher } = managerWith();
+    const file = new File(["x"], "x.txt", { lastModified: 0 });
+    manager.add([file], "/", 1024);
+    const call = await pendingCall(0);
+    expect(call.options.fingerprint.last_modified).toBe(0);
+
+    call.options.callbacks.onDiagnostic({ event: "test", protocol: "h2" });
+    call.resolve({ ok: true });
+    await vi.waitFor(() =>
+      expect(manager.getSnapshot().items[0]).toMatchObject({
+        status: "completed",
+        protocol: "h2",
+      }),
+    );
+    const diagnostic = fetcher.mock.calls.find(call => String(call[0]) === "/_upload/diagnostics");
+    expect(JSON.parse(String(diagnostic?.[1]?.body))).toMatchObject({
+      upload_id: null,
+      protocol: "h2",
     });
   });
 

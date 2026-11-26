@@ -104,6 +104,38 @@ describe("upload resume storage", () => {
     expect(loadResumeSession(subject, "/b", storage)?.uploadKey).toBe("b");
   });
 
+  it("covers a zero modification time and default storage", () => {
+    storage = new MemoryStorage();
+    const subject = file("zero.bin", 0, 0);
+    expect(resumeRecordKey(subject, "/")).toBe(
+      "xwing.upload.v2.%2F|zero.bin|0|0",
+    );
+
+    const descriptor = Object.getOwnPropertyDescriptor(window, "localStorage");
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: storage,
+    });
+    try {
+      saveResumeSession(subject, "/", {
+        uploadKey: "default-store",
+        uploadId: "default-store",
+        ranges: [],
+        chunkSize: 0,
+        concurrency: 0,
+        size: 0,
+      });
+      expect(loadResumeSession(subject, "/")).toMatchObject({
+        uploadKey: "default-store",
+        chunkSize: 0,
+        concurrency: 1,
+      });
+    } finally {
+      if (descriptor) Object.defineProperty(window, "localStorage", descriptor);
+      else delete (window as unknown as { localStorage?: Storage }).localStorage;
+    }
+  });
+
   it("does not break when storage is unavailable", () => {
     storage = new MemoryStorage();
     const subject = file();
@@ -166,5 +198,28 @@ describe("upload resume storage", () => {
     expect(storage.getItem("xwing.upload.v2.expired")).toBeNull();
     expect(storage.getItem("xwing.upload.v2.corrupt")).toBeNull();
     expect(loadResumeSession(subject, "/", storage)?.uploadKey).toBe("new");
+  });
+
+  it("prunes null keys, missing values and zero timestamps", () => {
+    storage = new MemoryStorage();
+    const keys = [null, "xwing.upload.v2.missing", "xwing.upload.v2.zero"];
+    Object.defineProperty(storage, "length", { get: () => keys.length });
+    vi.spyOn(storage, "key").mockImplementation(index => keys[index] ?? null);
+    vi.spyOn(storage, "getItem").mockImplementation(key =>
+      key === "xwing.upload.v2.zero" ? JSON.stringify({ savedAt: 0 }) : null,
+    );
+    const removeItem = vi.spyOn(storage, "removeItem");
+
+    saveResumeSession(file(), "/", {
+      uploadKey: "new",
+      uploadId: "new",
+      ranges: [],
+      chunkSize: 4,
+      concurrency: 1,
+      size: 8,
+    }, storage);
+
+    expect(removeItem).toHaveBeenCalledWith("xwing.upload.v2.missing");
+    expect(removeItem).toHaveBeenCalledWith("xwing.upload.v2.zero");
   });
 });
