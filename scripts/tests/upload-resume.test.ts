@@ -157,6 +157,21 @@ describe("upload resume storage", () => {
     expect(loadResumeSession(subject, "/", null)).toBeNull();
   });
 
+  it("returns null when browser storage is null", () => {
+    const descriptor = Object.getOwnPropertyDescriptor(window, "localStorage");
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: null,
+    });
+    try {
+      expect(loadResumeSession(file(), "/")).toBeNull();
+      expect(() => clearResumeSession(file(), "/", null)).not.toThrow();
+    } finally {
+      if (descriptor) Object.defineProperty(window, "localStorage", descriptor);
+      else delete (window as unknown as { localStorage?: Storage }).localStorage;
+    }
+  });
+
   it("ignores malformed and unavailable browser storage", () => {
     storage = new MemoryStorage();
     const subject = file();
